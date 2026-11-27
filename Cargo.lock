@@ -1541,6 +1541,7 @@ dependencies = [
  "openbilling-http",
  "openbilling-pg",
  "openbilling-vpay",
+ "sqlx",
  "tokio",
 ]
 

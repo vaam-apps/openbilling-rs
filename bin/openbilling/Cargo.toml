@@ -21,5 +21,10 @@ openbilling-pg.workspace = true
 openbilling-vpay.workspace = true
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "signal", "time"] }
 
+[dev-dependencies]
+# The SIGTERM test makes its own database, as the other crates' tests do.
+sqlx.workspace = true
+tokio = { workspace = true, features = ["rt"] }
+
 [lints]
 workspace = true

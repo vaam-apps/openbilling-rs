@@ -1,4 +1,5 @@
-//! `openbilling serve`: connect, migrate, then run the API, the drain and the partition job until a signal.
+//! `openbilling serve`: connect, migrate, then run the API, the drain and the partition job until a signal:
+//! Ctrl-C (`SIGINT`) or `SIGTERM`, the signal a container runtime sends to stop a container.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -66,6 +67,34 @@ async fn partitions_forever(ledger: PgLedger) {
     }
 }
 
+/// Resolves on Ctrl-C (`SIGINT`) or, on Unix, `SIGTERM`. Kubernetes stops a pod with `SIGTERM`, and a process that
+/// is PID 1 in its container ignores a signal it has no handler for: without this, a pod would wait out its grace
+/// period and be killed, never draining its connections.
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        match signal(SignalKind::terminate()) {
+            Ok(mut terminate) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = terminate.recv() => {}
+                }
+            }
+            Err(_) => {
+                anstream::eprintln!(
+                    "{WARN}openbilling:{WARN:#} no SIGTERM handler; stopping on Ctrl-C only"
+                );
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
 pub async fn serve(settings: Settings) -> Result<()> {
     // The URL is never in an error: openbilling-pg's errors are fixed text.
     let store = PgStore::connect(settings.database_url.expose())
@@ -113,9 +142,7 @@ pub async fn serve(settings: Settings) -> Result<()> {
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
-    .with_graceful_shutdown(async {
-        let _ = tokio::signal::ctrl_c().await;
-    })
+    .with_graceful_shutdown(shutdown_signal())
     .await
     .context("serving")?;
     store.close().await;
