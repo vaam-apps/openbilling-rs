@@ -672,6 +672,7 @@ name = "openbilling-pg"
 version = "0.1.0"
 dependencies = [
  "openbilling-core",
+ "openbilling-testkit",
  "sqlx",
  "thiserror",
  "tokio",
@@ -680,6 +681,10 @@ dependencies = [
 [[package]]
 name = "openbilling-testkit"
 version = "0.1.0"
+dependencies = [
+ "openbilling-core",
+ "tokio",
+]
 
 [[package]]
 name = "parking"

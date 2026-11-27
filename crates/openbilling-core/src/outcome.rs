@@ -2,11 +2,11 @@
 
 use std::fmt;
 
-/// The outcome of one usage event, written once by the worker that rated it.
+/// The outcome of one usage event, written once by the drain that decided it.
 ///
 /// An event refused at intake (`too_old`, `too_far_ahead`, invalid) gets no row, so it has no outcome: those are
-/// answers to the producer, not outcomes. The record that carries the price book version, the amount and the ledger
-/// transaction (ADR 0001, point 14) comes with the ledger.
+/// answers to the producer, not outcomes. The outcome record (ADR 0001, point 14) is `ob_event_outcome`; its ledger
+/// transaction names the event. The price book version comes with rating, in the next slice.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum EventOutcome {
     /// Rated, and its ledger entries written.
@@ -73,6 +73,12 @@ impl RefusalReason {
             Self::IdReused => "id_reused",
         }
     }
+
+    /// The reason of a stored name.
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|reason| reason.as_str() == name)
+    }
 }
 
 impl fmt::Display for RefusalReason {
@@ -89,6 +95,10 @@ mod tests {
     fn names_are_those_of_adr_0001() {
         let names: Vec<_> = RefusalReason::ALL.iter().map(|r| r.as_str()).collect();
         assert_eq!(names, ["limit", "no_price", "unknown_account", "id_reused"]);
+        for reason in RefusalReason::ALL {
+            assert_eq!(RefusalReason::parse(reason.as_str()), Some(reason));
+        }
+        assert_eq!(RefusalReason::parse("other"), None);
     }
 
     #[test]

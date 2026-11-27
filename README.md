@@ -7,17 +7,20 @@ services, rates them against a price book you define, and records the result in 
 the queue, the once-only record and the ledger, so a write is one insert and every step is a transaction. There is no
 broker to run.
 
-**Status: design and skeleton.** The design is [ADR 0001](docs/adr/0001-postgres-is-the-queue.md). The workspace
-builds and is tested; it holds the core types and a store that connects. Nothing bills yet.
+**Status: the ledger, on pre-priced events.** The design is [ADR 0001](docs/adr/0001-postgres-is-the-queue.md) and
+[ADR 0002](docs/adr/0002-an-owner-holds-several-accounts.md). The PostgreSQL store takes priced usage events into a
+partitioned queue once, drains them into a double-entry ledger across an owner's accounts, and books payments,
+promotions, adjustments, refunds and chargebacks. Every rule is SQL; Rust holds the types, the port and the tests.
+Rating against a price book is next. The database tests have not yet run against a PostgreSQL 19 outside CI.
 
 ## What it will do
 
 | Part | What |
 |---|---|
 | Intake | Accept a usage event once by its id; a replay is a no-op |
-| Rating | Turn events into amounts with a versioned price book |
-| Ledger | Debit and credit accounts in one transaction, with balances and limits |
-| Reads | Balances, statements and usage series for an account |
+| Rating | Turn events into amounts with a versioned price book (not built yet: events carry their amount) |
+| Ledger | Debit an owner's accounts across currencies and labels in one transaction, with lots, debt and limits |
+| Reads | Balances, `allowed` with member caps, lots, outcomes and usage per day |
 
 ## Build and test
 
@@ -27,10 +30,10 @@ not supported). 1.94 is the MSRV because sqlx 0.9 declares
 
 ```sh
 cargo build --workspace
-cargo test --workspace     # the database test skips: OPENBILLING_TEST_DATABASE_URL is unset
+cargo test --workspace     # the database tests skip: OPENBILLING_TEST_DATABASE_URL is unset
 
 docker run --rm -d --name openbilling-pg -p 127.0.0.1:5432:5432 -e POSTGRES_HOST_AUTH_METHOD=trust postgres:19.0
-OPENBILLING_TEST_DATABASE_URL=postgres://postgres@127.0.0.1:5432/postgres cargo test --workspace
+OPENBILLING_TEST_DATABASE_URL=postgres://postgres@127.0.0.1:5432/postgres cargo test --workspace  # a fresh database per test
 
 cargo run -p openbilling -- --help
 ```
@@ -42,9 +45,9 @@ database.
 
 | Path | What |
 |---|---|
-| `crates/openbilling-core` | Pure types and rules: ids, amounts, event outcomes, errors with a class. No I/O |
-| `crates/openbilling-pg` | The PostgreSQL store on sqlx. Needs PostgreSQL 19 or later. Connects and pings for now |
-| `crates/openbilling-testkit` | The storage conformance suite, as macros. Empty until the storage trait exists |
+| `crates/openbilling-core` | The types and the storage port, `LedgerStore`: ids, micro-unit amounts, time, credits, events, refusals with a class. No I/O, no rule |
+| `crates/openbilling-pg` | The PostgreSQL store: the migrations, which hold every rule, and `PgLedger`, which calls them. Needs PostgreSQL 19 or later |
+| `crates/openbilling-testkit` | The conformance suite of `LedgerStore`, one macro, and its fixtures |
 | `bin/openbilling` | The service binary. Answers `--help` and `--version` for now |
 | `docs/adr/` | The decisions |
 
