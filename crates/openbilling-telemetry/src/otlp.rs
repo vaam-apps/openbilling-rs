@@ -6,11 +6,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value as Json, json};
 
-use crate::metrics::{
+use crate::settings::Resource;
+use openbilling_metrics::{
     BUCKETS, DRAIN_LAG, Pair, Snapshot, all_counters, all_gauges, all_histograms, describe_counter,
     describe_gauge, describe_histogram,
 };
-use crate::settings::Resource;
 
 /// An attribute value. Only these four shapes exist: no list, no map, no bytes.
 #[derive(Clone, Debug, PartialEq)]
@@ -274,7 +274,7 @@ pub fn metrics_request(resource_: &Resource, snapshot: &Snapshot, now: SystemTim
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::metrics::{Counter, Histogram, Metrics};
+    use openbilling_metrics::{Counter, Histogram, Metrics};
 
     fn resource_() -> Resource {
         Resource {

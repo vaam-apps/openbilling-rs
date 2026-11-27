@@ -1,4 +1,5 @@
-//! The service's metrics: a small registry of closed instruments.
+//! The service's metrics: a small registry of closed instruments, with no dependency, so the crates that record
+//! (`openbilling-pg`, `openbilling-http`) do not depend on an HTTP client. `openbilling-telemetry` exports it.
 //!
 //! **No instrument can carry an identity or an amount.** A counter adds a count; a histogram records a duration; a
 //! gauge holds a count or an age. A label is a pair of `&'static str`: a name and a value that is a literal or a
@@ -37,16 +38,22 @@ pub enum Counter {
     AllowedChecks,
     /// Errors by class: `class` is `invalid`, `conflict`, `unavailable` or `internal`; `source` is where.
     Errors,
+    /// Spans or logs dropped because the queue to the exporter was full: `signal` is `traces` or `logs`.
+    TelemetryDropped,
+    /// Export requests to the collector: `signal` and `result` (`ok` or `failed`).
+    TelemetryExports,
 }
 
 impl Counter {
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 8] = [
         Self::IntakeEvents,
         Self::DrainEvents,
         Self::DrainRuns,
         Self::LedgerPostings,
         Self::AllowedChecks,
         Self::Errors,
+        Self::TelemetryDropped,
+        Self::TelemetryExports,
     ];
 
     /// The instrument's name.
@@ -59,6 +66,8 @@ impl Counter {
             Self::LedgerPostings => "openbilling.ledger.postings",
             Self::AllowedChecks => "openbilling.allowed.checks",
             Self::Errors => "openbilling.errors",
+            Self::TelemetryDropped => "openbilling.telemetry.dropped",
+            Self::TelemetryExports => "openbilling.telemetry.exports",
         }
     }
 
@@ -72,6 +81,10 @@ impl Counter {
             Self::LedgerPostings => "Ledger transactions booked, by kind",
             Self::AllowedChecks => "getAllowed verdicts, by the check that decided",
             Self::Errors => "Errors by class and where they happened",
+            Self::TelemetryDropped => {
+                "Spans and logs dropped because the exporter's queue was full"
+            }
+            Self::TelemetryExports => "Export requests to the collector, by signal and result",
         }
     }
 
@@ -82,6 +95,8 @@ impl Counter {
             Self::LedgerPostings => "{posting}",
             Self::AllowedChecks => "{check}",
             Self::Errors => "{error}",
+            Self::TelemetryDropped => "{item}",
+            Self::TelemetryExports => "{request}",
         }
     }
 }
@@ -213,10 +228,14 @@ pub fn db_operation(name: &str) -> &'static str {
         .unwrap_or("other")
 }
 
+/// One histogram's buckets.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct Hist {
+pub struct Hist {
+    /// Observations per bucket, the last is above every bound.
     pub counts: [u64; BUCKETS.len() + 1],
+    /// The sum of the observations.
     pub sum: f64,
+    /// The number of observations.
     pub count: u64,
 }
 
@@ -246,11 +265,15 @@ impl Default for Metrics {
 
 /// A read of the registry, for the exporter and for tests.
 pub struct Snapshot {
-    pub(crate) start: SystemTime,
-    pub(crate) counters: Vec<(Counter, Vec<Pair>, u64)>,
-    pub(crate) histograms: Vec<(Histogram, Vec<Pair>, Hist)>,
-    pub(crate) gauges: Vec<(Gauge, Vec<Pair>, f64)>,
-    pub(crate) drain_lag: f64,
+    /// When the registry began.
+    pub start: SystemTime,
+    /// Counters.
+    pub counters: Vec<(Counter, Vec<Pair>, u64)>,
+    /// Histograms.
+    pub histograms: Vec<(Histogram, Vec<Pair>, Hist)>,
+    /// Gauges.
+    pub gauges: Vec<(Gauge, Vec<Pair>, f64)>,
+    drain_lag: f64,
 }
 
 impl Snapshot {
@@ -424,22 +447,28 @@ pub fn exposed_names() -> Vec<String> {
     names
 }
 
-pub(crate) const fn all_counters() -> [Counter; 6] {
+#[doc(hidden)]
+pub const fn all_counters() -> [Counter; 8] {
     Counter::ALL
 }
-pub(crate) fn describe_counter(c: Counter) -> (&'static str, &'static str, &'static str) {
+#[doc(hidden)]
+pub fn describe_counter(c: Counter) -> (&'static str, &'static str, &'static str) {
     (c.name(), c.description(), c.unit())
 }
-pub(crate) fn describe_histogram(h: Histogram) -> (&'static str, &'static str) {
+#[doc(hidden)]
+pub fn describe_histogram(h: Histogram) -> (&'static str, &'static str) {
     (h.name(), h.description())
 }
-pub(crate) fn describe_gauge(g: Gauge) -> (&'static str, &'static str, &'static str) {
+#[doc(hidden)]
+pub fn describe_gauge(g: Gauge) -> (&'static str, &'static str, &'static str) {
     (g.name(), g.description(), g.unit())
 }
-pub(crate) const fn all_histograms() -> [Histogram; 3] {
+#[doc(hidden)]
+pub const fn all_histograms() -> [Histogram; 3] {
     Histogram::ALL
 }
-pub(crate) const fn all_gauges() -> [Gauge; 4] {
+#[doc(hidden)]
+pub const fn all_gauges() -> [Gauge; 4] {
     Gauge::ALL
 }
 

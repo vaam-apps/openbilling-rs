@@ -12,7 +12,7 @@ publish.workspace = true
 [dependencies]
 cratestack.workspace = true
 openbilling-core.workspace = true
-openbilling-telemetry.workspace = true
+openbilling-metrics.workspace = true
 
 serde.workspace = true
 serde_json.workspace = true

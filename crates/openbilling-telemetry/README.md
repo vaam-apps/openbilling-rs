@@ -32,11 +32,14 @@ The standard `OTEL_*` variables, a strict subset (`bin/openbilling --help` lists
 | `OTEL_METRIC_EXPORT_INTERVAL`, `OTEL_BSP_SCHEDULE_DELAY`, `OTEL_EXPORTER_OTLP_TIMEOUT` | Milliseconds: 15000, 5000 and 10000 by default |
 | `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER`, `OTEL_LOGS_EXPORTER` | `otlp` or `none` |
 | `OTEL_SDK_DISABLED` | `true` turns everything off |
+| `OTEL_EXPORTER_OTLP_CERTIFICATE` | A PEM CA bundle; the only trust for an `https` collector |
+| `OTEL_TRACES_SAMPLER` | `always_on`, `always_off`, `traceidratio` (with `OTEL_TRACES_SAMPLER_ARG`), or the `parentbased_` forms |
 
-**Refused, with a message that names the variable and never its value:** `OTEL_EXPORTER_OTLP_PROTOCOL` other than
+A signal is on when it has a URL (a base, or its own endpoint) and is not `none`: with only `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, only traces go out.
+
+**Refused at start, with a message that names the variable and never its value:** every variable of the specification this exporter does not honour (per-signal `*_HEADERS`, `*_TIMEOUT` and `*_CERTIFICATE`, `OTEL_EXPORTER_OTLP_CLIENT_KEY` and `_CLIENT_CERTIFICATE`, `_COMPRESSION`, `OTEL_BLRP_*` and the other `OTEL_BSP_*`, `OTEL_PROPAGATORS`, the attribute limits), a sampler other than `always_on`, `always_off`, `traceidratio` and their `parentbased_` forms, a per-signal protocol other than `http/json`; `OTEL_EXPORTER_OTLP_PROTOCOL` other than
 `http/json`; `OTEL_EXPORTER_OTLP_HEADERS` (a credential in an environment variable shows in a process listing: use the
-file); an endpoint with a user, a password or a query; headers over plain `http` to another host. There is no YAML
-config file in the service today (`OPENBILLING_CONFIG` does not exist), so the variables are the configuration.
+file); an endpoint with a user, a password or a query; headers over plain `http` to another host. The service does have a YAML file (`OPENBILLING_CONFIG`), but it holds the deployer's policy (`getAllowed`); the environment holds endpoints and secrets, and no setting is read from both, so OpenTelemetry is configured by the variables.
 
 ## What leaves the process
 
@@ -44,8 +47,8 @@ config file in the service today (`OPENBILLING_CONFIG` does not exist), so the v
 `http.request.method`, `http.route`, `http.response.status_code`, `db.system`, `db.operation`, and four counts and a
 class on the loop spans). Every other field of a span or an event is dropped where it is read. A text value is also
 held to a plain alphabet and 64 bytes (`layer::plain`). `Debug` values are never read. Only spans and events whose
-target starts with `openbilling` or `cratestack` are looked at; a log is an `INFO`-or-above event of `openbilling*`
-whose message is static text.
+target starts with `openbilling` or `cratestack`, at `INFO` or above, are looked at (the layer answers `Interest::never` for every other callsite, so the `TRACE` callsites of sqlx, hyper and rustls are never dispatched); a log is an `INFO`-or-above event of `openbilling*`
+whose message is **held to words of letters only** (`layer::plain_message`: `drain failed (unavailable).` passes; `account acct-42 refused` or anything over 128 bytes is exported as `redacted`), so an id with a digit in it cannot leave through a log. A message of letters alone is the code's own to keep static.
 
 **Metrics cannot carry an identity or an amount**: a counter adds a count, a histogram records a duration, a gauge
 holds a count or an age, and a label is a pair of `&'static str` taken from a closed enum or a literal.
@@ -82,6 +85,8 @@ Names below are OTLP names; a Prometheus-compatible store has them as `openbilli
 | `openbilling.queue.oldest_age` | gauge, s | none | Age of the oldest of them |
 | `openbilling.ledger.postings` | counter | `kind` (`usage_debit`, `credit`, `allowance`, `reversal`) | Transactions booked; replays not counted |
 | `openbilling.allowed.checks` | counter | `verdict` (`allowed`, `refused`), `check` (`debt_limit`, `balance`, `member_cap`, `none`, `other`), `mode` (`at_or_above`, `above`, `never`: the deployer's comparison for that check; `none` when allowed) | `getAllowed` verdicts |
+| `openbilling.telemetry.dropped` | counter | `signal` (`traces`, `logs`) | Spans or logs dropped because the exporter's queue (4096) was full |
+| `openbilling.telemetry.exports` | counter | `signal` (`traces`, `metrics`, `logs`), `result` (`ok`, `failed`) | Export requests to the collector; `failed` is after three tries |
 | `openbilling.errors` | counter | `class` (`invalid`, `conflict`, `unavailable`, `internal`), `source` (`api`, `drain`, `partitions`) | Errors by class |
 | `http.server.request.duration` | histogram, s | `method`, `route`, `procedure`, `status` (`2xx` …) | Requests |
 | `db.client.operation.duration` | histogram, s | `operation` (a closed list, else `other`) | Ledger database operations |
@@ -100,7 +105,7 @@ the trace of the span they happened in. The same lines still go to stderr, as be
 | File | What |
 |---|---|
 | `src/settings.rs` | `Settings::from_lookup`: the variables, their refusals, the resource |
-| `src/metrics.rs` | The registry: `Counter`, `Histogram`, `Gauge`, `global()`, `exposed_names()` |
+| (`openbilling-metrics`) | The registry: `Counter`, `Histogram`, `Gauge`, `global()`, `exposed_names()`: a crate of its own with no dependency, re-exported here, so `openbilling-pg` and `openbilling-http` record without an HTTP client |
 | `src/layer.rs` | The `tracing` layer and the allowlist |
 | `src/otlp.rs` | The three OTLP/JSON request documents |
 | `src/export.rs` | `start`: the tasks that batch and post, `Guard::shutdown` to flush |
@@ -115,8 +120,8 @@ workspace's `reqwest` on rustls with ring, so the static binary stays free of Op
 
 ## Tests
 
-`cargo test -p openbilling-telemetry`: settings and their refusals, the metrics registry, the layer (the allowlist,
+`cargo test -p openbilling-telemetry`: settings and their refusals (the unsupported variables, the sampler, the CA, one signal alone), the metrics registry, the layer (the allowlist,
 parents, sampling, the database histogram), the OTLP documents, the exporter against a collector in the process
-(`tests/export.rs`), and the dashboards against the service (`tests/dashboards.rs`: every metric and label a panel
+(`tests/export.rs`), a collector that never answers (`tests/hang.rs`: recording is instant and `shutdown` ends by its deadline), a full queue (a unit test), and the dashboards against the service (`tests/dashboards.rs`: every metric and label a panel
 queries exists, every panel is described, the chart's copy equals the files). The flow test with a database is
 `openbilling-http/tests/otel.rs`.

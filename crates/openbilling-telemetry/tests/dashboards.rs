@@ -11,7 +11,7 @@ use openbilling_telemetry::exposed_names;
 use serde_json::Value;
 
 /// The labels the code records, and the ones a Prometheus backend adds.
-const LABELS: [&str; 18] = [
+const LABELS: [&str; 19] = [
     "job",
     "le",
     "route",
@@ -29,6 +29,7 @@ const LABELS: [&str; 18] = [
     "state",
     "operation",
     "mode",
+    "signal",
     "__rate_interval",
 ];
 

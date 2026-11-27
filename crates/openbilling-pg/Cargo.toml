@@ -11,7 +11,7 @@ publish.workspace = true
 
 [dependencies]
 openbilling-core.workspace = true
-openbilling-telemetry.workspace = true
+openbilling-metrics.workspace = true
 serde.workspace = true
 serde-saphyr.workspace = true
 sqlx.workspace = true

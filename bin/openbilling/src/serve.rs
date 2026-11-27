@@ -164,22 +164,33 @@ async fn sample_forever(ledger: PgLedger) {
 }
 
 pub async fn serve(settings: Settings) -> Result<()> {
-    // Telemetry first, so the start-up work is traced too. Off unless an endpoint is set; the metrics registry
-    // records either way and costs a lock and an add.
-    let telemetry = match &settings.otel {
-        Some(otel) => {
-            let guard = openbilling_telemetry::start(otel, global())
-                .context("starting the OpenTelemetry exporter")?;
-            anstream::eprintln!(
-                "{ACCENT}openbilling:{ACCENT:#} exporting OpenTelemetry (traces {}, metrics {}, logs {})",
-                otel.signals.traces,
-                otel.signals.metrics,
-                otel.signals.logs
-            );
-            Some(guard)
-        }
-        None => None,
+    let telemetry = start_telemetry(&settings)?;
+    let result = run(settings).await;
+    // On every way out, a refusal at start included: what was queued is flushed, and the metrics go out once more.
+    if let Some(telemetry) = telemetry {
+        telemetry.shutdown(FLUSH).await;
+    }
+    result
+}
+
+fn start_telemetry(settings: &Settings) -> Result<Option<openbilling_telemetry::Guard>> {
+    // Telemetry first (the caller), so the start-up work is traced too. Off unless an endpoint is set; the metrics
+    // registry records either way and costs a lock and an add.
+    let Some(otel) = &settings.otel else {
+        return Ok(None);
     };
+    let guard = openbilling_telemetry::start(otel, global())
+        .context("starting the OpenTelemetry exporter")?;
+    anstream::eprintln!(
+        "{ACCENT}openbilling:{ACCENT:#} exporting OpenTelemetry (traces {}, metrics {}, logs {})",
+        otel.signals.traces,
+        otel.signals.metrics,
+        otel.signals.logs
+    );
+    Ok(Some(guard))
+}
+
+async fn run(settings: Settings) -> Result<()> {
     // The URL is never in an error: openbilling-pg's errors are fixed text.
     let store = PgStore::connect(settings.database_url.expose())
         .await
@@ -263,8 +274,5 @@ pub async fn serve(settings: Settings) -> Result<()> {
     let _ = partitions.await;
     let _ = sampler.await;
     store.close().await;
-    if let Some(telemetry) = telemetry {
-        telemetry.shutdown(FLUSH).await;
-    }
     Ok(())
 }

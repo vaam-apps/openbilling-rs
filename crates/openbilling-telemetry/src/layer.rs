@@ -13,6 +13,9 @@ use std::hash::BuildHasher;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Instant, SystemTime};
 
+use tracing::Metadata;
+use tracing::subscriber::Interest;
+
 use tokio::sync::mpsc::Sender;
 use tracing::field::{Field, Visit};
 use tracing::span::{Attributes, Id, Record};
@@ -21,8 +24,8 @@ use tracing_subscriber::Layer;
 use tracing_subscriber::layer::Context;
 use tracing_subscriber::registry::{LookupSpan, SpanRef};
 
-use crate::metrics::{Histogram, Metrics, db_operation};
 use crate::otlp::{LogRecord, SpanRecord, Value, unix_nanos};
+use openbilling_metrics::{Counter, Histogram, Metrics, db_operation};
 
 /// The fields that may be exported, and the attribute each becomes. Everything else is dropped.
 pub const FIELDS: [(&str, &str); 17] = [
@@ -61,8 +64,29 @@ pub fn plain(text: &str) -> String {
     }
 }
 
+/// The most verbose level looked at: nothing below `INFO` is a signal of this service, and a `TRACE` callsite of
+/// sqlx, hyper or rustls must not be dispatched for it.
+const CAP: Level = Level::INFO;
+
 fn ours(target: &str) -> bool {
     target.starts_with("openbilling") || target.starts_with("cratestack")
+}
+
+/// A log's message: words made of letters only (hyphens and underscores between letters, punctuation at their ends),
+/// 128 bytes at most. Anything else, an id with a digit in it among them, is `redacted`: so `info!("account {id}")`
+/// does not export its id, though a message of letters alone is the code's own to keep static (README).
+#[must_use]
+pub fn plain_message(text: &str) -> String {
+    let word_ok = |word: &str| {
+        let word = word.trim_matches(|c: char| ",.:;()'\"".contains(c));
+        word.chars()
+            .all(|c| c.is_ascii_alphabetic() || c == '-' || c == '_')
+    };
+    if text.len() <= 128 && text.split_whitespace().all(word_ok) {
+        text.to_owned()
+    } else {
+        "redacted".to_owned()
+    }
 }
 
 #[derive(Default)]
@@ -86,7 +110,7 @@ impl Fields {
 impl Visit for Fields {
     fn record_str(&mut self, field: &Field, value: &str) {
         if field.name() == "message" {
-            self.message = Some(value.chars().take(256).collect());
+            self.message = Some(plain_message(value));
         } else {
             self.put(field, Value::Str(plain(value)));
         }
@@ -106,8 +130,7 @@ impl Visit for Fields {
     fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
         // `Debug` is read for the message only (`format_args!` of a literal): never for another field.
         if field.name() == "message" {
-            let text = format!("{value:?}");
-            self.message = Some(text.chars().take(256).collect());
+            self.message = Some(plain_message(&format!("{value:?}")));
         }
     }
 }
@@ -216,6 +239,18 @@ impl<S> Layer<S> for TelemetryLayer
 where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
+    fn register_callsite(&self, meta: &'static Metadata<'_>) -> Interest {
+        if ours(meta.target()) && *meta.level() <= CAP {
+            Interest::always()
+        } else {
+            Interest::never()
+        }
+    }
+
+    fn enabled(&self, meta: &Metadata<'_>, _: Context<'_, S>) -> bool {
+        ours(meta.target()) && *meta.level() <= CAP
+    }
+
     fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
         if !ours(attrs.metadata().target()) {
             return;
@@ -316,6 +351,8 @@ where
         };
         if logs.try_send(record).is_err() {
             self.dropped.fetch_add(1, Ordering::Relaxed);
+            self.metrics
+                .add(Counter::TelemetryDropped, &[("signal", "logs")], 1);
         }
     }
 
@@ -354,6 +391,8 @@ where
         };
         if spans.try_send(record).is_err() {
             self.dropped.fetch_add(1, Ordering::Relaxed);
+            self.metrics
+                .add(Counter::TelemetryDropped, &[("signal", "traces")], 1);
         }
     }
 }
@@ -444,6 +483,51 @@ mod tests {
             let _in = span.enter();
         });
         assert!(none.is_empty());
+    }
+
+    #[test]
+    fn a_log_message_of_letters_passes_and_one_with_an_id_is_redacted() {
+        assert_eq!(
+            plain_message("drain failed (unavailable)."),
+            "drain failed (unavailable)."
+        );
+        for bad in [
+            "account acct-42 refused",
+            "token Bearer abc.def.1",
+            &"x".repeat(200),
+        ] {
+            assert_eq!(plain_message(bad), "redacted", "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_full_queue_drops_and_counts() {
+        let metrics: &'static Metrics = Box::leak(Box::new(Metrics::new()));
+        let (span_tx, _span_rx) = mpsc::channel(1);
+        let layer = TelemetryLayer::new(Some(span_tx), None, 1.0, metrics);
+        let counter = layer.clone();
+        tracing::subscriber::with_default(tracing_subscriber::registry().with(layer), || {
+            for _ in 0..5 {
+                let span = info_span!(target: "openbilling_http", "http.server.request");
+                drop(span.enter());
+            }
+        });
+        assert_eq!(counter.dropped(), 4);
+        assert_eq!(
+            metrics
+                .snapshot()
+                .counter(Counter::TelemetryDropped, Some(&[("signal", "traces")])),
+            4
+        );
+    }
+
+    #[test]
+    fn verbose_levels_are_not_dispatched() {
+        let (spans, _, _) = run(1.0, || {
+            let span = tracing::debug_span!(target: "openbilling_pg", "db.query");
+            drop(span.enter());
+        });
+        assert!(spans.is_empty());
     }
 
     #[test]

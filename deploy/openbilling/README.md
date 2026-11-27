@@ -84,7 +84,7 @@ The vpay adapter's settings (`OPENBILLING_VPAY_*`, `bin/openbilling/README.md`) 
 credential gets it as a header **from a file**: mount a Secret of your own with `persistence` (`type: secret`) and set
 `OPENBILLING_OTEL_HEADERS_FILE` under `controllers.main.containers.main.env`; the chart never holds a credential, and
 `OTEL_EXPORTER_OTLP_HEADERS` is refused by the binary. Egress to the collector's port needs a rule of its own in
-`networkpolicies.main.rules.egress` when the policy is on. What is exported, and what never is, is in
+`networkpolicies.main.rules.egress` when the policy is on: the render is refused when none allows the endpoint's port (`tests/values/otel.yaml` shows one). What is exported, and what never is, is in
 [`openbilling-telemetry`](../../crates/openbilling-telemetry/README.md).
 
 ## Dashboards
@@ -95,7 +95,7 @@ in this chart is a copy a chart can read (Helm cannot read outside the chart), a
 `cp deploy/dashboards/*.json deploy/openbilling/dashboards/`. The ConfigMap reads them with `.Files.Get`; its first
 render is CI's (*unverified*: no Helm was available when it was written).
 
-**Refused** (the render fails, naming the value): an empty `existingSecret` or `key`; an `otel.endpoint` that is not an http(s) URL or holds a credential; an `auth.issuer` without an
+**Refused** (the render fails, naming the value): an empty `existingSecret` or `key`; an `otel.endpoint` that is not an http(s) URL or holds a credential, or, with the NetworkPolicy on, whose port no egress rule allows; an `auth.issuer` without an
 `auth.audience` or the reverse, `jwksUrl`, `rolesClaim` or `roleMap` without both, an issuer that is not `https` or
 loopback `http`; in `openbilling.config`, a key other than `allowed`, a check other than `debt_limit`, `balance` and `member_cap`, or
 a mode other than `at_or_above`, `above` and `never` (the binary refuses the same at start); an image tagged `latest`; a tag

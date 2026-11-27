@@ -15,9 +15,9 @@ use tracing_subscriber::layer::SubscriberExt;
 use url::Url;
 
 use crate::layer::TelemetryLayer;
-use crate::metrics::Metrics;
 use crate::otlp::{LogRecord, SpanRecord, logs_request, metrics_request, traces_request};
 use crate::settings::{Resource, Settings};
+use openbilling_metrics::{Counter, Metrics};
 
 const QUEUE: usize = 4096;
 const BATCH: usize = 512;
@@ -32,9 +32,21 @@ pub enum StartError {
     /// The HTTP client could not be built.
     #[error("the OTLP client could not be built")]
     Client,
+    /// `OTEL_EXPORTER_OTLP_CERTIFICATE` does not hold a PEM certificate.
+    #[error("OTEL_EXPORTER_OTLP_CERTIFICATE does not hold a PEM certificate")]
+    Certificate,
     /// A `tracing` subscriber is already installed in this process.
     #[error("a tracing subscriber is already installed")]
     Subscriber,
+}
+
+impl openbilling_core::Classify for StartError {
+    fn class(&self) -> openbilling_core::ErrorClass {
+        match self {
+            Self::Header | Self::Certificate => openbilling_core::ErrorClass::Invalid,
+            Self::Client | Self::Subscriber => openbilling_core::ErrorClass::Internal,
+        }
+    }
 }
 
 /// What the exporter did, in counts.
@@ -48,6 +60,7 @@ pub struct Stats {
 
 #[derive(Clone)]
 struct Sender {
+    metrics: &'static Metrics,
     client: reqwest::Client,
     headers: HeaderMap,
     timeout: Duration,
@@ -56,7 +69,11 @@ struct Sender {
 }
 
 impl Sender {
-    fn new(settings: &Settings, stats: Arc<Stats>) -> Result<Self, StartError> {
+    fn new(
+        settings: &Settings,
+        stats: Arc<Stats>,
+        metrics: &'static Metrics,
+    ) -> Result<Self, StartError> {
         // reqwest is built with no crypto provider of its own: rustls uses the process default, ring.
         let _ = rustls::crypto::ring::default_provider().install_default();
         let mut headers = HeaderMap::new();
@@ -67,11 +84,16 @@ impl Sender {
             value.set_sensitive(true);
             headers.insert(name, value);
         }
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|_| StartError::Client)?;
+        let mut builder = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none());
+        if let Some(pem) = &settings.ca_pem {
+            // The CA bundle is the only trust, as `OTEL_EXPORTER_OTLP_CERTIFICATE` says.
+            let certificates =
+                reqwest::Certificate::from_pem_bundle(pem).map_err(|_| StartError::Certificate)?;
+            builder = builder.tls_certs_only(certificates);
+        }
+        let client = builder.build().map_err(|_| StartError::Client)?;
         Ok(Self {
+            metrics,
             client,
             headers,
             timeout: settings.timeout,
@@ -92,7 +114,7 @@ impl Sender {
         }
     }
 
-    async fn post(&self, url: &Url, document: &Json) {
+    async fn post(&self, signal: &'static str, url: &Url, document: &Json) {
         let Ok(body) = serde_json::to_vec(document) else {
             return;
         };
@@ -112,6 +134,11 @@ impl Sender {
             match sent {
                 Ok(response) if response.status().is_success() => {
                     self.stats.exported.fetch_add(1, Ordering::Relaxed);
+                    self.metrics.add(
+                        Counter::TelemetryExports,
+                        &[("signal", signal), ("result", "ok")],
+                        1,
+                    );
                     return;
                 }
                 Ok(response) => {
@@ -126,6 +153,11 @@ impl Sender {
             }
         }
         self.stats.failed.fetch_add(1, Ordering::Relaxed);
+        self.metrics.add(
+            Counter::TelemetryExports,
+            &[("signal", signal), ("result", "failed")],
+            1,
+        );
         self.warn(what);
     }
 }
@@ -188,14 +220,15 @@ async fn metrics_loop(
             _ = stop.changed() => true,
         };
         let document = metrics_request(&resource, &metrics.snapshot(), SystemTime::now());
-        sender.post(&url, &document).await;
+        sender.post("metrics", &url, &document).await;
         if last {
             break;
         }
     }
 }
 
-/// The running exporter. Dropping it does not stop it: call [`Guard::shutdown`] to flush before the process ends.
+/// The running exporter. Dropping it ends the process's telemetry without a flush: the tasks stop with the runtime and
+/// what is queued is lost. Call [`Guard::shutdown`] on every way out to flush the queues and the metrics once more.
 pub struct Guard {
     stop: watch::Sender<bool>,
     tasks: Vec<JoinHandle<()>>,
@@ -236,56 +269,60 @@ impl Guard {
 /// [`StartError`] for an invalid header, a client that cannot be built, or a subscriber already installed.
 pub fn start(settings: &Settings, metrics: &'static Metrics) -> Result<Guard, StartError> {
     let stats = Arc::new(Stats::default());
-    let sender = Sender::new(settings, Arc::clone(&stats))?;
+    let sender = Sender::new(settings, Arc::clone(&stats), metrics)?;
     let (stop, stop_rx) = watch::channel(false);
     let mut tasks = Vec::new();
 
-    let span_tx = settings.signals.traces.then(|| {
-        let (tx, rx) = mpsc::channel::<SpanRecord>(QUEUE);
-        let (sender, url, resource) = (
-            sender.clone(),
-            settings.traces_url.clone(),
-            settings.resource.clone(),
-        );
-        tasks.push(tokio::spawn(batches(
-            rx,
-            stop_rx.clone(),
-            settings.batch_delay,
-            move |spans: Vec<SpanRecord>| {
-                let (sender, url, document) = (
-                    sender.clone(),
-                    url.clone(),
-                    traces_request(&resource, &spans),
-                );
-                async move { sender.post(&url, &document).await }
-            },
-        )));
-        tx
-    });
-    let log_tx = settings.signals.logs.then(|| {
-        let (tx, rx) = mpsc::channel::<LogRecord>(QUEUE);
-        let (sender, url, resource) = (
-            sender.clone(),
-            settings.logs_url.clone(),
-            settings.resource.clone(),
-        );
-        tasks.push(tokio::spawn(batches(
-            rx,
-            stop_rx.clone(),
-            settings.batch_delay,
-            move |logs: Vec<LogRecord>| {
-                let (sender, url, document) =
-                    (sender.clone(), url.clone(), logs_request(&resource, &logs));
-                async move { sender.post(&url, &document).await }
-            },
-        )));
-        tx
-    });
-    if settings.signals.metrics {
+    let span_tx = settings
+        .traces_url
+        .clone()
+        .filter(|_| settings.signals.traces)
+        .map(|traces_url| {
+            let (tx, rx) = mpsc::channel::<SpanRecord>(QUEUE);
+            let (sender, url, resource) = (sender.clone(), traces_url, settings.resource.clone());
+            tasks.push(tokio::spawn(batches(
+                rx,
+                stop_rx.clone(),
+                settings.batch_delay,
+                move |spans: Vec<SpanRecord>| {
+                    let (sender, url, document) = (
+                        sender.clone(),
+                        url.clone(),
+                        traces_request(&resource, &spans),
+                    );
+                    async move { sender.post("traces", &url, &document).await }
+                },
+            )));
+            tx
+        });
+    let log_tx = settings
+        .logs_url
+        .clone()
+        .filter(|_| settings.signals.logs)
+        .map(|logs_url| {
+            let (tx, rx) = mpsc::channel::<LogRecord>(QUEUE);
+            let (sender, url, resource) = (sender.clone(), logs_url, settings.resource.clone());
+            tasks.push(tokio::spawn(batches(
+                rx,
+                stop_rx.clone(),
+                settings.batch_delay,
+                move |logs: Vec<LogRecord>| {
+                    let (sender, url, document) =
+                        (sender.clone(), url.clone(), logs_request(&resource, &logs));
+                    async move { sender.post("logs", &url, &document).await }
+                },
+            )));
+            tx
+        });
+    if let Some(metrics_url) = settings
+        .metrics_url
+        .clone()
+        .filter(|_| settings.signals.metrics)
+    {
         tasks.push(tokio::spawn(metrics_loop(
             metrics,
             sender,
-            settings.metrics_url.clone(),
+            metrics_url,
             settings.resource.clone(),
             stop_rx,
             settings.metric_interval,

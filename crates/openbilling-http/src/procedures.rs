@@ -34,8 +34,8 @@ fn verdict(allowed: bool, refused: Option<&str>, policy: AllowedPolicy) {
         (false, Some("member_cap")) => ("member_cap", policy.member_cap.as_str()),
         (false, _) => ("other", "none"),
     };
-    openbilling_telemetry::global().add(
-        openbilling_telemetry::Counter::AllowedChecks,
+    openbilling_metrics::global().add(
+        openbilling_metrics::Counter::AllowedChecks,
         &[
             ("check", check),
             ("mode", mode),

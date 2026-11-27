@@ -1589,6 +1589,7 @@ version = "0.3.0"
 dependencies = [
  "cratestack-pg",
  "openbilling-core",
+ "openbilling-metrics",
  "openbilling-pg",
  "openbilling-telemetry",
  "openbilling-testkit",
@@ -1623,11 +1624,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "openbilling-metrics"
+version = "0.3.0"
+
+[[package]]
 name = "openbilling-pg"
 version = "0.3.0"
 dependencies = [
  "openbilling-core",
- "openbilling-telemetry",
+ "openbilling-metrics",
  "openbilling-testkit",
  "serde",
  "serde-saphyr",
@@ -1642,6 +1647,8 @@ name = "openbilling-telemetry"
 version = "0.3.0"
 dependencies = [
  "axum",
+ "openbilling-core",
+ "openbilling-metrics",
  "openbilling-telemetry",
  "reqwest",
  "rustls",

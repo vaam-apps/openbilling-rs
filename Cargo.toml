@@ -6,6 +6,7 @@ members = [
     "crates/openbilling-testkit",
     "crates/openbilling-vpay",
     "crates/openbilling-http",
+    "crates/openbilling-metrics",
     "crates/openbilling-telemetry",
     "crates/openbilling-jwt",
     "bin/openbilling",
@@ -26,6 +27,7 @@ openbilling-testkit = { path = "crates/openbilling-testkit" }
 openbilling-pg = { path = "crates/openbilling-pg" }
 openbilling-vpay = { path = "crates/openbilling-vpay" }
 openbilling-http = { path = "crates/openbilling-http" }
+openbilling-metrics = { path = "crates/openbilling-metrics" }
 openbilling-telemetry = { path = "crates/openbilling-telemetry" }
 openbilling-jwt = { path = "crates/openbilling-jwt" }
 

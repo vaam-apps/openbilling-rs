@@ -1,0 +1,13 @@
+[package]
+name = "openbilling-metrics"
+description = "The metrics registry of openbilling-rs: closed counters, histograms and gauges, with no dependency."
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

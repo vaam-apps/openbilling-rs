@@ -1,0 +1,7 @@
+# expect: the NetworkPolicy is on and networkpolicies.main.rules.egress allows no port 4318
+openbilling:
+  otel:
+    endpoint: https://otel-collector.observability.svc:4318
+networkpolicies:
+  main:
+    enabled: true

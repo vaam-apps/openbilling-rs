@@ -15,7 +15,7 @@ use openbilling_core::{
     PriceVersionView, Rated, RawEvent, RefusalReason, Reversal, Timestamp, UsageEvent, UtcDay,
     UtcMonth, Window, WithinKind,
 };
-use openbilling_telemetry::{Counter, Gauge, Histogram, global};
+use openbilling_metrics::{Counter, Gauge, Histogram, global};
 use sqlx::PgPool;
 use sqlx::postgres::PgListener;
 

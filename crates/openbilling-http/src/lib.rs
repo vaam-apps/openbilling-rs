@@ -183,8 +183,8 @@ async fn observe(request: Request, next: Next) -> Response {
         400..=499 => "4xx",
         _ => "5xx",
     };
-    openbilling_telemetry::global().observe(
-        openbilling_telemetry::Histogram::HttpServer,
+    openbilling_metrics::global().observe(
+        openbilling_metrics::Histogram::HttpServer,
         &[
             ("method", method),
             ("route", route),

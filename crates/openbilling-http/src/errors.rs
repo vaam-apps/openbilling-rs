@@ -8,8 +8,8 @@ use openbilling_core::{Classify, ErrorClass, LedgerError, PaymentError, SettleEr
 
 /// Counts an error the API answers, by class: the class is a closed set, the message is not looked at.
 fn count(class: ErrorClass) {
-    openbilling_telemetry::global().add(
-        openbilling_telemetry::Counter::Errors,
+    openbilling_metrics::global().add(
+        openbilling_metrics::Counter::Errors,
         &[("class", class.as_str()), ("source", "api")],
         1,
     );

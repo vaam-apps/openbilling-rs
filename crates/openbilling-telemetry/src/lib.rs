@@ -11,12 +11,12 @@
 
 pub mod export;
 pub mod layer;
-pub mod metrics;
 pub mod otlp;
 pub mod settings;
 #[cfg(feature = "testkit")]
 pub mod testkit;
 
 pub use export::{Guard, StartError, Stats, start};
-pub use metrics::{Counter, Gauge, Histogram, Metrics, exposed_names, global};
+pub use openbilling_metrics as metrics;
+pub use openbilling_metrics::{Counter, Gauge, Histogram, Metrics, exposed_names, global};
 pub use settings::{Resource, Settings, SettingsError};

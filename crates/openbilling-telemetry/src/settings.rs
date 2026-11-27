@@ -12,6 +12,33 @@ use std::time::Duration;
 
 use url::Url;
 
+/// Variables of the OpenTelemetry specification this exporter does not honour. Set, they stop `serve` at start:
+/// a setting that is ignored in silence is worse than one that is refused.
+const UNSUPPORTED: [&str; 22] = [
+    "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+    "OTEL_EXPORTER_OTLP_METRICS_HEADERS",
+    "OTEL_EXPORTER_OTLP_LOGS_HEADERS",
+    "OTEL_EXPORTER_OTLP_TRACES_TIMEOUT",
+    "OTEL_EXPORTER_OTLP_METRICS_TIMEOUT",
+    "OTEL_EXPORTER_OTLP_LOGS_TIMEOUT",
+    "OTEL_EXPORTER_OTLP_TRACES_CERTIFICATE",
+    "OTEL_EXPORTER_OTLP_METRICS_CERTIFICATE",
+    "OTEL_EXPORTER_OTLP_LOGS_CERTIFICATE",
+    "OTEL_EXPORTER_OTLP_CLIENT_KEY",
+    "OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE",
+    "OTEL_EXPORTER_OTLP_COMPRESSION",
+    "OTEL_BLRP_SCHEDULE_DELAY",
+    "OTEL_BLRP_EXPORT_TIMEOUT",
+    "OTEL_BLRP_MAX_QUEUE_SIZE",
+    "OTEL_BLRP_MAX_EXPORT_BATCH_SIZE",
+    "OTEL_BSP_EXPORT_TIMEOUT",
+    "OTEL_BSP_MAX_QUEUE_SIZE",
+    "OTEL_BSP_MAX_EXPORT_BATCH_SIZE",
+    "OTEL_ATTRIBUTE_COUNT_LIMIT",
+    "OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT",
+    "OTEL_PROPAGATORS",
+];
+
 /// A refused setting. Fixed text: it names the variable, never its value.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum SettingsError {
@@ -27,6 +54,12 @@ pub enum SettingsError {
     /// Headers would travel over plain http to another host.
     #[error("headers are only sent over https (or http to this machine)")]
     HeadersNeedHttps,
+}
+
+impl openbilling_core::Classify for SettingsError {
+    fn class(&self) -> openbilling_core::ErrorClass {
+        openbilling_core::ErrorClass::Invalid
+    }
 }
 
 /// Which signals go out.
@@ -56,14 +89,17 @@ pub struct Resource {
 /// The configuration of the exporter.
 #[derive(Clone)]
 pub struct Settings {
-    /// The OTLP/HTTP URL of each signal.
-    pub traces_url: Url,
-    /// The metrics URL.
-    pub metrics_url: Url,
-    /// The logs URL.
-    pub logs_url: Url,
-    /// Which signals go out.
+    /// The OTLP/HTTP URL of the traces; `None` with no traces endpoint or base, and then no spans go out.
+    pub traces_url: Option<Url>,
+    /// The metrics URL, as above.
+    pub metrics_url: Option<Url>,
+    /// The logs URL, as above.
+    pub logs_url: Option<Url>,
+    /// Which signals go out: a signal is on when it has a URL and is not `none`.
     pub signals: Signals,
+    /// The PEM of the CA bundle that is the only trust for an `https` collector, from
+    /// `OTEL_EXPORTER_OTLP_CERTIFICATE`'s file; `None` is the platform's roots.
+    pub ca_pem: Option<Vec<u8>>,
     /// Request headers, from the file. Never printed.
     pub headers: Vec<(String, String)>,
     /// The process's identity.
@@ -107,11 +143,11 @@ fn url_of(
     full: Option<String>,
     path: &str,
     full_name: &'static str,
-) -> Result<Url, SettingsError> {
+) -> Result<Option<Url>, SettingsError> {
     let (text, appended) = match (full, base) {
         (Some(full), _) => (full, false),
         (None, Some(base)) => (base.to_owned(), true),
-        (None, None) => return Err(SettingsError::Invalid(full_name)),
+        (None, None) => return Ok(None),
     };
     let mut url = Url::parse(text.trim()).map_err(|_| SettingsError::Invalid(full_name))?;
     if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
@@ -125,7 +161,7 @@ fn url_of(
         let joined = format!("{}{path}", url.path().trim_end_matches('/'));
         url.set_path(&joined);
     }
-    Ok(url)
+    Ok(Some(url))
 }
 
 fn is_this_machine(url: &Url) -> bool {
@@ -205,6 +241,23 @@ impl Settings {
                 "use OPENBILLING_OTEL_HEADERS_FILE",
             ));
         }
+        for name in UNSUPPORTED {
+            if get(name).is_some() {
+                return Err(SettingsError::Unsupported(
+                    name,
+                    "not supported by this exporter; unset it",
+                ));
+            }
+        }
+        for name in [
+            "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL",
+            "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL",
+            "OTEL_EXPORTER_OTLP_LOGS_PROTOCOL",
+        ] {
+            if get(name).is_some_and(|v| v.trim() != "http/json") {
+                return Err(SettingsError::Unsupported(name, "only http/json"));
+            }
+        }
         let base = base.as_deref();
         let traces_url = url_of(
             base,
@@ -237,17 +290,33 @@ impl Settings {
         };
         if !headers.is_empty()
             && [&traces_url, &metrics_url, &logs_url]
-                .iter()
+                .into_iter()
+                .flatten()
                 .any(|url| url.scheme() != "https" && !is_this_machine(url))
         {
             return Err(SettingsError::HeadersNeedHttps);
         }
-        let sample_ratio = match get("OTEL_TRACES_SAMPLER_ARG") {
-            None => 1.0,
+        let arg = match get("OTEL_TRACES_SAMPLER_ARG") {
+            None => None,
             Some(text) => match text.trim().parse::<f64>() {
-                Ok(ratio) if (0.0..=1.0).contains(&ratio) => ratio,
+                Ok(ratio) if (0.0..=1.0).contains(&ratio) => Some(ratio),
                 _ => return Err(SettingsError::Invalid("OTEL_TRACES_SAMPLER_ARG")),
             },
+        };
+        let sample_ratio = match get("OTEL_TRACES_SAMPLER").as_deref().map(str::trim) {
+            None => arg.unwrap_or(1.0),
+            Some("always_on" | "parentbased_always_on") => 1.0,
+            Some("always_off" | "parentbased_always_off") => 0.0,
+            Some("traceidratio" | "parentbased_traceidratio") => arg.unwrap_or(1.0),
+            Some(_) => return Err(SettingsError::Invalid("OTEL_TRACES_SAMPLER")),
+        };
+        let ca_pem = match get("OTEL_EXPORTER_OTLP_CERTIFICATE") {
+            None => None,
+            Some(path) => Some(
+                read_file(&path)
+                    .map(String::into_bytes)
+                    .ok_or(SettingsError::Invalid("OTEL_EXPORTER_OTLP_CERTIFICATE"))?,
+            ),
         };
         let attributes = get("OTEL_RESOURCE_ATTRIBUTES")
             .map(|text| resource_attributes(&text))
@@ -263,15 +332,17 @@ impl Settings {
                 .cloned(),
             instance: attributes.get("service.instance.id").cloned(),
         };
+        let signals = Signals {
+            traces: traces_url.is_some() && signal_on(&get, "OTEL_TRACES_EXPORTER")?,
+            metrics: metrics_url.is_some() && signal_on(&get, "OTEL_METRICS_EXPORTER")?,
+            logs: logs_url.is_some() && signal_on(&get, "OTEL_LOGS_EXPORTER")?,
+        };
         Ok(Some(Self {
             traces_url,
             metrics_url,
             logs_url,
-            signals: Signals {
-                traces: signal_on(&get, "OTEL_TRACES_EXPORTER")?,
-                metrics: signal_on(&get, "OTEL_METRICS_EXPORTER")?,
-                logs: signal_on(&get, "OTEL_LOGS_EXPORTER")?,
-            },
+            signals,
+            ca_pem,
             headers,
             resource,
             sample_ratio,
@@ -331,11 +402,14 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(
-            s.traces_url.as_str(),
+            s.traces_url.as_ref().unwrap().as_str(),
             "http://localhost:4318/otlp/v1/traces"
         );
-        assert_eq!(s.metrics_url.path(), "/otlp/v1/metrics");
-        assert_eq!(s.logs_url.as_str(), "http://localhost:9/l");
+        assert_eq!(s.metrics_url.as_ref().unwrap().path(), "/otlp/v1/metrics");
+        assert_eq!(
+            s.logs_url.as_ref().unwrap().as_str(),
+            "http://localhost:9/l"
+        );
         assert_eq!(s.resource.service_name, "openbilling");
         assert_eq!(s.resource.service_version, "1.2.3");
         assert_eq!(s.resource.environment.as_deref(), Some("prod"));
@@ -407,6 +481,65 @@ mod tests {
             ("OPENBILLING_OTEL_HEADERS_FILE", "/nowhere"),
         ]);
         assert_eq!(missing.unwrap_err(), SettingsError::HeadersFile);
+    }
+
+    #[test]
+    fn one_signal_endpoint_alone_turns_on_that_signal_only() {
+        let s = settings(&[(
+            "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+            "http://localhost:4318/v1/traces",
+        )])
+        .unwrap()
+        .unwrap();
+        assert!(s.signals.traces && !s.signals.metrics && !s.signals.logs);
+        assert!(s.metrics_url.is_none());
+    }
+
+    #[test]
+    fn what_is_not_honoured_is_refused_and_what_is_honoured_is_read() {
+        let on = ("OTEL_EXPORTER_OTLP_ENDPOINT", "https://c.example");
+        for name in [
+            "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+            "OTEL_EXPORTER_OTLP_CLIENT_KEY",
+            "OTEL_BLRP_SCHEDULE_DELAY",
+        ] {
+            let error = settings(&[on, (name, "x")]).unwrap_err().to_string();
+            assert!(error.contains(name), "{error}");
+        }
+        assert!(settings(&[on, ("OTEL_EXPORTER_OTLP_LOGS_PROTOCOL", "grpc")]).is_err());
+        assert!(settings(&[on, ("OTEL_TRACES_SAMPLER", "jaeger_remote")]).is_err());
+        let off = settings(&[on, ("OTEL_TRACES_SAMPLER", "always_off")])
+            .unwrap()
+            .unwrap();
+        assert!((off.sample_ratio - 0.0).abs() < f64::EPSILON);
+        let ratio = settings(&[
+            on,
+            ("OTEL_TRACES_SAMPLER", "parentbased_traceidratio"),
+            ("OTEL_TRACES_SAMPLER_ARG", "0.25"),
+        ])
+        .unwrap()
+        .unwrap();
+        assert!((ratio.sample_ratio - 0.25).abs() < f64::EPSILON);
+        let with_ca = Settings::from_lookup(
+            |n| {
+                (n == "OTEL_EXPORTER_OTLP_ENDPOINT")
+                    .then(|| "https://c.example".to_owned())
+                    .or_else(|| {
+                        (n == "OTEL_EXPORTER_OTLP_CERTIFICATE").then(|| "/ca.pem".to_owned())
+                    })
+            },
+            "1",
+            |p| (p == "/ca.pem").then(|| "PEM".to_owned()),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(with_ca.ca_pem.as_deref(), Some(&b"PEM"[..]));
+        let missing = settings(&[on, ("OTEL_EXPORTER_OTLP_CERTIFICATE", "/nowhere")]).unwrap_err();
+        assert!(
+            missing
+                .to_string()
+                .contains("OTEL_EXPORTER_OTLP_CERTIFICATE")
+        );
     }
 
     #[test]

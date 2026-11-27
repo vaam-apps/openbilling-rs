@@ -45,11 +45,13 @@ needs the queries adjusted.
 | `5xx ratio` | Share of requests that answered 5xx | The error budget of the API. Orange at 0.1%, red at 1%. Look at `Errors by class and source`, then the database panels |
 | `4xx ratio` | Share of requests refused with 4xx | Orange at 5%, red at 20%. A jump after a deployment is usually a producer on an old contract or a token that expired |
 | `Errors by class and source` | Errors per second by class (`invalid`, `conflict`, `unavailable`, `internal`) and source (`api`, `drain`, `partitions`) | Callers decide from the class, so does the operator: `unavailable` is a dependency (PostgreSQL), `internal` is a fault of the service, `invalid` and `conflict` are callers |
-| `Latency by route (p50, p95, p99)` | Request duration quantiles, probes left out | The latency signal. p99 climbing alone points at a slow query or a lock; all three together at the pool or the database |
+| `Latency by route (p50, p95, p99)` | Request duration quantiles of each route, probes left out | The latency signal. p99 climbing alone points at a slow query or a lock; all three together at the pool or the database |
 | `p95 latency by procedure` | The 95th percentile of each procedure of the API | Which call is slow: `recordUsage` takes a batch in one transaction, so its latency follows the batch size |
 | `getAllowed verdicts` | `getAllowed` answers per second by verdict, the check that decided (`debt_limit`, `balance`, `member_cap`, or `none` when allowed) and the mode it ran under (`at_or_above`, `above`, `never`) | What a serving layer is told. A rise of `balance` refusals is owners running out of credit; `debt_limit` is owners at their debt limit; `member_cap` is a member at their cap. The mode says which comparison the deployer chose, so a change of policy shows as a change of mix |
 | `Refused share of getAllowed` | Share of `getAllowed` answers that refused | Orange at 20%, red at 50%. A sudden jump with no change of usage means credit stopped arriving (a payment provider outage) |
 | `Ledger postings by kind` | Transactions booked per second: `usage_debit`, `credit`, `allowance`, `reversal`; replays are not counted | The ledger's own throughput. Debits that stop while events are accepted say the drain is stuck; reversals that rise say refunds or chargebacks |
+| `Telemetry dropped` | Spans and logs dropped per second because the exporter's queue was full | The exporter never blocks a request, it drops. A band here says the collector is slow or down and the other panels are incomplete |
+| `Telemetry exports` | Export requests per second to the collector by signal and result | `failed` is a collector that refuses or does not answer after three tries; look at its address, its credential header and its network policy |
 
 ## openbilling: queue, drain and database
 
