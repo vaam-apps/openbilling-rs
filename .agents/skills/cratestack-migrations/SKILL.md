@@ -1,0 +1,271 @@
+---
+name: cratestack-migrations
+description: CrateStack database migrations — cratestack migrate diff and baseline, the snapshot model, destructive-change classification, up.pre.sql backfills, @@rename and @rename markers (and why a rename became a DROP), the Postgres-only forward-only applier in cratestack-sqlx, and the SQLite differences. Load when generating or applying migrations, adopting an existing database, or debugging a lossy/blocking migration refusal.
+---
+
+# Migrations
+
+> **Verified against CrateStack 0.20.6.** CrateStack is pre-1.0 and its crates version
+> together, so a minor release can break any of this. Check what you are actually on —
+> `cratestack --version`, and the `cratestack-*` version in `Cargo.toml` — before relying
+> on a fact here. Anything that arrived in a specific release is marked *(since X.Y.Z)*;
+> the full feature-to-release map is in
+> [cratestack/references/version-history.md](../cratestack/references/version-history.md).
+
+Two subcommands. That is the whole authoring surface.
+
+```bash
+cratestack migrate diff --schema schema.cstack [--out-dir migrations]
+                        [--backend postgres|sqlite|both] [--name slug] [--allow-destructive]
+
+cratestack migrate baseline --schema schema.cstack --database-url <url>
+                            [--out-dir migrations] [--backend postgres] [--strict]
+```
+
+**`migrate verify` does not exist** — one source comment claims it is the CI gate
+for snapshot integrity; it is stale.
+
+A schema split across files *(since 0.19.0)* needs no migration: pass the
+**root** to `--schema` (a part is refused, M4) and the diff against an existing snapshot is
+empty, because a split schema is identical to its single-file equivalent. An enum imported
+from a shared file and used by a model column is materialized in *your* migrations.
+
+## The model: snapshot in, SQL out, no database
+
+`migrate diff` never connects to anything. It is a pure pipeline:
+
+```
+Schema → project() → Projections IR → diff against snapshot → Ops → dialect SQL
+```
+
+Output layout:
+
+```
+<out-dir>/<backend>/<YYYYMMDDHHMMSS>_<slug>/{up.sql, down.sql[, up.pre.sql]}
+<out-dir>/<backend>/schema.snapshot.json
+```
+
+**The snapshot must be committed.** An absent snapshot means "empty", so a first
+run emits full `CREATE TABLE`s. The snapshot stores the **projections IR**, not
+the schema — introspection can never recover mixins, procedures, auth blocks or
+attribute provenance, so storing a `Schema` would be a lie. Format version 2;
+**v1 snapshots are rejected with no migration path and must be regenerated**.
+
+If there are no ops, it prints `no changes` and writes nothing.
+
+## Destructive-change classification
+
+| Class | Which ops | Behaviour |
+| --- | --- | --- |
+| Safe | create table, add optional column (or required with a real `@default`), add/drop index, add/drop foreign key, alter default, rename table/column, enum add check that keeps every value (*(since 0.17.0)* one that loses a value is Blocking), **non-enum add check on a table the same migration creates** *(since 0.16.0, cratestack#1129)*, drop check, required→optional, create/replace view, ensure extension | written |
+| **Lossy** | drop table, drop column, drop view / materialized view, **any `AlterColumnType`**, list↔scalar arity flips | **refuses without `--allow-destructive`** |
+| **Blocking** | add a required column with no default (`dbgenerated()` does not count, nor *(since 0.17.0, cratestack#1209)* `cuid()`, which has no database default), optional→required, non-enum add check **on a table that already exists**, *(since 0.17.0)* an enum check rebuilt without a value it had (a variant removed, or an ordinal retired into `@@reserved`; `ir/blocking/narrowing.rs`) | written, plus a scaffolded `up.pre.sql` and a loud stderr warning |
+
+`AlterColumnType` is lossy *unconditionally* — the IR has no dialect-aware
+widening view, so even a widening change needs the flag.
+
+The run prints its label: `safe`, `lossy`, `blocking`, or `blocking+lossy`.
+
+**A CHECK on a new table is safe** *(since 0.16.0, cratestack#1129)*. A validator
+CHECK (`@range`, `@length`, `@iso4217` with `@db_enforce`) on a table the same
+migration creates cannot reject a row, because the table has none yet. So a
+first migration of a `@db_enforce` schema is labelled `safe`, gets no
+`up.pre.sql`, and prints no WARNING. The exemption is per migration, keyed on
+the create in the same op list. A CHECK added to a table that already exists,
+in a later migration, is still blocking and gets the scaffold.
+
+## What is *not* auto-generated
+
+**Renames.** Matching is by name only, so a rename looks like drop-plus-create
+unless you declare it with a marker that names the **old SQL identifier**:
+
+```cstack
+// Was `model OldModel` (table old_models) with a field `oldField`.
+model NewModel {
+  id       Int    @id
+  newField String @rename(from = "old_field")
+  @@rename(from = "old_models")
+}
+```
+
+Keep comments off the marker's line. On 0.14.0 and earlier the parser did not
+strip a trailing comment from a field line: an attribute named inside one was
+applied.
+
+- `@@rename(from = "…")` takes the old **table** name, verbatim:
+  `pluralize(snake_case(OldModel))`, so `"old_models"`. The old model name does
+  not work. `@@rename(from = "OldModel")` checks as `schema OK`, matches no table,
+  and the diff is a drop plus a create. `migrate diff` then refuses it as lossy,
+  and with `--allow-destructive` it drops the rows. This holds on every release,
+  0.19.1 included (`crates/cratestack-migrate/src/convert/renames.rs` uses the
+  `@@rename` value verbatim as the old table name). `check` validates only the marker's form, not that the table
+  exists.
+- `@rename(from = "…")` takes the old **column** name. The migrator snake-cases
+  it first, so `"old_field"` and `"oldField"` both work.
+- The marker is read only in exactly the form `from = "<name>"`, double-quoted,
+  with nothing after the `)`. On 0.14.0 and earlier, any other form
+  (`@@rename(from: "x")`, `@@rename("x")`, `@rename()`) passed `cratestack
+  check` and was **silently treated as absent**, so the migration dropped and
+  re-created the table or column. *(since 0.14.1, GHSA-69g4-xvcm-vm2j)* Those
+  forms are refused. So are a second marker on the same model or field, which
+  the migrator ignored, and a `@rename` on a field of a `view`, `type` or `auth`
+  block or on a relation field, which it never read. If you generated
+  migrations from a refused marker, look for a `DROP TABLE` or `DROP COLUMN` of
+  the old name.
+
+Measured with `cratestack migrate diff` built from an earlier framework `main` (not
+re-run for 0.19.1; the rename reader and table diff are unchanged since 0.14.2): the
+`"old_models"` form emits `ALTER TABLE old_models RENAME TO new_models;` and
+`ALTER TABLE new_models RENAME COLUMN old_field TO new_field;`. The
+`"OldModel"` form is refused as destructive.
+
+**Storage-name changes are renames** *(since 0.20.1, cratestack#1375)*. A changed `@@map` / `@map` is never a silent drop and
+create: `migrate diff` refuses a changed table or column storage name
+(`MigrateError::TableStorageNameChanged` / `ColumnStorageNameChanged`; the message names the exact
+`@@rename(from = "…")` / `@rename(from = "…")` to add) unless the model carries
+`@@rename(from = "<old_table>")` or the field `@rename(from = "<old_column>")`; adding `@@map` to a
+model that already has a table is such a change. With the marker it is one `RENAME`. Routes, op ids
+and clients do not change either way. `migrate baseline` stamps which model and field each matching
+table and column stores onto the snapshot (checksum unchanged), so a `@@map` / `@map` changed after
+a baseline is refused too. Where a snapshot records no such identity, a mapped model or column that
+is new while an unrecorded table or column vanishes is refused as
+`TableStorageNameUnrecorded` / `ColumnStorageNameUnrecorded`; the message names the
+`@@rename(from = "…")` / `@rename(from = "…")` to add. Known false positive: dropping one table and
+adding a differently named mapped model in the same diff is refused; do it in two migrations. The
+baseline drift report only reports a name mismatch, it does not refuse.
+
+**Backfills.** `up.pre.sql` *(since 0.10.0)* is scaffolded for a blocking migration and you write
+the body. It runs immediately before `up.sql` **in the same transaction**. It is
+written create-new and never truncated: an existing `up.pre.sql` is kept and the
+scaffold is skipped with a note.
+
+**`down.sql` for a lossy migration** is an explicit error stub, not reverse SQL.
+Hand-write any destructive reversal.
+
+**Enums on SQLite** — not emitted at all; variant changes are Rust-side only.
+
+**Ordinal enums** *(since 0.17.0)* (`Pending = 1`, see
+[cratestack-schema](../cratestack-schema/SKILL.md)). `migrate diff` keeps each enum's numbers in
+the snapshot (`Projections::enums`) and **refuses** the diff (`MigrateError::EnumOrdinalHistory`)
+when a variant's number changes, a variant is removed without its number in `@@reserved`, a
+number is dropped from `@@reserved`, or a reserved number is reused. A rename that keeps the
+number moves no data. Adding or removing the numbers on an existing enum emits the data
+conversion: Postgres `ALTER COLUMN … TYPE SMALLINT USING (CASE col WHEN 'A' THEN 1 … END)` (the
+old default is dropped first, then re-set), classified **lossy**, so it needs
+`--allow-destructive`; SQLite
+`UPDATE … SET col = CASE col WHEN 'A' THEN 1 … END`. Removing a variant (or retiring an ordinal)
+is Blocking, for string enums too: `up.pre.sql` gets `UPDATE t SET col = <a value the enum keeps>
+WHERE col IN (…)`. Limit: `baseline` against a live database reports drift on an ordinal column
+(`SMALLINT` is unmapped).
+
+*(since 0.17.0, cratestack#1209)* `@default(auth().field)` is never written to DDL (through 0.16.0 it
+was emitted as `DEFAULT auth().field`), and a snapshot written by an older cratestack is read back
+normalised: a stored `now()` / `uuid()` / `cuid()` default as cratestack's own, `auth().field` as
+no default. `migrate baseline` reads Postgres's `now()` and `gen_random_uuid()` as `now()` and
+`uuid()`.
+
+*(since 0.17.0, cratestack#1234)* a literal default is written as the SQL literal it stands for:
+strings single-quoted (`@default("draft")` → `DEFAULT 'draft'`, inner quotes doubled), on both
+trees. Through 0.16.0 a double-quoted string was written verbatim as `DEFAULT "draft"`, which
+Postgres reads as a column reference, so the migration failed. A stored `"draft"` in an older
+snapshot reads back as `'draft'`, so the next diff sees no change. Embedded tables do not come
+from these migrations; see `cratestack-embedded`.
+
+You also get a stderr warning listing every `@default(dbgenerated())` on a
+required column, because the emitter cannot verify the database actually has that
+default.
+
+**Sequences and identity columns.** cratestack emits neither. `@default(autoincrement())`
+(any spelling or case) is refused by `cratestack check` *(since 0.16.0, cratestack#1128)*;
+through 0.15.4 it passed and `migrate diff` wrote `DEFAULT autoincrement()`, which neither
+database accepts. Declare the column `@default(dbgenerated())` (it must be the whole
+default) and create the sequence or `GENERATED … AS IDENTITY` in hand-written migration
+SQL. An older snapshot holding `autoincrement()` is read back as `dbgenerated()`.
+
+**Framework tables are not in the snapshot.** `cratestack_migrations`,
+`cratestack_event_outbox` and the other bookkeeping tables the runtime creates for itself are
+not projected from the schema, so `migrate diff` never alters them. *(Since 0.18.0)* the outbox
+gains a nullable `payload_before JSONB` column; the runtime adds it to an older table on its
+own, but not for an app that only writes inside its own transactions, so the changelog advises
+adding it in a migration: `ALTER TABLE cratestack_event_outbox ADD COLUMN IF NOT EXISTS
+payload_before JSONB;` (`crates/cratestack-sqlx/src/descriptor/event_outbox.rs`).
+
+## `migrate baseline` — adopting an existing database
+
+Postgres only, enforced at the type level. Sequence:
+
+**Tables with other names** *(since 0.20.1, cratestack#1375)*: do not rename them. Write `@@map("<live_table>")` and
+`@map("<live_column>")` on the schema to match, then run `baseline`; the snapshot holds the mapped
+names and the next `diff` is empty. Index and FK names derive from the mapped names, so the first
+diff may drop and re-add a differently named live index; review it. The baseline also records the
+mapping, so renaming a mapped table or column afterwards needs `@@rename` / `@rename`.
+
+1. **Refuses immediately** if `<out-dir>/postgres/schema.snapshot.json` already
+   exists — before parsing, before connecting.
+2. Introspects the live database into `Projections`.
+3. Diffs introspected against authored and prints a drift report grouped by table,
+   plus unmapped columns.
+4. `--strict` plus any drift → bail; no snapshot, no baseline row.
+5. Writes the snapshot **from the introspected shape**, not the authored one.
+6. Records a synthetic `<timestamp>_baseline` row in `cratestack_migrations` whose
+   `up` is pure SQL comments carrying a checksum of the introspected shape. It
+   applies no DDL, but the checksum makes a re-baseline against a since-drifted
+   database detectable.
+
+Both writes matter: without the history row, `apply_pending()` would try to
+recreate existing tables.
+
+Introspection is knowingly lossy. Numeric precision is ambiguous coming back, and
+**validator-derived CHECKs are impossible in principle** to reverse-map —
+`@range` / `@length` / `@iso4217` compile to raw CHECK SQL with no way back. The
+design treats this as **reported drift, not attempted reconciliation**.
+
+## Applying
+
+**Not in the CLI.** The applier lives in `cratestack-sqlx` and is **Postgres
+only**.
+
+Table `cratestack_migrations (id, description, checksum, applied_at)`.
+`status()` reports `Pending` / `Applied` / `ChecksumMismatch` per migration.
+`apply_pending()` **aborts the entire apply on any checksum mismatch before
+applying anything**, then applies each pending migration in its own transaction
+— `up_pre` then `up`, via `raw_sql` (the simple-query protocol, so dollar-quoted
+PL/pgSQL survives) — inserts the history row, and commits.
+
+`Migration.down` is recorded and **never executed**. There is no rollback
+function anywhere: irreversible-by-default is the deliberate banking posture.
+
+`cratestack-sqlx` does not read a migrations directory, and the CLI does not
+apply. The glue is in `cratestack-service`, under its default-on `postgres`
+feature: `migrations_from_dir(&include_dir!(…))` loads an embedded
+`migrations/postgres` tree (an `up.pre.sql` that is only comments counts as
+absent), and `run_migrations(database_url, &migrations)` calls `apply_pending`.
+Without that crate, the glue is yours.
+
+## SQLite
+
+| | Postgres | SQLite |
+| --- | --- | --- |
+| Column types | real mapping (`String→TEXT`, `Int→BIGINT`, `Uuid→UUID`, …) | **every column is `BLOB`** |
+| Enums | `TEXT` + `CHECK (col IN (…))`, deliberately not a native enum type | not emitted |
+| Ordinal enums *(since 0.17.0)* | `SMALLINT` + `CHECK (col IN (1, 2, …))`, `@default(V)` → `DEFAULT n` | the integer; no `CHECK` |
+| Extensions | `EnsureExtension` DDL | n/a |
+| `up.pre.sql` | scaffolded when blocking | **never** — guidance goes into `up.sql`, because SQLite has no runner to read a pre file |
+| `DROP COLUMN` | native | native (SQLite ≥ 3.35) — no table-rebuild dance |
+| Introspection / `baseline` | supported | **not supported** |
+| Runner | `cratestack-sqlx` | **none exists** |
+| Function defaults *(since 0.17.0, cratestack#1209)* | `now()` → `now()`, `uuid()` → `gen_random_uuid()`, `cuid()` → none, a registered function verbatim | `now()` / `uuid()` → expressions the embedded runtime decodes, `cuid()` → none, a registered function in parentheses. `ADD COLUMN` with an expression default fails once the table has rows; the migration carries a note there |
+
+BLOB everywhere is because BLOB affinity is the only one that preserves the bound
+storage class. Native enums are avoided because generated row decoders read enum
+fields as `String` (an ordinal enum's *(since 0.17.0)* as an integer).
+
+On device, the usual pattern is not migrations at all: call
+`create_table_sql(&DESCRIPTOR)` (a `CREATE TABLE IF NOT EXISTS`) at app start.
+See `cratestack-embedded`.
+
+## Schema-diff as a companion gate
+
+`cratestack diff <old> <new>` answers a different question — *is the wire
+contract broken* — and is worth running alongside `migrate diff` on schema PRs.
+See `cratestack-cli`.

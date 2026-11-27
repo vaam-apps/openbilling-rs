@@ -1,0 +1,508 @@
+---
+name: cratestack-schema
+description: Authoring and debugging .cstack schema files for CrateStack — models, fields, relations, enums, types, mixins, views, declarative query blocks, procedures, attributes and validators. Load whenever writing or editing a .cstack file, when cratestack check reports an error (unsupported attribute, not directly under a signature, invisible character), or when a question mentions @id, @relation, @@allow, @@index, @computed, @@sql, transport rpc, or any other .cstack attribute.
+---
+
+# Authoring `.cstack`
+
+> **Verified against CrateStack 0.20.6.** CrateStack is pre-1.0 and its crates version
+> together, so a minor release can break any of this. Check what you are actually on —
+> `cratestack --version`, and the `cratestack-*` version in `Cargo.toml` — before relying
+> on a fact here. Anything that arrived in a specific release is marked *(since X.Y.Z)*;
+> the full feature-to-release map is in
+> [cratestack/references/version-history.md](../cratestack/references/version-history.md).
+
+A schema may span files *(since 0.19.0)*. Point the macro or the CLI at the
+**root** file; split it with `part "…"` (in the root) and `part of "…"` (in each part); share
+`type` / `enum` / `mixin` between schemas with `import "…"`. An import **cannot carry a
+`model`** (or a view, procedure, topic, query or extension): do not try. There is no
+`import … as`. Full rules, the where-each-declaration-may-go table, path rules and a worked
+example: [references/multi-file.md](references/multi-file.md). On any release that predates
+that feature, a schema is exactly one file and `part` / `import` lines are refused. `part`
+and `import` are also **reserved identifiers** *(since 0.13.0)*: `model import` and
+`part String` are rejected in every identifier position. The reservation is exact and
+case-sensitive: `of`, `Import` and `partOf` are all still available.
+
+Validate with `cratestack check --schema schema.cstack`. Errors are precise and
+worth reading literally; most of this skill is about the ones that are not
+obvious.
+
+## Top-level declarations — the complete list
+
+```
+datasource <name> { provider = "postgresql" | "sqlite" | "none", url = env("…") }
+auth <Name> { fields }              // the shape auth() resolves against
+mixin <Name> { fields }             // pulled into a model with @use(Name)
+model <Name> { fields + @@attrs }   // a table
+type <Name> { fields }              // a plain struct: procedure args, results, query rows
+enum <Name> { VARIANTS }            // one bare identifier per line
+extension rate_limit | pgvector | postgis | webtransport | websocket { }  // webtransport: since 0.17.1; websocket: since 0.18.0, cratestack#1268; see cratestack-rpc
+mcp { expose = [tools, resources] } // at most once; see cratestack-mcp (since 0.13.0)
+transport rest | rpc                // at most once; default rest
+procedure <name>(a: T): R           // attribute lines follow, no braces
+mutation procedure <name>(a: T): R
+subscription procedure <name>(a: T): Item  // since 0.18.0, cratestack#1268; see cratestack-rpc
+topic <Name>(key: String | Int | Uuid): Payload  // since 0.18.0, cratestack#1268; one line, no attributes
+query <name>(a: T): ResultType      // declarative SQL, Postgres-only
+view <Name> from <M>, <M> { … }
+part "models/post.cstack"           // root only: this file is more of me (since 0.19.0)
+part of "../schema.cstack"          // in a part, once: I belong to that root (since 0.19.0)
+import "../shared/money.cstack"    // brings in type / enum / mixin only; no `as` (since 0.19.0)
+```
+
+The three directives (`part`, `part of`, `import`) are one line each, a quoted relative path
+and nothing after it. Details in [references/multi-file.md](references/multi-file.md).
+
+Anything else is `unsupported top-level declaration`. **`config` and `version`
+are not keywords** — `@version` is a *field* attribute. `transport grpc` is
+rejected with a migration message; gRPC was removed in 0.8.5.
+
+## The 17 built-in types, and the one you will reach for that does not exist
+
+```
+String  Cuid  Int  BigInt  Float  Boolean  DateTime  Decimal  Json  Bytes  Uuid
+Page  PageInput  CursorPage  CursorPageInput  FindMany  Vector  Geography  Geometry
+```
+
+**`BigInt` is a `.cstack` type** *(since 0.15.4, ADR 0019)*, valid wherever `Int` is: a
+model, view, mixin or `type` field, a procedure argument or return, a `query` parameter,
+`@version`, `@range`, a numeric `@default`, a policy literal. Use it for a value that can pass
+2^53 (an amount in minor units, a counter): `Int` is still an `i64`, but it is still a JSON
+**number**, and every JavaScript or dart2js consumer rounds a number past 2^53 without an
+error. A `BigInt` travels as a canonical decimal **string** on JSON and CBOR, and is a
+`bigint` in TypeScript, `dart:core`'s `BigInt` in Dart and `cratestack::BigInt` (a `Copy`
+newtype over `i64`) in Rust. A user `type`, `model` or `enum` named `BigInt` is a
+duplicate-name error. Wire form, policies and the rest of the contract:
+[cratestack-clients](../cratestack-clients/SKILL.md). On 0.15.3 and earlier there is no
+`BigInt`: `Int` is the only 64-bit integer.
+**`Date` is not a type** (the docs site shows it in one snippet; that snippet
+would not parse). There is no `@db.JsonB`; use the `Json` scalar.
+
+Arity suffixes go at the end: `T` required, `T?` optional, `T[]` list. On a
+schema with a `datasource`, a **list-arity scalar or enum model field is rejected** —
+there is no SQL bind representation for it. Model it as a relation, or drop the
+datasource block if the schema is client-only.
+
+**An `enum` is a string at rest and on the wire.** Postgres gets a `TEXT` column plus a
+membership `CHECK` (no `CREATE TYPE`; `cratestack-migrate/src/emit/postgres/columns.rs`), and
+both codecs send the variant name (`#[serde(rename)]` in
+`cratestack-macros/src/types/enums.rs`).
+
+**Ordinal enums** *(since 0.17.0; on 0.16.0 and earlier `Pending = 1` is a parse error)*. Number
+every variant and the enum is stored and sent as that number:
+
+```cstack
+enum PaymentStatus {
+  Pending = 1
+  Approved = 2
+  Refunded = 5
+
+  @@reserved(3, 4)   // retired numbers; never reuse
+}
+```
+
+Postgres gets `SMALLINT` + `CHECK (col IN (1, 2, 5))` and `@default(Pending)` becomes
+`DEFAULT 1`; SQLite stores the integer; bodies carry the number on both codecs and both
+transports, and the server also accepts the name. Names stay everywhere a human types one:
+query strings (`?status=Approved`; `?status=2` is a 400), policy literals
+(`status != Refunded`), `@default(...)`. The Rust type is `#[repr(i16)]` with `ordinal()` and
+`TryFrom<i16>`; client shapes are in [cratestack-clients](../cratestack-clients/SKILL.md).
+`check` refuses: a partly numbered enum, a number outside 0..=32767 or used twice, a variant on a
+`@@reserved` number, `@@reserved` on a string enum, and an `auth` field whose type is an ordinal
+enum. The numbers are append-only; `cratestack migrate diff` enforces it
+([cratestack-migrations](../cratestack-migrations/SKILL.md)). Never renumber; retire a removed
+variant's number in `@@reserved`. `Pending @value(1)` was never the syntax and never parses.
+Choose ordinals for high-volume, machine-read enums (event kinds, hot-table statuses); keep names
+where people read the database raw (`psql` shows the integer). Design and limits:
+`docs/design/enum-ordinals.md` §9.1. Do not hand-roll a status `Int` with a "1 = Pending" comment
+instead: that loses the `CHECK`, the typed client enums and the filter's named-value
+validation. For a closed set, use an `enum` rather than a `String`. Renaming or removing a variant
+breaks the wire. On 0.16.0 and earlier `cratestack diff` does not report it; *(since 0.17.0)* it
+does, and adding a variant to an enum responses carry is breaking too (see
+[cratestack-cli](../cratestack-cli/SKILL.md)). `DateTime` is `TIMESTAMPTZ` in Postgres but RFC 3339 **text** on both codecs; `Uuid`
+is 16 binary bytes on CBOR; servers also accept text on requests *(since 0.19.6)*. `Bytes`, `Geography` and `Geometry` are a CBOR byte string and a JSON integer array *(since 0.21.0, unreleased on main, cratestack#1425)* (an integer array on CBOR too before 0.21.0). Size levers, ranked: the docs site's "Reducing payload size" guide.
+
+`Page<T>` is return-position only; `PageInput` and `FindMany<T>` are
+argument-position only; `CursorPage<T>` *(since 0.19.4, cratestack#1304)* is return-only and `CursorPageInput` argument-only,
+the keyset siblings of `Page<T>` / `PageInput` (`procedure feed(page: CursorPageInput): CursorPage<Post>`); `Vector(n)` and the spatial types *(PostGIS since 0.10.0)* are field-position
+only and each requires its `extension` block to be declared.
+
+## A schema that exercises the common shapes
+
+```cstack
+datasource db {
+  provider = "postgresql"
+  url = env("DATABASE_URL")
+}
+
+auth Principal {
+  id   Int
+  role String?
+}
+
+mixin AuditFields {
+  createdAt DateTime @default(dbgenerated())
+  updatedAt DateTime @default(dbgenerated())
+}
+
+model Article {
+  @use(AuditFields)
+
+  id        Int     @id
+  title     String  @length(min: 1, max: 200)
+  body      String
+  published Boolean @default(false)
+  authorId  Int
+
+  author    User    @relation(fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@allow("read",   auth() != null)
+  @@allow("update", auth().id == authorId)
+}
+
+model User {
+  id    Int      @id
+  email String   @email @unique
+  posts Article[] @relation(fields: [id], references: [authorId])
+}
+```
+
+Note the has-many side carries `@relation` too. That is mandatory.
+
+## Attributes you will use most
+
+| | |
+| --- | --- |
+| `@id` | Primary key. **Exactly one per model** — a second is now a hard error. Bare `@id` only *(since 0.14.0)*: `@id(...)` is refused, and `@identity` / `@id_foo` are unknown attributes, not keys (inert through 0.15.3, refused *(since 0.15.4)*). |
+| `@default(…)` | `@default(false)`, `@default(dbgenerated())`, `@default(auth().organization.id)`. `dbgenerated()` takes **no argument**. `@default(autoincrement())` is refused, pointing at `dbgenerated()` *(since 0.16.0, cratestack#1128)*: cratestack emits no sequence or identity, so create one in hand-written migration SQL. Before that, `migrate diff` wrote `DEFAULT autoincrement()` into `up.sql` and it failed at apply time. *(since 0.17.0, cratestack#1209)* a function call must be one cratestack defines — `now()` on a `DateTime`, `uuid()` on a `Uuid` or `String`, `cuid()` on a `Cuid` or `String`, each generated by the runtime on create, on server and embedded alike — or one registered on the datasource (`functions = ["my_fn"]`), which is written to the migration verbatim and must exist in the database. `check` refuses any other call (`gen_random_uuid()` unregistered, `cuid2()`, `UUID()`, `uuid(4)`, `uuid()` on an `Int`, `lower(auth().email)`). Through 0.16.0 such calls passed `check` and failed when the migration was applied. *(since 0.17.0, cratestack#1234)* a literal must fit its field: `true`/`false`, an integer, a number, a quoted string (`@default("draft")`, never the bare word), a UUID or RFC 3339 timestamp in quotes for `Uuid`/`DateTime`, an enum variant; `CURRENT_TIMESTAMP` is refused (write `now()`), as are `null` and any literal on `Json`/`Bytes`/lists. Migrations write strings single-quoted. |
+| `@unique` | Single-column unique index. |
+| `@relation(fields: [local], references: [target], onDelete: X, onUpdate: X)` | See below. At most one per field *(since 0.14.0)*. |
+| `@readonly` / `@server_only` | Out of inputs; `@server_only` also strips from responses (procedure outputs with `@computed` fields included *(since 0.13.0)*), is ignored in a procedure argument that decodes the model *(since 0.13.0, #1051)*, and is never a filter or sort key *(since 0.13.0)*. Mutually exclusive, and neither may sit on the PK. Write both bare: `@readonly()` or `@server_only(true)` did nothing on 0.14.0 and is refused *(since 0.14.1, GHSA-69g4-xvcm-vm2j)*. `@server_only` belongs on a model's stored scalar column only; on a `type` or `auth` field, a relation field, a relation key (use `@readonly`) or a `@version` field it did nothing and is refused *(since 0.14.1)*. |
+| `@pii` / `@sensitive` | Audit redaction only; no effect on inputs or outputs. |
+| `@version` | Optimistic locking. Required `Int` (or `BigInt` *(since 0.15.4)*), at most one, never the PK. |
+| `@computed` / `@computed(params: T?)` | Resolver-backed response field. |
+| `@length` `@range` `@regex` `@email` `@uri` `@iso4217` | Validators — see [references/attributes.md](references/attributes.md). On a `type` field too *(since 0.15.4)*, where they run on procedure arguments. |
+| `@@allow("action", expr)` / `@@deny(…)` | Model policy. Actions: `list`, `detail`, `read`, `create`, `update`, `delete`, `all`. Write it exactly so, either quote, the line ending at its `)`: on 0.14.0 any other spelling or action was **silently skipped**; now it is refused *(since 0.14.1, GHSA-69g4-xvcm-vm2j)*. See `cratestack-policy-auth`. |
+| `@@id([a,b])` `@@unique([a,b])` `@@index([a,b], using: gist, opclass: "…", where: "…")` | Model-level keys and indexes. |
+| `@@paged` `@@audit` `@@soft_delete` `@@retain(days: N)` `@@emit(created, updated, deleted)` `@@subscribe` `@@internal("action")` *(since 0.8.14)* | Behaviour markers. |
+
+Exhaustive argument grammars, every error message, and the full validator table:
+[references/attributes.md](references/attributes.md).
+
+## Relations — the five rules that generate most errors
+
+1. **Both sides must declare `@relation`**, including the `Model[]` has-many
+   side. A model-typed field without it is an error.
+2. **Exactly one local field and one reference.** Composite foreign keys are not
+   supported.
+3. **The two scalar types must match exactly.** `Int` ↔ `Int`, not `Int` ↔ `BigInt`.
+4. `onDelete` / `onUpdate` may only appear on the **owning** side — the field
+   typed as a single model. The has-many side owns no column.
+5. Actions are **bare identifiers, not strings**: `Cascade`, `Restrict`,
+   `SetNull`, `SetDefault`, `NoAction`. `SetNull` needs the local field optional;
+   `SetDefault` needs it to carry `@default(…)`.
+
+## Attribute traps that produce confusing errors
+
+**No space before an argument list.** `@computed (params: X?)` is rejected;
+write `@computed(params: X?)`. The same holds for every procedure, query, model and
+view attribute *(since 0.14.1, GHSA-69g4-xvcm-vm2j)*: `@deny (x)`, which the
+generator silently skipped on 0.14.0, is refused, and so is `@@sql ("…")`.
+
+**Field attributes are a closed list per declaration kind** *(since 0.15.4, ADR 0019 D5,
+cratestack#679)*. Through 0.15.3 only a near-miss (`@reedonly`, caught since 0.8.15) was
+refused; a genuinely unknown `@whatever`, `@immutable`, `@string`, `@Id` or `@ID` parsed,
+reported `schema OK` and enforced nothing, and `@Id` was **not** a primary key. Now a field
+takes only what its kind lists, each in its one exact spelling:
+
+| Declaration | Accepts |
+| --- | --- |
+| `model` | `@id` `@unique` `@default(…)` `@relation(…)` `@computed` `@readonly` `@server_only` `@version` `@pii` `@sensitive` `@db_enforce` `@email` `@uri` `@iso4217` `@length(…)` `@range(…)` `@regex(…)` `@rename(from = "…")` `@map("…")` *(since 0.20.1, cratestack#1375)* |
+| `view` | `@id` `@server_only` `@from(Model.field)` |
+| `mixin` | a model's list without `@id` and `@computed` |
+| `type` | `@computed` `@length(…)` `@range(…)` `@regex(…)` `@email` `@uri` `@iso4217` |
+| `auth` | none |
+
+Anything else is an error naming the attribute, the kind and this list. A name that was
+silently inert on a kind is refused there: on a `view` field the validators, `@unique`,
+`@default`, `@relation`, `@readonly`, `@version`, `@pii`, `@sensitive`, `@db_enforce`; on a
+`type` field `@id`, `@unique`, `@relation`, `@readonly`, `@version`, `@pii`, `@sensitive`,
+`@db_enforce`, `@default` (a `type` is decoded as sent, so a default never applied; make the
+field optional) and a validator on a **list** field; every attribute on an `auth` field; `@from`
+off a view. A bare `@default` / `@default()` and a bare `@relation` on a scalar are refused,
+as is `@db_enforce` with no `@range` / `@length` / `@iso4217` beside it (it emitted no
+`CHECK`), and `@from(Model.field)` must name a real model and field. Delete a newly refused
+attribute: it did nothing, so do not swap it for the nearest accepted name unless you want
+that behaviour (`@immutable` meant `@readonly`). **On 0.15.3 and earlier none of this is
+checked, so `schema OK` proves nothing about a field attribute.** Since 0.14.1, procedure,
+query, model and view attributes are closed lists as well (next entry).
+
+**Validators on a `type` field run on everything a client sends — breaking** *(since 0.15.4)*.
+On 0.15.3 and earlier `@length` on a `type` field was accepted and validated nothing, so a
+`type` used as a procedure argument accepted values its author believed were checked. Now a
+`type` takes the full validator family, and the generated check is the first statement of the
+procedure's `authorize`, `authorize_with_db`, `invoke` and `invoke_with_db`, before `@allow`,
+for every argument that is or holds such a `type` (or a `model`, direct, listed, optional or
+nested). A failure is `422` `VALIDATION_ERROR` on REST and `invalid_argument` on RPC, naming
+the path in the body (`args.owner.tags[1].label`) and never the value. A `model` passed as an
+argument validates its stored fields as `POST` does, and a `@computed` field's `params` type is
+validated before any database read. So callers that sent invalid arguments now get `422`: fix
+the caller, or delete a rule that was never meant. A validator on a `type` that only a
+procedure *returns* is refused by `check` (the server builds it, so it would never run).
+Return values are never validated, and generated clients do not validate before sending.
+
+**Procedure, query, model and view attributes are closed lists** *(since 0.14.1,
+GHSA-69g4-xvcm-vm2j)*. Any other name, a case variant (`@Deny`, `@@DENY`) or a typo
+is refused, with a suggestion when one is close. So is text after the closing `)`
+(`;`, `,`, a word), an empty `()`, and an argument list on a bare attribute. On
+0.14.0 and earlier, most of these reported `schema OK` and did nothing.
+
+**Write a known bare attribute bare, and space attributes apart** *(since 0.14.1)*.
+`@readonly()`, `@version()`, `@readonly,`, `@unique(...)` and `@@materialized(...)`
+are refused, and so are `@server_only@unique` (no space) and two `@@` attributes
+on one line (`@@audit @@soft_delete`). On 0.14.0 each parsed with `schema OK`.
+Most did nothing: `@readonly()` left the field writable. The argument lists of
+`@unique(...)` and `@@materialized(...)` were ignored, and on a run-on or shared
+line nothing after the first attribute was read. Put each `@@` attribute on its
+own line.
+
+**A trailing `//` comment is a comment on every attribute line** *(since 0.14.1)*.
+It is stripped, quote-aware (`"http://…"` and `//` inside SQL strings are kept),
+before anything reads the attribute. Two upgrade traps follow, neither raising an
+error:
+
+- An attribute **with** a trailing comment now takes effect. On 0.14.0 a procedure
+  or `@@` attribute followed by `// …` was skipped (a few, such as `@status` and
+  `@@index`, were refused instead): `@allow(…) // note` and
+  `@@allow(…) // note` granted nothing, and `@no_rate_limit // …`, `@stream // …`,
+  `@@soft_delete // …`, `@@audit // …` did nothing. They now apply.
+- An attribute **inside** a field's comment no longer applies. On 0.14.0,
+  `secret String // was @server_only` kept `secret` off the wire; now it is an
+  ordinary field and is returned to clients. The same goes for `@readonly`,
+  `@pii`, `@id` and every other field attribute.
+
+**Invisible characters are refused in attribute text** *(since 0.14.1)*, strings and
+SQL bodies included: zero-width characters, the BOM, variation selectors in a
+policy attribute, non-whitespace controls, and more. Bidi controls and ESC are
+refused anywhere in the file. Visible non-ASCII (`é`, CJK, most emoji) is fine,
+but a ZWJ emoji (a family) or a keycap emoji is refused even inside a string.
+The full list is in
+[references/attributes.md](references/attributes.md), section "Attribute text".
+
+**`@allow` at field position is rejected.** Field-level access policy never
+existed. Use model-level `@@allow("read", …)`, or `@readonly` / `@server_only`.
+`@custom` was renamed to `@computed` *(0.8.11)*; `@pb` was removed with gRPC *(0.8.5)*.
+
+**`using:` is a bare identifier, `opclass:` is a quoted string.**
+`@@index([embedding], using: ivfflat, opclass: "vector_l2_ops")`. The `where:`
+argument on `@@unique` / `@@index` is *since 0.8.14*. The docs site
+shows `using: "gist"` with quotes — that is wrong and will be rejected.
+
+**`@@id([...])` parses and then fails at macro expansion.** `cratestack check`
+validates composite primary keys, and all three entry macros reject them
+outright. Treat composite PKs as not yet usable, whatever `check` says.
+
+## Storage names: `@@map` and `@map` *(since 0.20.1, cratestack#1375)*
+
+`@@map("<table>")` on a model and `@map("<column>")` on a stored scalar field set the **SQL name
+only**. Use them to adopt an existing database whose tables are named differently (`bank`, not
+`banks`) instead of renaming the tables.
+
+```cstack
+model Bank {
+  code String @id
+  bic  String @map("bic_code")
+  @@map("bank")
+}
+```
+
+- Routes (`/banks`), RPC op ids (`model.Bank.list`), client accessors, generated identifiers and
+  wire field names do **not** change; generated clients are byte-identical. The contract and
+  digests do not move, and `cratestack diff` reports it as Internal.
+- Grammar: one double-quoted name matching `^[a-z_][a-z0-9_]*$`, at most 63 bytes, no `.`, no
+  PostgreSQL or SQLite reserved word (`"user"`, `"order"` are refused: generated SQL does not quote
+  names; the list includes `true`, `false`, `values`, `last`), a column not a PostgreSQL system
+  column (`xmin`, `xmax`, `cmin`, `cmax`, `ctid`, `oid`, `tableoid`), a table not starting
+  `cratestack_`, `sqlite_` or `pg_`. One marker per model or field.
+- Unique: table names across models and views (a `@@map("deposits")` beside `model Deposit` is
+  refused); final column names among a model's *stored* fields only (relation, model-typed and
+  `@computed` fields are not compared, so `ownerId Int @map("owner")` may sit beside `owner User`),
+  including the `deleted_at` of `@@soft_delete`. The raw snake_case identifier check on all fields is
+  unchanged by `@map`: `fooBar` beside `foo_bar @map("x")` is still refused.
+- Soft delete: on a `@@soft_delete` model no field may be mapped to `deleted_at`, and `deletedAt`
+  may not carry `@map`.
+- Embedded: `include_embedded_schema!` has no migrate step, so adding or changing `@@map` on a device
+  creates a new empty table (old rows orphaned) and adding `@map` to an existing column errors;
+  re-sync or wipe embedded caches.
+- Placement: stored scalar fields of models and mixins only. Refused on relation fields (also
+  to-many back-references), `@computed` fields, and fields of a `view`, `type` or `auth`. `@@map`
+  on a view is refused by the closed `@@` list.
+- Hand-written SQL (view `@@server_sql` / `@@sql`, `query` blocks, `up.pre.sql`) must use the
+  mapped names.
+- Changing a mapping later is a rename for `cratestack migrate`; see `cratestack-migrations`.
+- In a release before 0.20.1 both are refused (`unsupported attribute`).
+
+**An unrecognised `@@` attribute** was silently inert on 0.14.0 and earlier: the
+near-miss check only ran on field attributes, so `@@check(…)` or
+`@@sofT_delete` reported `schema OK` and did nothing. It is refused *(since 0.14.1,
+GHSA-69g4-xvcm-vm2j)*: a model takes only `@@allow` `@@deny` `@@emit` `@@paged`
+`@@audit` `@@soft_delete` `@@retain` `@@subscribe` `@@id` `@@unique` `@@index`
+`@@internal` `@@rename` `@@map` *(since 0.20.1, cratestack#1375)* (and `@@mcp`); a view only `@@allow` `@@deny`
+`@@server_sql` `@@embedded_sql` `@@sql` `@@materialized` `@@no_unique`.
+
+## Views and `query` blocks
+
+A `view` projects over one or more models and needs a SQL body:
+
+```cstack
+view ActiveNote from Note {
+  id    Int    @id @from(Note.id)
+  title String @from(Note.title)
+
+  @@embedded_sql("SELECT id, title FROM notes WHERE archived = 0")
+}
+```
+
+`@@server_sql` for Postgres, `@@embedded_sql` for SQLite, `@@sql` for both. A
+view needs **exactly one `@id` field** unless it declares `@@no_unique`.
+`@@materialized` requires a server body and cannot combine with `@@no_unique`.
+`@@allow` on a view supports only `"read"`; a view's `@@deny` must name `"read"` or
+`"all"` *(since 0.14.1; on 0.14.0 any other action was silently skipped)*.
+**`@from(...)` changes nothing** — documentation of provenance that no generator
+reads. Since 0.15.4 it must name a real `Model.field`; through 0.15.3 nothing checked it.
+
+A `query` block *(since 0.11.0)* is raw Postgres SQL with positional parameters:
+
+```cstack
+query loyaltyFeeSummary(userId: String, cutoff: DateTime): LoyaltyFeeSummary
+  @@sql("""
+    SELECT COALESCE(SUM(discount), 0)::bigint AS "total"
+    FROM loyalty_fee_events
+    WHERE user_id = $1 AND created_at >= $2
+  """)
+  @allow(auth() != null && auth().subjectId == userId)
+```
+
+Rules that bite: the result type must be a **`type` block**, never a model (raw
+SQL gets none of a model read's soft-delete or policy filtering). Parameters must
+be **required scalars** from a restricted set (`String`, `Cuid`, `Int`, `BigInt` *(since 0.15.4)*,
+`Float`, `Boolean`, `DateTime`, `Uuid`, `Bytes` — no `Decimal`, no `Json`). Every declared
+parameter must be referenced by its `$N`, and every `$N` must exist — checked in
+both directions. A `query` understands only `@@sql`, `@allow`, `@deny`, and is
+rejected entirely under `provider = "none"`.
+
+**Prefer `"""…"""` over `"…"` for SQL bodies.** Triple-quoted is verbatim;
+single-quoted unescapes `\"` and `\\`. And keep every other attribute on its own
+line. On 0.14.0 and earlier, `@@sql("…") @allow(…)` on one line was refused as a
+body that is "not a quoted string". Since 0.14.1 the two are read as separate
+attributes *(GHSA-69g4-xvcm-vm2j)*. Own lines work on both.
+
+The correspondence between the declared result `type`'s fields and the SQL's
+actual `SELECT` list is deliberately **not** checked. A mismatch surfaces at the
+first execution as `sqlx::Error::ColumnNotFound`.
+
+## Procedures
+
+```cstack
+mutation procedure reindex(args: ReindexArgs): ReindexResult
+  @allow(auth() != null)
+  @no_rate_limit
+```
+
+Attribute lines follow the declaration, unbraced. `procedure` is a query,
+`mutation procedure` is a mutation. Per-argument documentation comes from
+`/// @param <name> <description>` doc comments above the declaration.
+
+**Layout decides which declaration an attribute belongs to** *(since 0.14.1,
+GHSA-69g4-xvcm-vm2j)*. The same rules hold for `query` blocks:
+
+- A procedure's attributes are the lines under its signature, **up to the first
+  blank line**. A blank line between the signature and an attribute, or between
+  two attributes, is refused (`is not directly under a signature`). On 0.14.0
+  blank lines were skipped, so a `@deny(…)` written above the *next* signature
+  after a blank line silently belonged to the declaration before it.
+- `//` and `///` comment lines inside the run are fine.
+- The run must be followed by a **blank line** before the next declaration.
+  Comment lines alone do not separate them (`is the last attribute of procedure
+  …`).
+- Several attributes may share a line, separated by a space
+  (`@no_idempotency @deny(…)`); each is read. Run together with no space
+  (`@deny(x)@allow(y)`) they are refused. On 0.14.0 a second attribute on the line
+  was folded into the first, and neither was read.
+
+| Attribute | Notes |
+| --- | --- |
+| `@allow(expr)` / `@deny(expr)` | Single `@`, unlike models. Evaluated in Rust, not SQL. |
+| `@stream` | Bare only (`@stream()` is refused *(since 0.14.1)*; on 0.14.0 it did nothing). **Requires a list return type.** |
+| `@no_idempotency` | Bare only. No extension gate. |
+| `@no_rate_limit` | Bare only. **Requires `extension rate_limit { }`.** |
+| `@isolation("serializable")` | Quoted level. **Ignored by every release through 0.14.0.** Enforced since 0.14.1 *(GHSA-r67q-4qqq-g9gm)*: the procedure runs in one retried transaction at that level, its method takes `db: &IsolatedCratestack`, and it is refused with `@stream` or under `provider = "none"` / `db = None`. See `cratestack-data-integrity`. |
+| `@api_version("v1")` | Alphanumeric plus `.`, `-`, `_`. Mounts at `/<version>/$procs/<name>` (REST only; the RPC op id stays `procedure.<name>`). Generated clients call the versioned path *(since 0.13.0)*; before that they ignored it and 404'd. |
+| `@deprecated` / `@deprecated("msg")` | Adds `Deprecation` response headers. |
+| `@status(202)` | 2xx only, and **rejected under `transport rpc`**. |
+| `@authorize(Model, action, args.path)` | `detail`/`read`, `update`, `delete` only. Three arguments and the action are checked by `cratestack check` *(since 0.14.1)*; on 0.14.0 a malformed or misspelled one (`@authorise`) was skipped, and `authorize_with_db` returned `Ok` without consulting the database. |
+| `@authn(maxAge: 300, amr: ["hwk"], acr: ["aal2"])` | *(since 0.17.1, cratestack#1244)* How fresh and how strong the caller's authentication must be: any of `maxAge` (1 to 31536000 seconds), `amr` (all present), `acr` (one matches), at least one, at most one `@authn`. Checked after `@allow`; unmet is a 401 step-up refusal. See `cratestack-policy-auth`. |
+| `@device_auth(role: "beginEnrolment")` | *(since 0.19.7, cratestack#1303)* Marks one leg of a device's enrolment, renewal or revocation; only `generate-dart --preset fespalier` reads it (it emits a `DeviceAuthServer`, see `cratestack-clients`); every other generator and the macros ignore it. `role` is one of `beginEnrolment`, `confirmEnrolment`, `beginRenewal`, `confirmRenewal`, `revoke` (the **five required roles, all-or-nothing**) or the optional `sendEnrolmentCode`; `proof: "<field>"` on `confirmEnrolment` only (a `String` / `String?` field). Each role on one procedure, one marker per procedure. Legs must be exactly `@allow(true)`; `revoke` must **not** admit a caller with no session (semantic: `@allow(auth() != null)` ok, `@allow(true || auth() != null)` refused; no `@allow` is deny-by-default, accepted but no device can be revoked). Top-level `procedure` / `mutation procedure` only: not on a model, field, `type`, `query`, `view`, a subscription procedure or `@stream`. See `references/attributes.md`. |
+
+`@status(204)` is accepted but the encoder still attaches a body — a known,
+documented limitation. Do not use it.
+
+That table plus `@mcp` is the whole list *(since 0.14.1, GHSA-69g4-xvcm-vm2j)*. Any
+other procedure attribute is refused; on 0.14.0 it parsed and did nothing, and a
+misspelled `@deny` left the procedure more permissive than written. A `subscription procedure` *(since 0.18.0,
+cratestack#1268)* keeps only `@allow`, `@deny`, `@authn`, `@authorize` and
+`@api_version`, returns one item type (not `T[]`), and shares the name space of
+procedures; see `cratestack-rpc`'s `references/subscriptions.md`.
+
+## `@computed` — the restrictions are the whole story
+
+`@computed` may only appear on a `type` or a `model` field, may appear once, and
+**may not be combined with any other field attribute** — a computed field is
+resolved at response-composition time, never stored and never accepted as input,
+so no other attribute applies to it. The `params` form requires the trailing `?`:
+`@computed(params: T?)`, where `T` must be a declared `type` block.
+
+Beyond the field itself: a computed field's own type may not be a model and may
+not itself contain computed fields; a procedure **argument** may not reference a
+computed-bearing type (even through `Page<T>` / `FindMany<T>`); a `@stream`
+procedure may not return computed-bearing items; and computed fields can never
+appear in `@@id`, `@@unique` or `@@index`.
+
+## The collision rules — where surprising errors come from
+
+Nine independent families, all reported by `cratestack check`. The ones that
+actually catch people:
+
+- **`self`, `Self`, `super`, `crate`** are unusable as any identifier. Every
+  *other* Rust keyword is fine (escaped as `r#type` at codegen).
+- **`part`, `import`** are unusable as any identifier *(since 0.13.0)* — reserved
+  as the multi-file directives (`part`, `part of`, `import`; *since 0.19.0*,
+  see [references/multi-file.md](references/multi-file.md)), not for codegen. Exact and case-sensitive:
+  `Import` and `partOf` are fine.
+- **snake_case collisions**: `myField` and `my_field` on one model both normalize
+  to the same column. So do `model Foo` and `model foo`.
+- **Route collisions**: `model Bus` and `model Buse` both route to `/buses`.
+- **Builder collisions**: a `model Task` reserves `TaskBuilder`,
+  `CreateTaskInputBuilder`, `TaskWhereBuilder` and four more — declaring a type
+  by one of those names is rejected.
+- **Handler collisions**: `model Order` plus `procedure getOrder` both generate
+  `handle_get_order`. `@@internal(...)` does **not** exempt you — the handler
+  functions are still emitted.
+- **Client method collisions**: `model Procedure` collides with the `Client`
+  built-in `procedures`; `procedure new` collides with `ProceduresClient::new`.
+
+## `transport rpc` — what changes at schema level
+
+Exactly one thing the parser cares about: `@status(...)` on a procedure is
+**rejected** under it. Until cratestack#1267 (0.18.0) `@@subscribe` on a model
+also **required** `transport rpc`; it now works under REST too
+(`GET /<plural>/$subscribe`).
+Everything else about RPC is a codegen concern — see `cratestack-rpc`.
+
+## Deeper references
+
+- [references/attributes.md](references/attributes.md) — every attribute, exact
+  argument grammar, and the verbatim error text.
+- `cratestack-policy-auth` — the `@@allow` / `@@deny` expression language.
+- `cratestack-data-integrity` — what `@@audit`, `@@soft_delete`, `@version`,
+  `@@paged` and idempotency actually do at runtime.

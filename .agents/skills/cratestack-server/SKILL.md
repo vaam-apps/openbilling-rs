@@ -1,0 +1,885 @@
+---
+name: cratestack-server
+description: Building a CrateStack HTTP server — include_server_schema! with db = Postgres or db = None, the generated Cratestack runtime and Axum routers, AuthProvider wiring, the REST query-parameter contract, error envelope, codecs, events and the transactional outbox, idempotency and rate-limit layers, and the signed-transport EnvelopeLayer (envelope / cose features, COSE-signed requests, envelope_layer). Load when working in a crate that depends on package = "cratestack-pg" or "cratestack-api", or when a question concerns generated routes, 403/404/422 behaviour, list filters, or router() arguments.
+---
+
+# Server (`include_server_schema!`)
+
+> **Verified against CrateStack 0.20.6.** CrateStack is pre-1.0 and its crates version
+> together, so a minor release can break any of this. Check what you are actually on —
+> `cratestack --version`, and the `cratestack-*` version in `Cargo.toml` — before relying
+> on a fact here. Anything that arrived in a specific release is marked *(since X.Y.Z)*;
+> the full feature-to-release map is in
+> [cratestack/references/version-history.md](../cratestack/references/version-history.md).
+
+```toml
+# owns a Postgres database
+cratestack = { package = "cratestack-pg", version = "0.19" }
+# procedures only, no database at all
+cratestack = { package = "cratestack-api", version = "0.19" }
+
+# either way: the generated structs derive through bare `serde::` paths
+serde = { version = "1", features = ["derive"] }
+```
+
+```rust
+include_server_schema!("schema.cstack", db = Postgres);
+include_server_schema!("schema.cstack", db = None);
+```
+
+The first argument is the schema's **root** file; if it uses `part` / `import`
+*(since 0.19.0)* every part and import is tracked as a rebuild dependency
+through the generated `SCHEMA_FILES` (only emitted for a multi-file schema), while
+`SCHEMA_SOURCE` stays the root's text and `SCHEMA_SHA256` is unchanged by a split.
+
+After `db`, two optional arguments, in either order, each at most once:
+`decimal = RustDecimal | BigDecimal`, **required** if the schema declares a
+`Decimal` anywhere; and `contracts = "schema.contracts.lock"` *(since 0.15.2,
+cratestack#1123)*, the compatible-contract lock `cratestack contract lock` writes, so
+the server keeps accepting older signed clients and serving older compact
+contracts. Nothing else is accepted
+(`crates/cratestack-macros/src/include/schema_args.rs`).
+
+The macro checks that `db = …` and the schema's own
+`datasource { provider = … }` agree (`Postgres` ↔ `"postgresql"`, `None` ↔
+`"none"`), and that the facade you depend on can actually satisfy it — asking for
+`db = Postgres` under `cratestack-api` is one clear error rather than a wall of
+missing-`sqlx` errors.
+
+## The minimal server
+
+```rust
+use cratestack::axum::Router;
+use cratestack::include_server_schema;
+use cratestack::sqlx::PgPool;
+use cratestack::{AuthProvider, CratestackContext, CratestackError, RequestContext, Value};
+use cratestack_codec_json::JsonCodec;
+
+include_server_schema!("examples/server_basic.cstack", db = Postgres);
+
+#[derive(Clone)]
+struct HeaderAuthProvider;
+
+impl AuthProvider for HeaderAuthProvider {
+    type Error = CratestackError;
+
+    async fn authenticate(&self, request: &RequestContext<'_>)
+        -> Result<CratestackContext, Self::Error>
+    {
+        let mut fields = Vec::new();
+        if let Some(id) = request.headers.get("x-auth-id").and_then(|v| v.to_str().ok()) {
+            fields.push(("id".to_owned(), Value::Int(id.parse().map_err(
+                |e: std::num::ParseIntError| CratestackError::BadRequest(e.to_string()))?)));
+        }
+        Ok(if fields.is_empty() {
+            CratestackContext::anonymous()
+        } else {
+            CratestackContext::authenticated(fields)
+        })
+    }
+}
+
+#[derive(Clone)]
+struct Procedures;
+impl cratestack_schema::procedures::ProcedureRegistry for Procedures {}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let pool = PgPool::connect(&std::env::var("DATABASE_URL")?).await?;
+    let db = cratestack_schema::Cratestack::builder(pool).build();
+
+    let app: Router = cratestack_schema::axum::router(
+        db,
+        Procedures,
+        (),                                  // computed-field resolver
+        JsonCodec,
+        HeaderAuthProvider,
+        cratestack::DEFAULT_BODY_LIMIT_BYTES,
+    );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:3000").await?;
+    cratestack::axum::serve(listener, app.into_make_service()).await?;
+    Ok(())
+}
+```
+
+`async fn authenticate` satisfies the trait directly. The facades re-export the
+codecs at the root *(since 0.15.4, cratestack#1147)*, so `cratestack::JsonCodec`
+and `cratestack::CborCodec` work without a direct `cratestack-codec-*`
+dependency; the committed example still imports the codec crate. The `()` in third position
+is the computed-field resolver — the macro emits `impl ComputedFieldResolver for ()`
+only when the schema declares zero `@computed` fields.
+
+Under `db = None` the builder takes **no arguments**:
+`cratestack_schema::Cratestack::builder().build()`.
+
+## Storage names and hand-written SQL *(since 0.20.1, cratestack#1375)*
+
+`@@map("<table>")` / `@map("<column>")` change only the SQL names the generated code uses. Routes,
+op ids and the generated types keep the model and field names. Raw SQL you write yourself (view
+`@@server_sql`, `query` blocks, `up.pre.sql`, ad-hoc `sqlx` against the same tables) must use the
+mapped names (`bank`, `bic_code`), not the derived ones. Audit rows redact a mapped `@pii` /
+`@sensitive` field and record a mapped `@id`. That fix ships with this feature, and the Postgres `storage_map_audit` tests cover it. See `cratestack-schema`.
+
+## What you get, by name
+
+Everything lands in `pub mod cratestack_schema`. For a `model Article`:
+
+| Name | What it is |
+| --- | --- |
+| `Article`, `ArticleBuilder` | the row struct (field names verbatim from the schema) |
+| `CreateArticleInput`, `UpdateArticleInput` | inputs, with `validate()` |
+| `ArticleWhere`, `ArticleSortField`, `ArticleOrderByClause`, `ArticleFindManyInput` | typed query surface; no member for a `@server_only` field *(since 0.13.0)* |
+| `models::ARTICLE_MODEL` | the `ModelDescriptor` |
+| `article::<field>()` | `FieldRef` accessors and relation paths; the server-side way to filter or sort by a `@server_only` field (they read no request) |
+| `events::ArticleCreatedEvent` … | under `db = Postgres` with `@@emit` |
+
+Runtime, under `db = Postgres`: `Cratestack::builder(pool)` →
+`.with_audit_sink(…)` (and `.with_backplane(…)` *(since 0.18.0)*) → `.build()`. Then
+`db.pool()`, `db.transaction(|tx| …)`, `db.events()`, `db.views()`, `db.queries()`,
+`db.bind_context(ctx)`, `db.bind_auth(principal)`, one delegate accessor per model,
+and, when the schema has them, `db.subscriptions()` *(since 0.17.1)* and `db.topics()`
+*(since 0.18.0)* (see "Events and the outbox" below).
+
+## Building the pool: `PgPoolConfig` *(since 0.20.2, cratestack#1385)*
+
+`Cratestack::builder(pool)` takes a `PgPool`. Build it with `cratestack::PgPoolConfig`
+(`cratestack-pg`; also `cratestack_service::PgPoolConfig`) so the crate never names sqlx:
+
+```rust
+let config = cratestack::PgPoolConfig::from_url(&url)?        // BadRequest on a bad URL
+    .max_connections(2)
+    .acquire_timeout(std::time::Duration::from_secs(5))
+    .test_before_acquire(true)
+    .session_setting("statement_timeout", "30000")
+    .session_setting("lock_timeout", "10000")
+    .application_name("my-service");
+let pool = config.connect_lazy()?;      // Result<PgPool, _>; `.connect().await?` opens one connection
+config.verify_settings(&pool).await?;   // Unavailable naming the setting if the server did not apply it
+let db = cratestack_schema::Cratestack::builder(pool).build();
+```
+
+- Session settings are startup `-c` options appended after the URL's `options=`, so they win.
+  `DateStyle`, `client_encoding`, `TimeZone`, `extra_float_digits` and `application_name` are
+  refused (`BadRequest`, any case): sqlx sets them at startup, after `-c` options. Use
+  `.application_name(&str)` for the last. The same five names in the URL's own `options=`
+  (`-c TimeZone=UTC`) are also refused by `from_url`, since sqlx's startup parameter overrides them. Names match `[a-z_][a-z0-9_.]*`; a bad name or `max_connections(0)` is `BadRequest` from
+  `connect_lazy`/`connect`, not from the setter.
+- `verify_settings` compares as the server renders values (`30000` equals `30s`); run it at
+  start-up, since a pooler in transaction mode silently drops startup options. Mismatch is
+  `Unavailable`; an unknown name or an unchangeable one (`shared_buffers`) is `BadRequest`.
+- `connect().await` errors: `BadRequest` for a config fault (unknown database/role, bad setting,
+  TLS failure; never echoes the URL), `Unavailable` when the database cannot be reached or is going away (57P01/57P02/57P03, class 08).
+- URLs only: a libpq `host=.. dbname=..` DSN is `BadRequest`. There is no `connect_timeout`
+  knob (sqlx has none); `acquire_timeout` bounds the wait and the connect.
+- Before 0.20.2 there is no such type; use sqlx's `PgPoolOptions`.
+
+*(since 0.14.1, GHSA-r67q-4qqq-g9gm)* The builder gains
+`.with_isolation_max_retries(n)`, and a schema that declares an `@isolation`
+procedure also gets `IsolatedCratestack`: the handle that procedure's
+`ProcedureRegistry` method receives instead of `&Cratestack`. It has the model
+accessors, `bind_context` / `bind_auth`, `transaction(..)` (a savepoint) and
+`dispatch_audit_sink`, and **no** `pool()`, `events()`, `views()` or
+`queries()`. On every release through 0.14.0 `@isolation` was inert. See
+`cratestack-data-integrity`.
+
+**Under `db = None`, most of that does not exist** — no `pool()`, no
+`transaction()`, no `events()`, no `views()`, no `queries()`, no
+`with_audit_sink()`. They are omitted entirely rather than stubbed, which is the
+right call but does mean "method not found" is the expected error, not a bug.
+
+Routers: `router(db, registry, resolvers, codec, auth_provider, body_limit_bytes)`,
+plus `model_router(db, resolvers, codec, auth_provider)` (Postgres only),
+`procedure_router(db, registry, resolvers, codec, auth_provider)`, and
+`rpc_router(…)` under `transport rpc`. `body_limit_bytes` is applied as the
+outermost `DefaultBodyLimit` and **cannot be overridden by re-layering**.
+`DEFAULT_BODY_LIMIT_BYTES` is 2 MiB.
+
+## Routes
+
+`<plural>` = `pluralize(snake_case(ModelName))`, so `Article` → `/articles`.
+
+| Method | Path | Success |
+| --- | --- | --- |
+| GET | `/<plural>` | 200 |
+| POST | `/<plural>` | **201** |
+| GET | `/<plural>/{id}` | 200 |
+| PATCH | `/<plural>/{id}` | 200 |
+| DELETE | `/<plural>/{id}` | 200 |
+
+Procedures: `POST /$procs/<procedureName>` — the procedure name **verbatim**, not
+snake-cased — or `POST /<version>/$procs/<name>` with `@api_version`. The request
+body is the generated `procedures::<name>::Args`: one key per declared parameter,
+named verbatim, so `procedure f(args: X)` takes `{"args": {…}}` and
+`procedure g(account: Account)` takes `{"account": {…}}`. Before 0.13.0 the generated `ROUTE_TRANSPORTS`
+descriptor for a versioned procedure named `/$procs/<name>`. The REST op
+resolvers match `MatchedPath` against it, so for that procedure every lookup
+missed, `@no_idempotency` and `@no_rate_limit` silently did nothing, and the
+generated clients 404'd. All of this is fixed *(since 0.13.0)*: the router, the
+descriptor and every client share
+`cratestack_core::procedure_route::procedure_rest_route_path`.
+
+Subscriptions are `GET` routes answering SSE *(since 0.18.0)*: `GET
+/<plural>/$subscribe` for an `@@subscribe` model and `GET /$procs/<name>` for a
+`subscription procedure`; see "Events and the outbox" and `cratestack-rpc`.
+
+A verb suppressed with `@@internal("create")` is never registered: on a path
+that still serves another verb it is axum's bare 405, and a path whose verbs are
+all suppressed is a bare 404, with no fallback.
+
+## The list-route query contract
+
+```
+?limit=50&offset=100
+&fields=id,title
+&include=author,author.org
+&includeFields[author]=id,email
+&sort=-createdAt,title            (or orderBy=, but never both)
+&where=(a=1,b=2)|not(c=3)         ( , = AND   | = OR   () groups )
+&or=a=1|b=2                       (legacy)
+&computedParams={"field":{…}}
+&<field>__<op>=<value>            (everything else)
+```
+
+Filter operators, by field shape:
+
+- every required or optional scalar (not a scalar list): `eq`, `ne`, `in`
+  (comma-separated). No `__` suffix means `eq`. Optional fields got these
+  *(since 0.13.0, #953)*; before, `?optField=x` was a 400.
+- comparable **required** fields (`String`, `Cuid`, `Int`, `BigInt` *(since
+  0.15.4)*, `Float`, `DateTime`, `Decimal`, `Uuid`): `lt`, `lte`, `gt`, `gte`. An
+  optional field has none (`supports_comparison` in
+  `crates/cratestack-macros/src/shared/attrs.rs`).
+- `String` / `Cuid`: `contains`, `startsWith`
+- optional fields: `isNull` (value parsed as a bool; `false` means `IS NOT NULL`)
+
+A `BigInt` value is its canonical decimal string; an ordinal enum *(since 0.17.0)* is
+filtered by variant **name** only (`?status=2` is a 400 naming the accepted values).
+
+Relation filters use the path: `?author.email__eq=x@y.z` for to-one, and a
+**mandatory quantifier** for to-many — `?comments.some.body__contains=foo`, or
+`.every.`, or `.none.`. Omitting the quantifier is a 400 that names the three.
+
+**A relation path sees only what the caller may read** *(since 0.13.0,
+GHSA-p55v-6xv5-93p3)*. Every relation filter and sort (query parameters,
+`where=`, `or=`, `sort=`, the RPC `list` slots, `@@paged` `totalCount`, the typed
+builder's `post::author().email().eq(..)` and `.asc()`/`.desc()`) applies the
+related model's read policy and `@@soft_delete` filter, per hop. A hidden related
+row behaves as if it did not exist, matching `?include=`: a to-one filter never
+matches it (`ne` and `isNull` included), `none` and `every` over only hidden
+children are true, and a sort key through it is `NULL`, sorted last. **A related
+model with no read `@@allow` matches nothing** — add the `@@allow("read", …)`
+that says who may see it. Self-relations (`manager User?` on `User`) now
+correlate with the outer row. Before 0.13.0 none of this held, and a hidden
+column could be recovered with `startsWith` one character at a time.
+
+Hand-built relation filters and sorts take the scope explicitly — every
+constructor gained a `RelatedReadScope` argument, with no default:
+`FilterExpr::relation` / `relation_some` / `relation_every` / `relation_none`,
+`RelationFilter::new` and `RelationHop::new` take it last,
+`OrderClause::relation_scalar(parent_table, parent_column, related_table,
+related_column, column, scope, direction)` takes a terminal `column` instead of
+a rendered `value_sql`, and multi-hop sorts use `OrderClause::relation_path(&hops,
+column, direction)`. Pass `<RELATED>_MODEL.related_read_scope()`.
+`RelatedReadScope::Unscoped` reads the raw table: only for trusted server code,
+never for a filter or sort whose values a caller controls.
+The same release also changed, and these break or change hand-written code too:
+`RelationFilter` and `RelationHop` have a new public `scope` field that a struct
+literal must set; `OrderTarget::RelationScalar` is now `{ hops, column }`;
+`order_value_sql` still compiles but renders no scope and mis-correlates
+self-relations, so never build a server-side sort from it; relation filters
+passed to `update_many` / `delete_many` in process now apply the related model's
+**read** scope, so they can match fewer rows; and `preview_scoped_sql` numbers
+binds like the executed query (deny rules first).
+
+**`@server_only` fields are not filter or sort keys** *(since 0.13.0,
+[GHSA-ch54-jqw2-vpp5](https://github.com/cratestack/cratestack/security/advisories/GHSA-ch54-jqw2-vpp5))*.
+Such a key is refused exactly like an undeclared field — `400 unsupported query
+filter`, `422 unsupported sort field` — on every operator, in `where=` / `or=`,
+through relation paths (`?owner.secret=`, `sort=owner.secret`), over RPC, and in
+a `FindMany<Model>` argument (the `where` key is ignored, the sort field does
+not decode). `includeFields[<relation>]` naming one is refused too. On 0.2.0
+through 0.12.0 any caller who could list a model could test and order by them.
+
+Two things that surprise people: **an omitted `limit` is coerced to
+`MAX_LIST_LIMIT` (1000)**, not to "unbounded"; and the fetch route
+(`GET /<plural>/{id}`) accepts **only** `fields`, `include`, `includeFields[…]`
+and `computedParams` — anything else is a 400.
+
+A `@@paged` model returns
+`{ items, totalCount, pageInfo { limit, offset, hasNextPage, hasPreviousPage } }`,
+where `totalCount` is a real `COUNT(*)` reusing the page query's exact WHERE and
+policy scope.
+
+`?cursor=` *(since 0.19.4, cratestack#1304)* switches a `@@paged` list to keyset paging: `cursor=` (empty) is the first page, and
+`pageInfo.nextCursor` (present only when more rows remain) continues. Pair it with a stable `sort`; the
+primary key is the tiebreaker. It is opaque, unsigned and bound to the sort, not the filters, and is
+`AND`ed with filters and the read policy. 400s: any bad cursor, `cursor` + `offset`, a non-`@@paged`
+model, relation-path or repeated sort fields, Boolean/enum/JSON sort columns. `cursor` is a reserved
+query key. Full rules and when to choose it over offset: [cratestack-data-integrity](../cratestack-data-integrity/SKILL.md).
+
+## Errors
+
+```json
+{ "code": "VALIDATION_ERROR", "message": "…", "details": null }
+```
+
+Encoded with the same negotiated codec as a success body. This is the REST shape;
+`transport rpc` answers with `RpcErrorBody`'s lowercase codes (`invalid_argument`,
+`not_found`, `permission_denied`, …) instead.
+
+| Variant | code | status |
+| --- | --- | --- |
+| `BadRequest`, `Codec` | `BAD_REQUEST`, `CODEC_ERROR` | 400 |
+| `Unauthorized` | `UNAUTHORIZED` | 401 |
+| `Forbidden` | `FORBIDDEN` | 403 |
+| `NotFound` | `NOT_FOUND` | 404 |
+| `NotAcceptable` | `NOT_ACCEPTABLE` | 406 |
+| `Conflict`, `ConflictTyped` | `CONFLICT` | 409 |
+| `TransactionAborted` *(since 0.14.1)* | `TRANSACTION_ABORTED` | 409 — only an `@isolation` procedure's own exhausted retries; any other abort is answered 500 `INTERNAL_ERROR` (see `cratestack-data-integrity`) |
+| `PreconditionFailed` | `PRECONDITION_FAILED` | 412 |
+| `UnsupportedMediaType` | `UNSUPPORTED_MEDIA_TYPE` | 415 |
+| `Validation` | `VALIDATION_ERROR` | **422** |
+| `TooManyRequests` | `TOO_MANY_REQUESTS` | 429 |
+| `AuthRefused` *(since 0.17.1)* | `UNAUTHORIZED` / `FORBIDDEN` | 401 / 403 — an `AuthRefusal`, see `cratestack-policy-auth` |
+| `Database`, `DatabaseTyped`, `Internal` | `DATABASE_ERROR`, `INTERNAL_ERROR` | 500 |
+| `Unavailable` | `UNAVAILABLE` | 503 (also, *(since 0.20.2, cratestack#1385)*, the sqlx errors `PoolTimedOut`, `PoolClosed`, `WorkerCrashed`, `Io`; TLS, protocol and decode errors stay `DATABASE_ERROR` 500) |
+
+4xx messages (and `Unavailable`'s 503) are the caller-supplied string, except
+`Codec`, whose 400 always reads `invalid request payload`. **500 messages are
+canned** (`internal error`) and the real detail goes to tracing only. `details`
+is `null` on the wire for every error except an `AuthRefused` *(since 0.17.1)*,
+which may carry `details`, extra top-level members (the envelope's `extra` map) and
+`WWW-Authenticate` challenges; the `@authn` step-up refusal is one
+(`CratestackError::into_response`, `crates/cratestack-core/src/error/response.rs`).
+Before 0.17.1 `details` was always `null`.
+
+**Reading a database error** *(since 0.21.0, unreleased on main, a24-context#745, cratestack#1429)*. A
+`DatabaseTyped` / `ConflictTyped` error carries SQLSTATE, constraint, table, column and schema. Read them
+with `CratestackError::db_sqlstate()`, `db_constraint()`, `db_table()`, `db_column()`, `db_schema()` and
+`db_message()` (the server's own text); each is `None` for any other variant, including the untyped
+`Database(String)`. **`Display` is unchanged and still prints the server message, which can quote row
+values: log the accessors, not `Display`** (and keep `db_message()` out of such logs). Classify on
+SQLSTATE plus constraint plus table, not on text (`crates/cratestack-pg/tests/db_error_accessors.rs`):
+
+```rust
+match (err.db_sqlstate(), err.db_constraint(), err.db_table()) {
+    (Some("23505"), Some(name), _) => conflict(name),       // named UNIQUE: arrives as ConflictTyped, 409
+    (Some("A2401"), _, _) => reservation_refused(),         // a trigger's custom ERRCODE passes through
+    (Some("40001" | "40P01"), _, _) => retry(),             // serialization failure / deadlock
+    (Some("23514"), None, Some(table)) => partition_miss(table), // CHECK with a table and no constraint
+    _ => fail(),
+}
+```
+
+`DbErrorInfo` is `#[non_exhaustive]` *(since 0.21.0, unreleased on main)*: a struct literal outside
+`cratestack-core` does not compile. Build with `DbErrorInfo::new(detail).with_sqlstate(..).with_constraint(..)
+.with_table(..).with_column(..).with_schema(..)`; read `table()` / `column()` / `schema()` (`detail`,
+`sqlstate`, `constraint` stay public fields). sqlx `Configuration` and `Tls` errors map to the fixed
+messages `database connection configuration error` / `database TLS error` (still `Database`, 500; the cause,
+which can hold the URL and password, goes to tracing only). The migration runner, idempotency store,
+audit-table bootstrap and materialized-view refresh used `Database(String)` and now keep their SQLSTATE; a
+lost connection there is `Unavailable` (503), a missing row `NotFound` *(since 0.21.0, unreleased on main)*.
+
+**A denied model read is not a 403.** Read policy compiles into the `WHERE`
+clause, so a denied `find_unique` returns `Ok(None)` and the handler turns that
+into a **404**; a denied list read simply returns fewer rows and no error at all.
+Only mutations produce `Forbidden`. Design your clients accordingly — and see
+`cratestack-policy-auth`.
+
+## Codecs
+
+`JsonCodec` is `application/json`, `CborCodec` is `application/cbor`. Pass one,
+or pass `CodecSet::new(CborCodec, JsonCodec)` — the set holds **exactly two**;
+there is no N-codec variant.
+
+Content negotiation is real: request decode is driven by `Content-Type` against
+the route's declared request types (415 on a mismatch), and the response type is
+negotiated from `Accept` with proper `q=`/specificity scoring, **intersected with
+what the codec you actually passed can encode** (406 if nothing matches). All of
+it runs as a preflight *before* any handler side effect, so a `create` cannot
+write a row and then fail to encode.
+
+`application/cbor-seq` is response-only and procedures-only, and requires a CBOR
+codec.
+
+**`Bytes`, `Geography` and `Geometry` under CBOR** *(since 0.21.0, unreleased on main, cratestack#1425)*. A CBOR response, `/rpc/batch` frame or
+CBOR socket item carries these as a byte string (major type 2), not an array of integers; JSON, SSE, audit and
+outbox payloads, cursors and MCP are unchanged. Requests accept both forms (since 0.8.15). A hard cutover with no
+switch: deploy readers first (Dart `cratestack_cbor` >= 0.19.6, Rust clients > 0.20.6 for projection views). Bare
+procedure returns stay arrays. COSE signs the bytes as sent, and ETags and op-contract digests do not change, but
+the idempotency request hash covers the raw body, so retrying one `Idempotency-Key` across a client upgrade is a
+payload mismatch within the TTL; verify signatures or hashes over stored bytes, never over a re-encoding of a
+generated value. Details: `cratestack-clients`, "`Bytes`, `Geography` and `Geometry` are CBOR byte strings".
+
+A CBOR request body must be exactly one item. Bytes after the item are a 400
+(`CODEC_ERROR` on REST, `invalid_argument` on `/rpc`), not ignored, *(since 0.16.0,
+cratestack#1153)*. JSON already refused trailing characters the same way.
+
+**Nesting depth limit** *(since 0.19.4, cratestack#1315, security)*. Every CBOR decode refuses input
+nested deeper than **128** levels (an array, map or tag, definite or indefinite; exactly 128 decode,
+129 fail) with `CratestackError::Codec` ("nesting too deep (maximum depth is N)"), a 400 on REST and
+`invalid_argument` on `/rpc`. Before it, about 8000 nested arrays crashed the process with an
+uncatchable stack overflow. The `CodecSet` path the generated router uses has **no knob**: it always
+uses `DEFAULT_MAX_DECODE_DEPTH` (128). To choose a limit in your own code:
+`CborCodec::with_max_depth(n)` (a `CborCodecWithDepth: CratestackCodec`),
+`cratestack_codec_cbor::decode_with_max_depth::<T>(bytes, n)`, or `check_depth(bytes, n)`. Not
+configurable in the cbor-seq decoders or the outbox. Raising it needs stack to match: at 256 a debug
+decode into `serde_json::Value` overflowed a 1 MB stack. Do not raise it to make a hostile-looking
+body pass.
+
+**`Uuid` is accepted as text or 16 bytes under CBOR** *(since 0.19.6, cratestack#1359)*,
+in every request position (model fields, `type` fields, procedure arguments, RPC `{ id }` frames,
+`<Model>Where` operands, `/rpc/batch` frames), the same leniency `Bytes` has. The generated structs use
+`cratestack_core::LenientUuid` and `deserialize_uuid` (and its optional, list and patch variants). Responses
+still send 16 bytes, and JSON is unchanged, error text included. Servers at 0.19.5 or older refuse a text
+`Uuid` over CBOR (`unexpected type string ... expected bytes`).
+
+**The practical trap:** generated `transport rpc` TypeScript clients default to
+native CBOR. A router mounted with `JsonCodec` alone answers those 406/415. Mount
+`CodecSet::new(CborCodec, JsonCodec)`, or construct the client with `codec: jsonRpcCodec`
+(`--no-native-cbor` is *(removed in 0.18.0, cratestack#1281)*).
+
+**Compact field keys** *(since 0.18.0)*: the generated router negotiates
+`application/vnd.cratestack.compact+{cbor,json,cbor-seq}` by itself, per op, from the
+`Cratestack-Contract` selector. Old contracts are served compactly too when the schema macro is
+given `contracts = "<lock>"`. Nothing to configure on the server. Under the COSE envelope layer,
+list the compact types in `payload_media_types` for requests **and** responses together, e.g.
+`.payload_media_types(["application/cbor", "application/vnd.cratestack.compact+cbor"],
+["application/cbor", "application/vnd.cratestack.compact+cbor"])`. A route permits a compact type
+exactly when it declares the plain one (`crates/cratestack-axum/src/envelope_layer/payload.rs`),
+`/rpc/batch` stays CBOR, and signed streams are never compact (`+cbor-seq` is unsealable). See
+`cratestack-clients` for enabling it on a client.
+
+## Events and the outbox
+
+`@@emit(created, updated, deleted)` generates, inside `cratestack_schema::events`:
+type aliases `ArticleCreatedEvent` and friends, and a `Subscriptions` handle:
+
+```rust
+db.events().on_article_created(|event| async move { /* … */ Ok(()) });
+db.events().drain().await?;
+```
+
+Writes enqueue an outbox row **inside the mutation's transaction**; `drain()`
+flushes undelivered rows — which is also the required opt-in after a
+caller-managed `run_in_tx` commit.
+
+`@@subscribe` adds an SSE endpoint: `/rpc/subscribe/model.<M>.subscribe` under
+`transport rpc`, `GET /<plural>/$subscribe` under REST *(REST since 0.18.0,
+cratestack#1267; RPC-only before)*. A feed takes `list`'s filter syntax plus
+`operations` and `fields`, and a caller no row could pass is refused at open. Each event passes the
+subscriber's read policy (the model's `detail`/`read` rules, as `get`) and is
+dropped if the subscriber may not read it; details in `cratestack-rpc`. In 0.17.0
+and earlier **no** row-level policy was applied: any caller the `AuthProvider`
+admitted, anonymous included, received every event — do not subscribe a
+per-caller-sensitive model on those versions *(fixed since 0.17.1, cratestack#1253)*.
+The same feeds can be served over WebTransport with `extension webtransport { }`
+and the `webtransport` feature: `db.subscriptions().webtransport(config, auth)`
+*(since 0.17.1, cratestack#1255)*. See `cratestack-rpc`. Events reach subscribers
+on **every** replica through the subscription backplane, Postgres `LISTEN`/`NOTIFY`
+by default *(since 0.18.0, cratestack#1266)*. Behind PgBouncer in transaction mode, use
+`.with_backplane(Arc::new(cratestack::InProcessBackplane::new()))` on the builder,
+and a single replica. In 0.17.x only the committing replica's subscribers got the
+event. `drain()` claims rows with `FOR UPDATE SKIP LOCKED`, so two replicas never
+both run one `on_<model>_<op>` handler *(since 0.18.0, cratestack#1266)*.
+Your own binary rows ride the same backplane with `publish_bytes` *(since 0.20.6, cratestack#1419)*, and a mixed 0.20.5 / 0.20.6 rollout needs `PgNotifyBackplane::use_json_envelope()` once at startup (a process-wide, one-way switch that also covers model-event writes and `publish_in_tx`): see `cratestack-rpc` `references/subscriptions.md`.
+`subscription procedure`s and `topic`s *(since 0.18.0, cratestack#1268)*: a handler
+resolves to a `SubscriptionStream<Output>` (usually
+`db.topics().<topic>(key).subscribe().await`), and `topics().<topic>(key)` also has
+`publish` and `publish_in_tx(tx, &msg)` (delivered only if `tx` commits; refused with
+`InProcessBackplane`). With one, the dispatcher is `db.subscriptions(registry)`.
+`extension websocket { }` and the `websocket` feature add
+`db.subscriptions(..).websocket(config, auth)`, a router to merge. See
+`cratestack-rpc`.
+
+**`cratestack-outbox` is a different thing.** It is a separate, hand-written
+transactional outbox for *application* domain events; it deliberately does not go
+through `include_server_schema!`. Copy `OUTBOX_EVENTS_DDL` into your own
+migration, then use `OutboxClient::{persist, persist_in_tx, drain, gc_older_than}`
+and mount `axum_handler::{drain_handler, gc_handler}` behind your own auth — the
+crate has no auth opinion.
+
+## Idempotency and rate limiting
+
+```rust
+let store = Arc::new(SqlxIdempotencyStore::new(pool.clone()));
+let router = generated.layer(IdempotencyLayer::new(store, Duration::from_secs(24 * 3600)));
+
+let store = Arc::new(InMemoryRateLimitStore::default());
+let router = router.layer(RateLimitLayer::new(store, RateLimitConfig::new(100, 1.0)));
+```
+
+Four things bite:
+
+1. **The default principal fingerprint hashes `Authorization`, falling back to
+   `ConnectInfo<SocketAddr>`. With neither, the request is refused with 412.**
+   Cookie or mTLS deployments must supply `.with_principal_fingerprint(…)`, or
+   serve via `into_make_service_with_connect_info::<SocketAddr>()`.
+   *(since 0.14.0, cratestack#1006)* A `VerifiedPrincipal` extension now comes
+   first (`princ:<sha256>`), which is what the envelope layer below inserts; see
+   `cratestack-data-integrity` for the upgrade note.
+2. **A nested router needs the `_with_prefix` resolver variants**
+   (`build_rest_op_resolver_with_prefix`, `build_rpc_op_resolver_with_prefix`), or
+   every descriptor lookup misses and `@no_idempotency` silently no-ops. Give
+   `RateLimitLayer::with_op_resolver` its own instance from the same builder
+   *(since 0.13.0, #877)* so `@no_rate_limit` survives the nest too — the
+   resolver is not `Clone`, so call the builder once per layer.
+3. **Rate-limit store failure is nuanced by design**: a transport-class failure
+   (Redis connection dropped) fails **open** with a warning under the default
+   `StoreErrorPolicy::Allow` (`Deny` refuses it too); a store that is
+   reachable and refusing (OOM) fails **closed** under every policy.
+
+4. **Subscriptions over WebSocket / WebTransport are not charged by the layer**
+   *(since 0.19.3)*. SSE opens are (the layer wraps the generated router);
+   WS/WT opens are unlimited unless you pass
+   `WebSocketConfig::new().rate_limit(layer.for_subscriptions())` /
+   `WebTransportConfig::new(..).rate_limit(layer.for_subscriptions())`. A throttle
+   is an `err` frame, `resource_exhausted` + `details.retry_after_secs`; see
+   `cratestack-data-integrity`.
+
+Replay semantics: same key and same body hash replays the stored response; same
+key with a different body is a **422** `VALIDATION_ERROR` whose message starts
+`idempotency_key_conflict` (that string is not the `code`).
+
+Redis-backed stores live in `cratestack-redis`; the Postgres idempotency store is
+in `cratestack-sqlx`. `cratestack-exec`'s `OpExecutor` is the transport-neutral
+layer underneath — you rarely name it directly.
+
+## Signed transport (envelope layer)
+
+*(since 0.14.0, cratestack#1006)* `EnvelopeLayer` opens signed requests (COSE_Sign1 /
+COSE_Mac0 bodies) and seals every response of a generated REST or RPC router (ADR 0006).
+**`HmacEnvelope` / `SealedEnvelope` (`cratestack_core`, the old HS256 envelope) are gone**
+*(removed in 0.20.0, cratestack#1357; deprecated since 0.19.6, cratestack#1018)*:
+naming either does not compile, so never write them. `KeyProvider`, `NonceStore`,
+`InMemoryNonceStore` and `StaticKeyProvider` stay in `cratestack_core`. For a shared-secret service-to-service seal, use this layer with
+`cratestack_cose::CoseEnvelope` in `CoseMode::Mac0`; `KeyProviderMacKeys::load(&provider, alg,
+key_ids).await?` turns an existing `KeyProvider`'s secrets into Mac0 keys (each at least 32 random
+bytes; the old type accepted any length). The wire is different, so client and server move together.
+
+It is off unless you enable a facade feature:
+
+- `envelope` — `cratestack::envelope_layer` (the layer, its traits) and a
+  generated `cratestack_schema::axum::envelope_layer(envelope, policy, audience)`.
+  No crypto crate; bring your own `ServerEnvelope`.
+- `cose` — `envelope` plus `cratestack::cose` (a re-export of `cratestack-cose`),
+  whose `CoseEnvelope` is the default envelope.
+
+Both are on `cratestack-pg` and `cratestack-api`. The generated function exists
+only for schemas compiled through a facade with `envelope` on. The Rust client
+signs since 0.15.0 (`cratestack-client-rust`'s `ClientEnvelope`, feature `cose`,
+cratestack#1007); the Dart client is in `cratestack_cbor` *(since 0.15.4, cratestack#1151)*; the TypeScript client
+signs through `@cratestack/cbor/cose` *(since 0.19.4, cratestack#1010)*; see `cratestack-clients`.
+
+```rust
+use std::sync::Arc;
+use cratestack::cose::{CoseEnvelope, CoseMode, StaticVerifierResolver};
+use cratestack::envelope_layer::EnvelopeMode;
+use cratestack::InMemoryNonceStore;
+
+let envelope = CoseEnvelope::server(
+    CoseMode::Sign1,
+    Arc::new(server_signer),                                   // any CoseSigner
+    Arc::new(StaticVerifierResolver::new().with_key(client_key)),
+    Arc::new(InMemoryNonceStore::new()),                       // per-process replay cache
+)
+.build()?;
+
+let envelope_layer =
+    cratestack_schema::axum::envelope_layer(envelope, EnvelopeMode::Required, "payments")
+        .mount_prefix("/api")            // only if the router is nested under /api
+        .build()?;
+
+let router = generated_router
+    .layer(idempotency_layer)
+    .layer(rate_limit_layer)
+    .layer(envelope_layer);             // LAST .layer(), so it runs first
+let app = axum::Router::new().nest("/api", router);
+```
+
+The generated function picks the schema's transport, `ROUTE_TRANSPORTS` and
+`ACCEPTED_CONTRACTS` *(since 0.15.2; `SCHEMA_SHA256_BYTES` before)*, and returns the
+builder: `.mount_prefix(..)`, `.allow_unresolved([..])`, `.unresolved_mode(..)`,
+`.principal_mapper(..)`, `.response_seal_policy(..)`, `.max_body_bytes(..)`,
+`.max_contract_trials(..)` *(since 0.15.2, default 4)*, `.payload_media_types(..)`
+*(since 0.15.4)*, then `.build()?`. The calls commute. The hand-rolled form is
+`EnvelopeLayer::builder(envelope, audience,
+cratestack_schema::ACCEPTED_CONTRACTS).policy(..).rest(prefix, ROUTE_TRANSPORTS)`
+(or `.rpc(prefix)`); there is no default policy and no default transport. On 0.15.1
+and earlier the third argument was `SCHEMA_SHA256_BYTES` (`[u8; 32]`), which no longer
+compiles.
+Source: `crates/cratestack-axum/src/envelope_layer/` and
+`crates/cratestack-api/tests/cose_envelope_*.rs`.
+
+**Keys enrolled at run time** *(since 0.15.4, cratestack#1149)*. `StaticVerifierResolver`
+is fixed when built. For devices that enrol after start-up use
+`cratestack::cose::RegistryVerifierResolver` (`cratestack_cose::RegistryVerifierResolver`):
+share one `Arc`, hand a clone to `CoseEnvelope::server(..)` as its
+`Arc<dyn CoseVerifierResolver>`, and keep one to call `register(key) -> Result<[u8; 8],
+CratestackError>` (the `kid`, the first 8 bytes of the RFC 9679 thumbprint; repeating a
+registration is a no-op success, even when full), `revoke(&kid) -> usize` (removes **every**
+key under the `kid`: both HMAC algorithms of one secret, and any unrelated key whose 8-byte
+`kid` collides) and `revoke_key(&key) -> bool` (exactly that key; prefer it to cut off one
+device). `RegistryVerifierResolver::with_max_keys(n)` is a hard bound: a new key past it is
+`CratestackError::Conflict`. Ed25519, ESP256 and both HMAC algorithms. Std `RwLock`, never held
+across an `.await`; a request whose `resolve` already returned a key still finishes with it,
+so a revocation applies to later requests. State is per process: each replica needs the same
+registrations and a restart starts empty. An unknown or revoked `kid` resolves to no keys, so
+it is the same coarse, unsigned `401` as any other failure. Not on 0.15.3 or earlier: write a
+`CoseVerifierResolver`. Source:
+`crates/cratestack-cose/src/keys/registry_resolver.rs`.
+
+**Placement.** Last `.layer(..)` on the generated router, applied **before**
+`nest` / `merge` (through `Router::layer`, so `MatchedPath` is set; wrapped
+around the whole app with a `ServiceBuilder` it sees no route, so plain traffic
+passes **unprotected** and every COSE body is a 415). It inserts
+`VerifiedPrincipal("cose:<hex thumbprint>")`, which the rate limiter and the
+idempotency layer key on. Verification (key and nonce lookups) now runs before
+rate limiting, so put an IP-level limiter **outside** the envelope layer.
+
+**Modes** (`EnvelopePolicy`, per op; `EnvelopeMode` itself, or a closure over
+`&PolicyRequest<'_>`, which sees the op and no header):
+
+- `Required` — every request signed, `GET`/`HEAD`/`DELETE` included (empty
+  payload); unsigned is the unsigned `401`; every response sealed, errors
+  included (a handler's `404`, the `429`, `412`, `422`; a plain request to an
+  unmatched path still gets the router's plain `404`). Prefer `GET` over `HEAD`: a signed
+  `HEAD`'s body may be dropped by an intermediary.
+- `Optional` — a signed request is opened and **always** answered sealed (except a signed open of an `@frames(unsigned)` subscription, which streams unsigned in every mode that accepts a signed request; its
+  `Accept` rewritten to the sealable types it negotiated, CBOR unless
+  `Cratestack-Payload-Accept` names others); an unsigned one runs, sealed only with a valid
+  `Cratestack-Nonce` and an `Accept` naming `application/cose`. That seal binds
+  the nonce and payload, **not the caller**.
+- `UnsignedRequestSealedReply` *(since 0.19.6, cratestack#1313)* — a signed request as under
+  `Optional`; an unsigned one runs only if its reply can be sealed (exactly one valid
+  `Cratestack-Nonce`, an `Accept` naming `application/cose`, not a subscription), else the
+  unsigned `406` **before the handler runs**. Use it for enrollment/bootstrap ops where an
+  unsigned reply must never be sent; `Optional` would run the handler and answer plain. Replies
+  sealed strictly, unresolved routes fail closed, batches take the strictest frame mode.
+- `Off` — plain traffic untouched.
+- In every mode an `application/cose` body is opened or refused (`415`), never
+  forwarded. A bodiless `OPTIONS` passes. `/rpc/batch` runs under the strictest
+  mode of `batch` and every frame's op.
+
+**Bound by the signature:** audience, method, route (REST template or RPC op
+id), path parameters (a parameterised mount's too), the canonical query,
+the called op's **contract digest** *(binding version 2, since 0.15.2, cratestack#1123;
+the whole-schema digest before)*, the payload type, and `Idempotency-Key` /
+`If-Match` exactly as sent. **Response headers (`ETag`, `Retry-After`) are not
+bound.**
+
+**Payload types** *(since 0.15.4, cratestack#1168)*. The payload inside a seal is CBOR unless
+the client names another type in two **unbound** selector headers (the `Cratestack-Contract`
+pattern): `Cratestack-Payload-Type` (the sealed request's type; on a sealed response, that
+response's type, which the layer always sends) and `Cratestack-Payload-Accept` (the response
+types the client reads, in order, joined by `", "`). Absent means `application/cbor`, and a message
+that names none is byte-identical to 0.15.3's (binding version 2, no COSE header change). The
+AAD binds the type: a request binding names the **request** payload's type, a response binding
+the **response's own** (form in, JSON out is fine), so a header that lies fails the signature (the
+coarse `401`). Grammar: a lowercase `type/subtype` of token characters, no parameters or
+wildcards. A layer opts in with
+`.payload_media_types(["application/cbor", "application/x-www-form-urlencoded"],
+["application/cbor", "application/json"])` (default: CBOR alone); an op allows that set
+intersected with its route's declared `capabilities.request_types` / `response_types` (both
+resolvers read them; a custom `BindingResolver` uses `ResolvedRoute::with_payload_types`);
+`/rpc/batch` stays CBOR. `build()` refuses `application/cose*`, `application/cbor-seq`,
+`text/event-stream`, `multipart/*`, an empty request set and a response set without CBOR or JSON.
+Refusals are unsigned and made before any key lookup or nonce: selector repeated or malformed
+`400`; request type not allowed `415` (`payload_type_unsupported`); nothing acceptable to answer
+in `406` (`payload_type_not_acceptable`). A handler's success in a non-negotiated type is a sealed
+`500`; its *error* in one is re-encoded as the transport's error (CBOR or JSON) and sealed; a
+service's own JSON error envelope, in a negotiated type, is sealed as it is. Source:
+`crates/cratestack-axum/src/envelope_layer/payload.rs`, `builder_payload.rs`, and the tests
+`tests/payload_types*.rs` beside them.
+
+**Which schema edits break a signed client** *(since 0.15.2, cratestack#1123)*. The
+digest bound is the op's contract (`cratestack_core::op_contract_digest`), which moves
+only when **that op's** wire shape does. A policy, an `@@index`, a view's SQL, a
+validator, a comment or another op's edit leaves every older signed client working. A
+wire-shape edit makes that op, and only it, answer the **unsigned `426
+contract_unsupported`** (`CONTRACT_UNSUPPORTED` on REST, sent without `Upgrade`), unless
+the server is built with `contracts = "<lock>"` and the locked contract is still
+compatible (`cratestack contract lock` / `check` / `prune`). The client names its digest
+in the unbound `Cratestack-Contract` header (first 8 bytes, base64url); without it the
+layer tries the op's accepted digests, newest first, up to `max_contract_trials`. A
+signed `/rpc/batch` binds the whole-client contract, so any client-facing change refuses
+it. Version 2 refuses version-1 messages: upgrade clients and servers from 0.15.1 or
+earlier together. History: on 0.15.0–0.15.1 the binding was the whole-schema digest
+(comment- and whitespace-insensitive since 0.15.0, cratestack#1065); on 0.14.x it hashed
+the raw `.cstack` text, so a comment-only edit broke every signed client. Source:
+`crates/cratestack-axum/src/envelope_layer/mod.rs` ("Known limits"),
+`crates/cratestack-api/tests/cose_envelope_contract*.rs`.
+
+Traps:
+
+1. **A wrong or missing `.mount_prefix(..)` is a `500`, not a pass-through.**
+   Under a `Required` `unresolved_mode` (the default for `EnvelopeMode::Required`
+   and for every closure policy), a route the router matched but the layer
+   cannot bind is an unsigned `500`; the log says `envelope misconfigured`.
+   Hand-written routes on the same router (`/health`) go in
+   `.allow_unresolved(["/health"])`, relative to the mount prefix.
+   `.unresolved_mode(EnvelopeMode::Optional)` is the explicit, looser opt-out.
+   Another method on a generated path is the layer's own `405`.
+2. **Closure plug-ins need a typed parameter**:
+   `|r: &PolicyRequest<'_>| …`, `|v: &VerifiedRequest<'_>| Ok(…)`,
+   `|r: &UnsignedRequest<'_>| …`. The builder methods take `impl EnvelopePolicy`
+   (etc.), not an `Fn` bound, so nothing tells the compiler the argument type.
+   (Every example in the crate annotates it; not separately compile-tested.)
+3. **Wrapping `CoseEnvelope` in your own `ServerEnvelope`**: delegate with
+   `ServerEnvelope::open_request(&self.inner, body, bind).await` (same for
+   `seal_response` / `media_type`). `self.inner.open_request(..)` picks
+   `CoseEnvelope`'s inherent typed method and does not type-check (E0308).
+4. **Streams cannot be sealed yet** (ADR 0006 P1). A signed RPC subscription is
+   a **sealed `406`** before its handler runs, in `Required` and `Optional` alike,
+   **unless the schema marks it `@frames(unsigned)`** *(since
+   0.20.4, cratestack#1378)*: then the open is verified like a unary call and the
+   stream that answers is plain (`Cratestack-Frames: unsigned`), bounded by
+   `.max_signed_stream_life(Duration)` on the builder (default one hour; `build` refuses zero and
+   anything above `MAX_SIGNED_STREAM_LIFE`, 24 hours; the generated `envelope_layer(..)` passes the
+   `SUBSCRIPTION_FRAMES` table, a hand-built layer with none opens nothing). Its
+   `Accept` must literally name `application/cbor-seq` or `text/event-stream`. The
+   frames are hints, never values; see `cratestack-rpc`
+   `references/subscriptions.md`. Any other subscription: give it `Optional` or
+   `Off` in the policy (`request.is_subscription()`). A signed `@stream` call is
+   answered as **one sealed CBOR array**, not a stream.
+5. **The envelope does not authenticate.** The `AuthProvider` sees the opened
+   CBOR payload (plus a `VerifiedSigner` in the request extensions), and
+   generated handlers record the `VerifiedSigner` on the context
+   (`ctx.verified_signer()`). It is a recorded fact, not an identity. To turn a
+   verified signer into an identity, wrap your `AuthProvider` in
+   `CoseAuthProvider` *(since 0.16.0, cratestack#1077)*, below. Otherwise keep
+   authenticating in your `AuthProvider`.
+6. **Responses are re-buffered** to be sealed, up to
+   `MAX_RESPONSE_REBUFFER_BYTES` (8 MiB); longer is a sealed `500`. A
+   `Router::fallback` handler is **not** protected (no `MatchedPath`).
+
+### Signer identity: `CoseAuthProvider` *(since 0.16.0, cratestack#1077)*
+
+A signed client sends no `Authorization` header, so your header `AuthProvider` has
+nothing to authenticate. `CoseAuthProvider` wraps it and, when the header path gives no
+identity, asks the registries whether they still hold the verified signer's key. Depend
+on `cratestack-cose` with `features = ["auth"]` and on `cratestack-auth`; the `cose`
+facade feature re-exports `cratestack-cose` but not `cratestack-auth`, which owns
+`DeviceKeyResolver`.
+
+*(Since 0.17.1, cratestack#1243.)* `CoseAuthProvider` is now `first_success(inner).or(CoseSignerProvider)`
+with the same rules; `CoseSignerProvider` (the verified signer alone, same `authenticate_devices` /
+`with_service_keys` options) is public, to put the signer in a chain of your own.
+
+```rust
+use cratestack_cose::auth::CoseAuthProvider;
+
+let provider = CoseAuthProvider::new(header_provider, device_registry) // Arc<dyn DeviceKeyResolver>
+    .with_service_keys(service_registry)  // Arc<dyn CoseVerifierResolver>, e.g. RegistryVerifierResolver
+    .authenticate_devices(true);          // OFF by default; see the gate below
+// pass `provider` to the generated router in place of the header provider
+```
+
+Rules, in order (`crates/cratestack-cose/src/auth/signer_provider.rs`):
+
+- The header provider runs first. An identity it returns wins and the registries are not
+  asked. An `Err` from it is returned as is: a refused header is never replaced by the signer.
+  A header it accepts but maps to anonymous is not a refusal, and the signer supersedes it.
+- With no verified signer in the request extensions, the answer is the header provider's.
+  A signer is read only from the extensions, never from a header or body.
+- A verified signer is matched by its **full thumbprint** (the 8-byte `kid` is a prefix). The
+  service registry is asked first, then the device registry, which is asked **only when
+  device authentication is on**. A key that is unknown or revoked is anonymous, not an
+  error, so policy refuses it. A failure of a registry that is asked is an error (`500`), so
+  an outage is not mistaken for an unknown key. Unlike `cratestack-auth`'s verifier, which
+  treats a JWKS/service error as a miss, a service-registry error here is **not** a miss: it
+  fails the request, including for a device signer, even with the gate off (the service
+  registry is asked first). This fails closed.
+- The principal is `cose:<thumbprint>` (the default `ThumbprintPrincipal` prefix; with
+  another prefix the ids differ), `kind` is `service` or `device`, and the context also
+  carries `thumbprint` (bare lowercase hex) and `alg` (the COSE algorithm id, an `Int`).
+
+**Device keys are off by default.** A device key proves a device, not a user. With the gate
+off, an enrolled device signer is anonymous and the device registry is not consulted (a
+failing service registry still errors, as above). A service key authenticates either way.
+**`with_service_keys` must hold service keys only: a device key placed there authenticates
+as a service whatever the gate.** The service registry is asked first and ignores the gate,
+so passing it a resolver that also holds device keys (for example the same
+`RegistryVerifierResolver` the envelope verifies with, where devices enrol) makes every
+enrolled device a `kind: service` caller with the gate off. **Turning devices on** makes any request sealed by an
+enrolled device key authenticated, with no user (no `id_jwt`), on every method, whatever the
+header provider's `TransportCallerMode`. Then `auth() != null` means "holds an enrolled device
+or service key", and revoking the key, not token expiry, is what bounds access. Turn it on
+only where device enrolment is itself gated.
+
+Also: under `Required` the envelope does not bind a header identity to the signer. When the
+header provider authenticates, its identity wins and the signer is not consulted, so one
+device can act as the user in another device's header. An ESP256 or WebCrypto device key
+authenticates only through the service registry (as `kind` `service`), because
+`DeviceKeyResolver` is Ed25519-only.
+
+### Claim objects: a signed payload with no freshness check *(since 0.17.0, cratestack#1231)*
+
+The envelope above is bound to one request and is refused outside a ±300 s `iat` window or on a
+repeated `cti`. For a payload signed offline by one device and delivered later by another (a QR
+relay, a payment at an online terminal), `cratestack_cose::claims` signs a separate, standalone
+object whose expiry and replay the **application** decides. `cratestack::cose` re-exports it with
+the `cose` feature; it is a library call, not part of `EnvelopeLayer`, and it never touches a
+router.
+
+```rust
+use cratestack::cose::{CwtClaims, open_claims, sign_claims};
+
+const TYP: &str = "application/vnd.example.grant+cwt";
+let claims = CwtClaims { exp: Some(now + 3_600), ..CwtClaims::default() };
+let bytes = sign_claims(&signer, TYP, &claims, payload, aad).await?;      // any CoseSigner
+let opened = open_claims(&resolver, &bytes, TYP, aad).await?;             // any CoseVerifierResolver
+// opened.{kid, alg, key_thumbprint, claims, payload}: verified, NOT fresh
+```
+
+- **Wire shape:** tag-18 `COSE_Sign1`, protected `{1: alg, 4: kid, ? 15: {3: aud, 4: exp, 6: iat, 7: cti}, 16: typ}`,
+  empty unprotected header, embedded payload, deterministic CBOR, low-`s` ESP256. Ed25519 and
+  ESP256 only; an HMAC signer is `ClaimsError::Misuse`, an HMAC `alg` on receipt is `Malformed`.
+- **`open_claims` checks the signature and the `typ`, nothing else.** There is no skew window and
+  no nonce store. Enforce `exp`, `aud` and `cti` yourself on `opened.claims`; an object with no
+  `exp` never expires and opens every time it is presented. For single use, give it a `cti` and
+  record the ones accepted.
+- **`typ` is mandatory and is the domain separator.** The envelope's parser refuses header label 16
+  and the claim opener requires it, so neither format opens as the other (a claim object sent to
+  the layer is a `401`; an envelope given to `open_claims` is `Malformed`). `external_aad` is
+  signed, not sent, and must match on open.
+- **Bounds:** `MAX_AUD_LEN` 256, `MAX_TYP_LEN` 128, `MAX_CTI_LEN` 64 bytes; `aud` is one string
+  (the array form is not accepted); `exp` / `iat` are whole seconds.
+- **Errors:** `ClaimsError` (`#[non_exhaustive]`): `Malformed`, `WrongType`, `Unverified` (an
+  unknown `kid`, a bad signature and a different `external_aad` look the same), `Resolver`,
+  `Signer`, `Misuse`. `into_error()` gives the envelope's `401` / `500`.
+- **Not a request seal.** It carries no binding to a request and does no replay protection, so do
+  not use it where an envelope is needed. Rust only: `package:cratestack_cbor/cose.dart` does not
+  expose it (no `sign_claims` / `open_claims` in `dart-packages/`).
+
+Source: `crates/cratestack-cose/src/claims/`, `crates/cratestack-cose/tests/claims*.rs`
+(`claims_domain_separation.rs` checks both directions).
+
+## Service scaffolding and observability
+
+`cratestack-service` gives you `telemetry::init(prefix)`,
+`ServiceConfig::from_env(prefix, name, default_port)` (reading
+`{prefix}_SERVICE_HOST`, `_SERVICE_PORT`, `_PUBLIC_BASE_URL`, `_DATABASE_URL`,
+`_REDIS_URL`, `_ENV`, `_LOG_FORMAT`), `health::router()` mounting `/healthz` and
+`/healthz/ready`, and `run(router, &config)`.
+
+**`cratestack-service::run` has no graceful shutdown.** It serves until the
+process is killed. If you need it, call
+`axum::serve(listener, app).with_graceful_shutdown(signal)` yourself.
+
+Generated routes carry `info_span!`s — but **only the list route and the
+procedure routes**. GET/POST/PATCH/DELETE model handlers emit events, not spans.
+Every failure branch logs at `WARN` with `cratestack_error` and
+`cratestack_detail`. Nothing installs a subscriber for you.
+
+## `db = None` in one paragraph
+
+Procedures, types, enums, `auth` blocks, procedure policies, both transports,
+codecs, idempotency and rate limiting, tracing, and *(since 0.18.0)* subscription
+procedures and `topic`s (an in-process backplane by default; `Cratestack::builder()
+.with_backplane(..)` for several replicas; with a topic the `Cratestack` is `Clone`,
+not `Copy`). **No `model` blocks** — rejected
+at parse time, not at codegen — and no `query` blocks. Prefer the
+`cratestack-api` facade, which has no `cratestack-sqlx` dependency under any
+feature, so the mistake is a clear error rather than a link failure.

@@ -1,0 +1,251 @@
+---
+name: cratestack-mcp
+description: Serving a CrateStack schema to AI agents over the Model Context Protocol. Load when a schema has an mcp { } block, @mcp(tool ...) on a procedure or @@mcp(resource ...) on a model, when enabling the mcp feature on cratestack-pg or cratestack-api, when wiring StdioServer or StreamableHttpServer, when a question mentions MCP tools, MCP resources, cratestack:// URIs, tools/list, resources/read, the MCP Inspector, or an MCP AuthProvider and audience checks.
+---
+
+# MCP operator
+
+> **Verified against CrateStack 0.20.6.** CrateStack is pre-1.0 and its crates version
+> together, so a minor release can break any of this. Check what you are actually on —
+> `cratestack --version`, and the `cratestack-*` version in `Cargo.toml` — before relying
+> on a fact here. Anything that arrived in a specific release is marked *(since X.Y.Z)*;
+> the full feature-to-release map is in
+> [cratestack/references/version-history.md](../cratestack/references/version-history.md).
+
+**The MCP operator is *(since 0.13.0)*.** Before 0.13.0 there is no MCP runtime: on
+0.12.0 an `mcp { }` block parses and does nothing, and nothing serves `@mcp` /
+`@@mcp`. Do not generate MCP code for a project pinned below 0.13.0. A few behaviours
+changed in 0.14.0 and are marked *(since 0.14.0)* below.
+
+The design is ADR 0002 (`cratestack-docs/internals/mcp-operator-adr.md`); the working
+example is `examples/mcp-operator/` in the framework repo.
+
+## What it is
+
+A schema can expose **procedures as MCP tools** and **models as read-only MCP
+resources**, to agents, over stdio or Streamable HTTP, at MCP protocol `2026-07-28`.
+Every call goes through the same generated policy code as REST and RPC. An agent can
+do exactly what the same caller could do over REST.
+
+It is opt-in twice: the `mcp` Cargo feature, **and** an annotation per declaration.
+
+## Enabling it
+
+```toml
+cratestack = { package = "cratestack-pg", version = "…", features = ["mcp"] }
+```
+
+- **Tools:** `cratestack-pg` or `cratestack-api`.
+- **Resources:** `cratestack-pg` only.
+- **`cratestack-sqlite` has no `mcp` feature.** The embedded role enforces no policy.
+- **`cratestack-client` has none either.** It serves nothing.
+
+Without the feature, any MCP declaration in an `include_server_schema!` schema is a
+compile error telling you to enable it. `include_embedded_schema!` refuses one
+always; `include_client_schema!` accepts and ignores them (another service's MCP
+exposure is not the client's concern).
+
+## The schema surface
+
+```cstack
+mcp {
+  name = "blog"
+  expose = [tools, resources]
+}
+
+model Post {
+  id Int @id
+  authorId String
+  title String
+  published Boolean
+
+  @@allow("read", published || authorId == auth().id)
+  @@mcp(resource: "posts")
+}
+
+procedure recentPosts(limit: Int): Post[]
+  @allow(auth() != null)
+  @mcp(tool: "recent_posts", description: "The newest posts you may read.")
+
+mutation procedure publishPost(id: Int): Post
+  @allow(auth() != null && auth().role == "editor")
+  @mcp(tool: "publish_post", description: "Publish a draft post. Editors only.")
+```
+
+(From `examples/mcp-operator/schema.cstack`, trimmed.)
+
+The rules. Every violation is a **compile error**; nothing MCP-shaped is ever silently
+ignored.
+
+- **`mcp { }` block.**
+  - Entries are `key = value`.
+  - `expose = [tools]`, `[resources]` or both.
+  - The old line form `expose tools` is an error with a hint.
+- **`name`.** Required when `resources` is exposed, refused otherwise. It is the host of
+  every resource URI, so it is a DNS label:
+  - `[a-z0-9-]`, 1–63 characters, no leading or trailing `-`.
+  - No `--` as its 3rd and 4th characters (IDNA's reserved form: `xn--blog`, `ab--c`). `a--b` is fine.
+  - At least one letter: `127` is refused, `v2` and `3d-shop` are fine.
+- **Tools.**
+  - `@mcp(tool: "name")`, or a bare `@mcp(tool)` to use the procedure's own name, plus
+    an optional `description:`.
+  - On 0.13.0 and 0.14.0 it must sit on its own line under a procedure; one
+    sharing a line with another attribute is refused. *(since 0.14.1,
+    GHSA-69g4-xvcm-vm2j)* A procedure line is split into attributes, so
+    `@allow(…) @mcp(tool)` is read as two. Run together with no space
+    (`@allow(…)@mcp(tool)`) it is still refused. A line of its own works on
+    every version.
+  - Spelling it `@mcp.tool` (dotted) is an error.
+- **Resources.**
+  - `@@mcp(resource: "segment")` (`[a-z0-9-]+`), optional `max_page_size:` from 1 to 200.
+  - It must sit on its own line in a model, on every version, `main` included.
+- **Policy is required.**
+  - A tool needs an `@allow` (`@deny` alone is refused).
+  - A resource needs a read allow: `@@allow("read", …)`, `@@allow("all", …)`, or both
+    `"list"` and `"detail"`.
+- **Not a tool.**
+  - `@stream` procedures.
+  - Procedures whose input or output reaches `Json`, `FindMany`, `Vector`, `Geography`
+    or `Geometry`, which have no faithful JSON Schema.
+  - A `Decimal` needs the schema's `decimal = RustDecimal | BigDecimal` argument.
+- **Not a resource.** `@@mcp` on a model whose `@@internal` hides get or list, or whose
+  `@id` isn't `String`, `Cuid`, `Int`, `BigInt` *(since 0.15.4; the id is its canonical
+  decimal string, `cratestack://ledger/notes/9007199254740993`)* or `Uuid`
+  (`crates/cratestack-macros/src/include/mcp_gate/resources.rs`).
+- **Not on a `subscription procedure`** *(since 0.18.0)*: `@mcp` there is refused ("MCP
+  exposes only unary tools").
+- **`db = None` schemas cannot expose resources.**
+
+## Serving over stdio
+
+The macro generates `cratestack_schema::mcp`; `tools(db, registry, resolvers)` is the
+tool table. **You must name the caller.** There is no default identity, and an
+anonymous context is refused *(since 0.14.0)*: `StdioServer::new` (and
+`McpServer::new`, the `rmcp` handler it wraps) return
+`Err(StdioConfigError::AnonymousContext)` for a context that isn't authenticated
+(`crates/cratestack-mcp/src/fixed_caller.rs`). On 0.13.0 both accepted it, returned
+`ToolTableError`, and served every call as nobody. Never pass
+`CratestackContext::anonymous()` (or `::default()`, which is the same value):
+
+```rust
+let ctx = cratestack::SystemContext::for_service("support-agent").into_context();
+cratestack::mcp::StdioServer::new(cratestack_schema::mcp::tools(db, registry, resolvers), ctx)?
+    .serve()
+    .await?;
+```
+
+Send `tracing` to **stderr**. stdout carries only MCP messages.
+
+## Serving over Streamable HTTP
+
+```rust
+let resource = ProtectedResource::new("https://api.example.com/mcp", ["https://auth.example.com"]);
+let mcp = StreamableHttpServer::builder(tools, auth_provider, ["https://app.example.com"], resource)
+    .build()?;
+let app = Router::new()
+    .nest_service("/mcp", mcp.service())
+    .merge(mcp.metadata_router()); // RFC 9728 metadata
+```
+
+- **Required builder arguments.** The `AuthProvider` and a non-empty allowed-origins list.
+- **The provider must check the token's audience** against the resource identifier.
+  CrateStack ships no generic OAuth provider. The example's `src/token.rs` and
+  `src/provider.rs` (`AudienceProvider`) are example code, not an API.
+- **Answers before MCP handling:**
+  - 403 for a foreign `Origin`;
+  - 405 for any method but `POST` (`GET`/`DELETE` included);
+  - 400 `invalid_request` for a query-string token or an ambiguous `Authorization`;
+  - 401 plus `WWW-Authenticate` for a missing or rejected token (403
+    `insufficient_scope` if your provider answers `Forbidden`, and a provider
+    5xx passes through as that 5xx);
+  - 413 above 4 MiB.
+- **What reaches your procedure.** The token is stripped once the provider has run, and
+  the call runs under the context the provider built.
+- **A provider that does not use bearer tokens** *(since 0.17.1, cratestack#1243)*:
+  `.with_credential_presence(CredentialPresence::provider_decides())`,
+  `CredentialPresence::ask_provider()` (the provider's own `AuthProvider::credential`: `Absent` is
+  the 401 challenge before the body is read, `Malformed` a 400, `Present`/`Unknown` reach the
+  provider), or `CredentialPresence::when(|parts| ...)` over the request head (never the body). Add
+  `.with_credential_headers([...])` on the `CredentialPresence` (it takes `HeaderName`s)
+  for the headers that carry the credential (e.g. `x-attestation`, `x-signature`): they are stripped before `rmcp` like `Authorization`, and
+  redacted from the provider's logged detail. The default stays `CredentialPresence::bearer()`.
+  An `AuthRefusal` keeps its status, members, `details` and challenges (after the guard's
+  `resource_metadata` one). Copy from `crates/cratestack-mcp/tests/http_credential.rs`,
+  `http_ask_provider.rs` and `http_refusal.rs`. A whole example: `examples/mcp-operator` runs
+  `ask_provider()`, and its `src/provider.rs` accepts the token in `X-Agent-Token` as well as
+  `Bearer` *(since 0.17.1, cratestack#1245)*.
+- **`with_allowed_hosts`.** The default allowed `Host` is the resource identifier's
+  `host[:port]`.
+
+Both servers take `with_executor(OpExecutor)` for L3 admission (rate limiting, then
+idempotency) and `with_store_error_policy(StoreErrorPolicy)`. The policy is the same
+type `RateLimitLayer` uses. Pass `Deny` to MCP too if you chose it on HTTP. The MCP
+bucket and idempotency namespace are keyed by the caller's identity (the stdio context
+you passed, or the one your provider built per HTTP request), so a caller's MCP calls
+draw on their own budget, separate from its REST budget
+(`crates/cratestack-mcp/src/idempotency.rs`, `namespace`). That identity is:
+
+- *(since 0.17.1, cratestack#1243)* the context's `subject()`: `sub`, then `actor.id`, then
+  `id` (an integer as its decimal digits). A context with only `sub` is admitted. A provider
+  that adds `sub` next to a different `id` moves its callers to a new namespace once.
+- on 0.17.0 and earlier, the `id` claim: the `actor` facet's `id` first, then the top-level
+  `id`, string or integer. `sub` is not read.
+
+A context with no identity (no `subject()` since 0.17.1, no `id` claim on 0.17.0
+and earlier), or an empty one, gets `PRECONDITION_FAILED` on a rate-limited or keyed call.
+The key holds a SHA-256 of that identity, never the identity itself *(since 0.14.0)*; on
+0.13.0 it held the id verbatim, so after upgrading with a shared store, MCP idempotency
+records written by 0.13.0 stop replaying and MCP rate-limit buckets start fresh.
+
+## Behaviour to rely on
+
+- **Errors.**
+  - An unknown tool → JSON-RPC `-32602`.
+  - Bad arguments → an `isError` result naming the field.
+  - A policy denial or business error → `isError` with REST's error envelope
+    (`{"code":"FORBIDDEN",...}`).
+  - An unmet `@authn` *(since 0.17.1, cratestack#1244)* → `isError` with REST's step-up
+    envelope (`"code":"UNAUTHORIZED"`, `"error":"insufficient_user_authentication"`, its
+    `details`), checked after `@allow`/`@deny`; the tool never runs. See
+    `cratestack-policy-auth`. Test: `crates/cratestack-api/tests/mcp_authn.rs`.
+- **Idempotency.** A key goes in `_meta["dev.cratestack/idempotencyKey"]`; without one,
+  a retried mutation runs again. `idempotentHint` is never `true` on a mutation.
+  *(since 0.17.2, cratestack#1261)* A refusal of the tool's generated authorize step (`@allow`/`@deny`,
+  `@authn`, `@authorize`) is not recorded: admission releases the key, so the caller who stepped
+  up runs the tool once under the same key. A refusal the implementation returns is recorded. On
+  0.17.1 both are recorded.
+- **`@isolation` tools.** On every release through 0.14.0, `@isolation`
+  was ignored here as on REST and RPC. Since 0.14.1 *(GHSA-r67q-4qqq-g9gm)*
+  `tools/call` runs such a tool through the same
+  transaction-and-retry dispatch as REST and RPC (the registry method gets
+  `&IsolatedCratestack`). Out of retries, the result is `isError` with
+  `{"code":"TRANSACTION_ABORTED",...}`, and MCP admission **releases** the
+  idempotency key instead of recording it, so the same key runs the call again.
+  A tool that merely propagates another procedure's abort answers
+  `INTERNAL_ERROR`, recorded under the key. See `cratestack-data-integrity`.
+- **Resources.**
+  - One record: `cratestack://<name>/<segment>/{id}`.
+  - A page: `cratestack://<name>/<segment>{?limit,cursor}`, returning
+    `{"items","nextCursor"}` in primary-key order. `limit` defaults to 50 and is clamped
+    at 200, or lower if `max_page_size` says so.
+  - Shaped exactly like REST's GET: `@server_only` fields are absent and `@computed`
+    fields are resolved.
+- **Not-found folding.** A row the caller may not read, a missing row, a malformed id,
+  and an id with a raw non-`pchar` character are all the same `-32602`
+  "resource not found". Percent-encode ids (`a%20b`).
+- **URI matching.** The scheme is case-insensitive; the name, segment and id are matched
+  exactly.
+- **Caller checks.** Every method that answers (`server/discover`,
+  `completion/complete`, every list method, `tools/call`, `resources/read`, and a legacy
+  `initialize` *(since 0.14.0)*) fails closed without the HTTP guard's caller.
+- **Protocol.** Only `2026-07-28`. A legacy `initialize` gets `-32022`. With the MCP
+  Inspector CLI, pass `--protocol-era modern`.
+
+## Known limits
+
+- **No CRUD-derived tools.** Only procedures are tools, and models are read-only resources.
+- **`tools/list` is not filtered by the caller's authorization.** Every caller sees the
+  whole table, and each call is still policy-checked.
+- **No schema-metadata resources and no `subscriptions/listen`.**
+- **`StdioServer` has no `with_implementation`,** so a stdio server reports itself as
+  `cratestack-mcp`.

@@ -1,0 +1,712 @@
+{
+  "version": 2,
+  "skills": {
+    "accessibility-engineering": {
+      "source": "addyosmani/agent-skills",
+      "commit": "e997ac5b9a74eab332d5e9793bb38a38c8cfdd74",
+      "sourceType": "github",
+      "skillPath": "skills/accessibility-engineering/SKILL.md",
+      "computedHash": "a707e1fa740914470fbc9544eb725e08e9c7816cafad6bd4ed5f4e0d44b23170"
+    },
+    "api-and-interface-design": {
+      "source": "addyosmani/agent-skills",
+      "commit": "e997ac5b9a74eab332d5e9793bb38a38c8cfdd74",
+      "sourceType": "github",
+      "skillPath": "skills/api-and-interface-design/SKILL.md",
+      "computedHash": "f8cb4ee59fe787bf94bfe40086ca4652d3cb738e16805d10acca2da3b80a001e"
+    },
+    "authkestra-features": {
+      "source": "Authkestra/skills",
+      "commit": "51908fe71d0071120481fcca134cb991102b231a",
+      "sourceType": "github",
+      "skillPath": "skills/authkestra-features/SKILL.md",
+      "computedHash": "71fd5893174f6230f53d14589002e47672928c8485b9ce22a4adc0c95bd8bbb2"
+    },
+    "authkestra-mcp": {
+      "source": "Authkestra/skills",
+      "commit": "51908fe71d0071120481fcca134cb991102b231a",
+      "sourceType": "github",
+      "skillPath": "skills/authkestra-mcp/SKILL.md",
+      "computedHash": "b79a8a3dd0590675ff7e8a8623a872b367033b664448f824391c004991abfcb4"
+    },
+    "authkestra-mfa": {
+      "source": "Authkestra/skills",
+      "commit": "51908fe71d0071120481fcca134cb991102b231a",
+      "sourceType": "github",
+      "skillPath": "skills/authkestra-mfa/SKILL.md",
+      "computedHash": "72e013a57b2466af87e536097b206f0d195c155be3fbbb4cd328ce3ca97622da"
+    },
+    "authkestra-op": {
+      "source": "Authkestra/skills",
+      "commit": "51908fe71d0071120481fcca134cb991102b231a",
+      "sourceType": "github",
+      "skillPath": "skills/authkestra-op/SKILL.md",
+      "computedHash": "06fdf5b5c82e63a04c66ace75cb4f22527121958557b49a645bf766e939a8d28"
+    },
+    "authkestra-quickstart": {
+      "source": "Authkestra/skills",
+      "commit": "51908fe71d0071120481fcca134cb991102b231a",
+      "sourceType": "github",
+      "skillPath": "skills/authkestra-quickstart/SKILL.md",
+      "computedHash": "559c3809ee59218c0f3d86a27d7a0bfcbba7a1d119ea7ace66c333d0d7879390"
+    },
+    "authkestra-resource-server": {
+      "source": "Authkestra/skills",
+      "commit": "51908fe71d0071120481fcca134cb991102b231a",
+      "sourceType": "github",
+      "skillPath": "skills/authkestra-resource-server/SKILL.md",
+      "computedHash": "9f243276235cc4f394230c8cb845cc43e46d718a3752c304ac772de1cb7fc644"
+    },
+    "authkestra-social-login": {
+      "source": "Authkestra/skills",
+      "commit": "51908fe71d0071120481fcca134cb991102b231a",
+      "sourceType": "github",
+      "skillPath": "skills/authkestra-social-login/SKILL.md",
+      "computedHash": "14a5264be684cd872a858ecd744346ec4e2cf9aac2916053f8aeb6f3c52f4838"
+    },
+    "authkestra-store": {
+      "source": "Authkestra/skills",
+      "commit": "51908fe71d0071120481fcca134cb991102b231a",
+      "sourceType": "github",
+      "skillPath": "skills/authkestra-store/SKILL.md",
+      "computedHash": "5847bff1ae19fc04c86a55e4c9e799ba934f4f74fcea04c343b6c1b7f4afde32"
+    },
+    "authkestra-troubleshoot": {
+      "source": "Authkestra/skills",
+      "commit": "51908fe71d0071120481fcca134cb991102b231a",
+      "sourceType": "github",
+      "skillPath": "skills/authkestra-troubleshoot/SKILL.md",
+      "computedHash": "8809a799a8cfca5190d39d3993073188ba5177478bc428e78e1ed07c173b97ed"
+    },
+    "authkestra-upgrade": {
+      "source": "Authkestra/skills",
+      "commit": "51908fe71d0071120481fcca134cb991102b231a",
+      "sourceType": "github",
+      "skillPath": "skills/authkestra-upgrade/SKILL.md",
+      "computedHash": "5d6b96ec69a6543c9d741d258b832c05a0fd68b8f5d810eb8cd9e95ae1240954"
+    },
+    "browser-testing-with-devtools": {
+      "source": "addyosmani/agent-skills",
+      "commit": "e997ac5b9a74eab332d5e9793bb38a38c8cfdd74",
+      "sourceType": "github",
+      "skillPath": "skills/browser-testing-with-devtools/SKILL.md",
+      "computedHash": "4e76269b455e079e76f29e11fdd80c61a7dd6ef0ab12e26432ea1b782c0a245e"
+    },
+    "ci-cd-and-automation": {
+      "source": "addyosmani/agent-skills",
+      "commit": "e997ac5b9a74eab332d5e9793bb38a38c8cfdd74",
+      "sourceType": "github",
+      "skillPath": "skills/ci-cd-and-automation/SKILL.md",
+      "computedHash": "307f1eeee27c29693dd6b229b1706f6a867eef5a7f381d4d6f06736a4c230576"
+    },
+    "code-review-and-quality": {
+      "source": "addyosmani/agent-skills",
+      "commit": "e997ac5b9a74eab332d5e9793bb38a38c8cfdd74",
+      "sourceType": "github",
+      "skillPath": "skills/code-review-and-quality/SKILL.md",
+      "computedHash": "c04b5cb0f38ea3aec41b0219478124a9b38d467c3cecd82cdf0ad694d9403628"
+    },
+    "code-simplification": {
+      "source": "addyosmani/agent-skills",
+      "commit": "e997ac5b9a74eab332d5e9793bb38a38c8cfdd74",
+      "sourceType": "github",
+      "skillPath": "skills/code-simplification/SKILL.md",
+      "computedHash": "48e59225ea45232623e47d35d4ac6028fb2f37a9fbbc0563313d67bab448f664"
+    },
+    "coding-guidelines": {
+      "source": "actionbook/rust-skills",
+      "commit": "5c40d3ad785193231b7d0dbfb8e1eb447e5edd94",
+      "sourceType": "github",
+      "skillPath": "skills/coding-guidelines/SKILL.md",
+      "computedHash": "ba0a5f9bf6b89da76fee85bcc92d6dbd34c5e92098d0d8b6fd732ee198b09068"
+    },
+    "constraint-driven-development": {
+      "source": "addyosmani/agent-skills",
+      "commit": "e997ac5b9a74eab332d5e9793bb38a38c8cfdd74",
+      "sourceType": "github",
+      "skillPath": "skills/constraint-driven-development/SKILL.md",
+      "computedHash": "c0a86ba67b8de55c2b48a1110f294db90c380db0ad9329fae871eeb43d9b5efb"
+    },
+    "context-engineering": {
+      "source": "addyosmani/agent-skills",
+      "commit": "e997ac5b9a74eab332d5e9793bb38a38c8cfdd74",
+      "sourceType": "github",
+      "skillPath": "skills/context-engineering/SKILL.md",
+      "computedHash": "0b9e3d177ec4e42d9b39c76ef8ee751f88cce40e3879c785a1a8c6eeabc6119d"
+    },
+    "core-actionbook": {
+      "source": "actionbook/rust-skills",
+      "commit": "5c40d3ad785193231b7d0dbfb8e1eb447e5edd94",
+      "sourceType": "github",
+      "skillPath": "skills/core-actionbook/SKILL.md",
+      "computedHash": "a16b3724e179c1b316b4c709f8e9d4ce3c844c10710fda95be254b53d474c353"
+    },
+    "core-agent-browser": {
+      "source": "actionbook/rust-skills",
+      "commit": "5c40d3ad785193231b7d0dbfb8e1eb447e5edd94",
+      "sourceType": "github",
+      "skillPath": "skills/core-agent-browser/SKILL.md",
+      "computedHash": "08fc800249d6cd16eaad6370a3ee7f588c533639b30044cbe9b6504163de313b"
+    },
+    "core-dynamic-skills": {
+      "source": "actionbook/rust-skills",
+      "commit": "5c40d3ad785193231b7d0dbfb8e1eb447e5edd94",
+      "sourceType": "github",
+      "skillPath": "skills/core-dynamic-skills/SKILL.md",
+      "computedHash": "5e41f86f7bd8dffc76cb41e846aeb87a097961759cf35ea3deeb59c115e1031b"
+    },
+    "core-fix-skill-docs": {
+      "source": "actionbook/rust-skills",
+      "commit": "5c40d3ad785193231b7d0dbfb8e1eb447e5edd94",
+      "sourceType": "github",
+      "skillPath": "skills/core-fix-skill-docs/SKILL.md",
+      "computedHash": "61b261dd3adf594e73cf364b03dcda07775253771a67a046c915975e308a67dc"
+    },
+    "cratestack": {
+      "source": "cratestack/cratestack-skills",
+      "commit": "787bf18b596f596721ad1e2691624ae3e176334d",
+      "sourceType": "github",
+      "skillPath": "skills/cratestack/SKILL.md",
+      "computedHash": "c7cb5fbe0612c382e388a35c004a09fa2e86b10be21b1b70af5ebcea81affd12"
+    },
+    "cratestack-cli": {
+      "source": "cratestack/cratestack-skills",
+      "commit": "787bf18b596f596721ad1e2691624ae3e176334d",
+      "sourceType": "github",
+      "skillPath": "skills/cratestack-cli/SKILL.md",
+      "computedHash": "8f1e213cc45a47d517dad98bcb984d950dac42bce8f5b24369aede09ec25e20c"
+    },
+    "cratestack-clients": {
+      "source": "cratestack/cratestack-skills",
+      "commit": "787bf18b596f596721ad1e2691624ae3e176334d",
+      "sourceType": "github",
+      "skillPath": "skills/cratestack-clients/SKILL.md",
+      "computedHash": "2354220b740646b498e4c60c7ec6b42402fbd83451d7fab0f9108c044e803215"
+    },
+    "cratestack-contributing": {
+      "source": "cratestack/cratestack-skills",
+      "commit": "787bf18b596f596721ad1e2691624ae3e176334d",
+      "sourceType": "github",
+      "skillPath": "skills/cratestack-contributing/SKILL.md",
+      "computedHash": "1d8b9e7d7afc934820f6d8f3c2dc2884f2f6ed631cf3653c814bcdb20ce8d581"
+    },
+    "cratestack-data-integrity": {
+      "source": "cratestack/cratestack-skills",
+      "commit": "787bf18b596f596721ad1e2691624ae3e176334d",
+      "sourceType": "github",
+      "skillPath": "skills/cratestack-data-integrity/SKILL.md",
+      "computedHash": "e90480cf8c624daa77f5be7894595f0aadf4f3339f9ef32b688628d866f8f175"
+    },
+    "cratestack-editor-tooling": {
+      "source": "cratestack/cratestack-skills",
+      "commit": "787bf18b596f596721ad1e2691624ae3e176334d",
+      "sourceType": "github",
+      "skillPath": "skills/cratestack-editor-tooling/SKILL.md",
+      "computedHash": "3a0f60d99eecf5a0dcf2116453528cc4fb0df7993dcc15b8a2442200dd83060e"
+    },
+    "cratestack-embedded": {
+      "source": "cratestack/cratestack-skills",
+      "commit": "787bf18b596f596721ad1e2691624ae3e176334d",
+      "sourceType": "github",
+      "skillPath": "skills/cratestack-embedded/SKILL.md",
+      "computedHash": "c3959c9a9f4141cfc06894aece4a873596942e2e605e55d0a67d143f4275bee3"
+    },
+    "cratestack-mcp": {
+      "source": "cratestack/cratestack-skills",
+      "commit": "787bf18b596f596721ad1e2691624ae3e176334d",
+      "sourceType": "github",
+      "skillPath": "skills/cratestack-mcp/SKILL.md",
+      "computedHash": "b429ab88270455cd5447c2c206ba31de07f6a4e2e7a6b3447bbab57b588b9aca"
+    },
+    "cratestack-migrations": {
+      "source": "cratestack/cratestack-skills",
+      "commit": "787bf18b596f596721ad1e2691624ae3e176334d",
+      "sourceType": "github",
+      "skillPath": "skills/cratestack-migrations/SKILL.md",
+      "computedHash": "1c3636ff302dc84b759c0e4f42a75c2313846dc6e20c6fe8c1931553bad46c69"
+    },
+    "cratestack-policy-auth": {
+      "source": "cratestack/cratestack-skills",
+      "commit": "787bf18b596f596721ad1e2691624ae3e176334d",
+      "sourceType": "github",
+      "skillPath": "skills/cratestack-policy-auth/SKILL.md",
+      "computedHash": "07eb74992fe8cf74a70bf5e0f6c540a2df57eaaec947d7fd4a4ac19b7f709cc5"
+    },
+    "cratestack-rpc": {
+      "source": "cratestack/cratestack-skills",
+      "commit": "787bf18b596f596721ad1e2691624ae3e176334d",
+      "sourceType": "github",
+      "skillPath": "skills/cratestack-rpc/SKILL.md",
+      "computedHash": "1e224cc39303bea369c42b28b2f4795a975d75bf575e9399c976f0ed3a70abb5"
+    },
+    "cratestack-schema": {
+      "source": "cratestack/cratestack-skills",
+      "commit": "787bf18b596f596721ad1e2691624ae3e176334d",
+      "sourceType": "github",
+      "skillPath": "skills/cratestack-schema/SKILL.md",
+      "computedHash": "3342428fbf1274a6f2cdd417ddf5741520bc1589b43e85c254c3f61958b4ca8f"
+    },
+    "cratestack-server": {
+      "source": "cratestack/cratestack-skills",
+      "commit": "787bf18b596f596721ad1e2691624ae3e176334d",
+      "sourceType": "github",
+      "skillPath": "skills/cratestack-server/SKILL.md",
+      "computedHash": "6a003145ce4d14e87507298d068800d81dbb9681b7f5fb7866edebc7802c8709"
+    },
+    "cratestack-studio": {
+      "source": "cratestack/cratestack-skills",
+      "commit": "787bf18b596f596721ad1e2691624ae3e176334d",
+      "sourceType": "github",
+      "skillPath": "skills/cratestack-studio/SKILL.md",
+      "computedHash": "7fe0205bf51a46792ebdf5f87e8d34c5fc05c6be49d0aa4b25214a6baa1633f8"
+    },
+    "cratestack-troubleshooting": {
+      "source": "cratestack/cratestack-skills",
+      "commit": "787bf18b596f596721ad1e2691624ae3e176334d",
+      "sourceType": "github",
+      "skillPath": "skills/cratestack-troubleshooting/SKILL.md",
+      "computedHash": "ec6a620eb48b7e460bddcc90d8437c6723ef8b19cbc8ae97e9e52b7e88dd717f"
+    },
+    "debugging-and-error-recovery": {
+      "source": "addyosmani/agent-skills",
+      "commit": "e997ac5b9a74eab332d5e9793bb38a38c8cfdd74",
+      "sourceType": "github",
+      "skillPath": "skills/debugging-and-error-recovery/SKILL.md",
+      "computedHash": "aa26ffd65f2e2759c66806c4a3111c6fbaad612c5f39799bd3bc6cd942abd0fc"
+    },
+    "deprecation-and-migration": {
+      "source": "addyosmani/agent-skills",
+      "commit": "e997ac5b9a74eab332d5e9793bb38a38c8cfdd74",
+      "sourceType": "github",
+      "skillPath": "skills/deprecation-and-migration/SKILL.md",
+      "computedHash": "0f86b1fd18c377eb69fd1991046d49f0a848bd32f7318d1399020b79a6391cec"
+    },
+    "docker-agent-config": {
+      "source": "docker/skills",
+      "commit": "fbcef37a595f1e0cc992524e31360b25f936706f",
+      "sourceType": "github",
+      "skillPath": "skills/docker-agent-config/SKILL.md",
+      "computedHash": "ae799267d27f149e5f66060fa563237cebe3d8027a9f59b73afe4b3085cd0eec"
+    },
+    "docker-agent-deploy": {
+      "source": "docker/skills",
+      "commit": "fbcef37a595f1e0cc992524e31360b25f936706f",
+      "sourceType": "github",
+      "skillPath": "skills/docker-agent-deploy/SKILL.md",
+      "computedHash": "8e5a2d84e7ce3de4d2a9c0aa12f1c120403e485e8c59d88046b52b6fc0d3891e"
+    },
+    "docker-agent-run": {
+      "source": "docker/skills",
+      "commit": "fbcef37a595f1e0cc992524e31360b25f936706f",
+      "sourceType": "github",
+      "skillPath": "skills/docker-agent-run/SKILL.md",
+      "computedHash": "a94f9a761fdc571db94b9ab016928148775738dd37e7f1988124be878765327a"
+    },
+    "docker-build-strategies": {
+      "source": "docker/skills",
+      "commit": "fbcef37a595f1e0cc992524e31360b25f936706f",
+      "sourceType": "github",
+      "skillPath": "skills/docker-build-strategies/SKILL.md",
+      "computedHash": "a9cc5c3839d60ec8e7ca390292e1d4784bc69cf962413cb17364e7b5a46783e1"
+    },
+    "docker-compose-patterns": {
+      "source": "docker/skills",
+      "commit": "fbcef37a595f1e0cc992524e31360b25f936706f",
+      "sourceType": "github",
+      "skillPath": "skills/docker-compose-patterns/SKILL.md",
+      "computedHash": "fd752b44e789bbf42f8c0edd92df89c84871d46aee92785230e5260f866e8f99"
+    },
+    "docker-destructive-guardrails": {
+      "source": "docker/skills",
+      "commit": "fbcef37a595f1e0cc992524e31360b25f936706f",
+      "sourceType": "github",
+      "skillPath": "skills/docker-destructive-guardrails/SKILL.md",
+      "computedHash": "c67ecba771ac58d43f79b4b0c07068c5ff90cf85c64daf50c68ecf6640bd6d7d"
+    },
+    "docker-docs": {
+      "source": "docker/skills",
+      "commit": "fbcef37a595f1e0cc992524e31360b25f936706f",
+      "sourceType": "github",
+      "skillPath": "skills/docker-docs/SKILL.md",
+      "computedHash": "0f99705f1c1015a52bed6fb0ba7dc43b10f85618288291712e92fbd2f7178f2a"
+    },
+    "docker-project-foundations": {
+      "source": "docker/skills",
+      "commit": "fbcef37a595f1e0cc992524e31360b25f936706f",
+      "sourceType": "github",
+      "skillPath": "skills/docker-project-foundations/SKILL.md",
+      "computedHash": "58fdbbc9acb9264cff9225135998e1fd47f74c28519e2707ee964d408db53afb"
+    },
+    "docker-sandboxes-kits": {
+      "source": "docker/skills",
+      "commit": "fbcef37a595f1e0cc992524e31360b25f936706f",
+      "sourceType": "github",
+      "skillPath": "skills/docker-sandboxes-kits/SKILL.md",
+      "computedHash": "6a8b6123b2b50c99a9497b430567412c2d5ae6885ac76c169d9b26aa9aaa010a"
+    },
+    "docker-sandboxes-lifecycle": {
+      "source": "docker/skills",
+      "commit": "fbcef37a595f1e0cc992524e31360b25f936706f",
+      "sourceType": "github",
+      "skillPath": "skills/docker-sandboxes-lifecycle/SKILL.md",
+      "computedHash": "d466257a2b0cd120f6733a70243b163dd65e54a186c97a76daf33f5d26045bc6"
+    },
+    "docker-sandboxes-network-credentials": {
+      "source": "docker/skills",
+      "commit": "fbcef37a595f1e0cc992524e31360b25f936706f",
+      "sourceType": "github",
+      "skillPath": "skills/docker-sandboxes-network-credentials/SKILL.md",
+      "computedHash": "8326ad3f9387d68a84191ebb75717f2ce6ae3bc0b9ea1b98e435c2e73c511753"
+    },
+    "documentation-and-adrs": {
+      "source": "addyosmani/agent-skills",
+      "commit": "e997ac5b9a74eab332d5e9793bb38a38c8cfdd74",
+      "sourceType": "github",
+      "skillPath": "skills/documentation-and-adrs/SKILL.md",
+      "computedHash": "deb39d7c8157563bc14a48f0d22003c82f4d8370b69c96efde476fe12318d188"
+    },
+    "domain-cli": {
+      "source": "actionbook/rust-skills",
+      "commit": "5c40d3ad785193231b7d0dbfb8e1eb447e5edd94",
+      "sourceType": "github",
+      "skillPath": "skills/domain-cli/SKILL.md",
+      "computedHash": "4fab5f15aca943d231bc76827e5525edb48bddca3a1583737e22bccbe9ad4613"
+    },
+    "domain-cloud-native": {
+      "source": "actionbook/rust-skills",
+      "commit": "5c40d3ad785193231b7d0dbfb8e1eb447e5edd94",
+      "sourceType": "github",
+      "skillPath": "skills/domain-cloud-native/SKILL.md",
+      "computedHash": "4cb339fbe570bbd55508953e3a75a1a6e4753c6749cf02943a966388f3de2fbb"
+    },
+    "domain-embedded": {
+      "source": "actionbook/rust-skills",
+      "commit": "5c40d3ad785193231b7d0dbfb8e1eb447e5edd94",
+      "sourceType": "github",
+      "skillPath": "skills/domain-embedded/SKILL.md",
+      "computedHash": "a3110c1eab0c60be75586c1657f96e57f1059d4f68e5f9a94e78492cdc679af8"
+    },
+    "domain-fintech": {
+      "source": "actionbook/rust-skills",
+      "commit": "5c40d3ad785193231b7d0dbfb8e1eb447e5edd94",
+      "sourceType": "github",
+      "skillPath": "skills/domain-fintech/SKILL.md",
+      "computedHash": "f2f7b7843999895885a1628e59e02d87d4f47681d89a233d523ee7ae53f43a22"
+    },
+    "domain-iot": {
+      "source": "actionbook/rust-skills",
+      "commit": "5c40d3ad785193231b7d0dbfb8e1eb447e5edd94",
+      "sourceType": "github",
+      "skillPath": "skills/domain-iot/SKILL.md",
+      "computedHash": "865fa335d77c7c0ca12dc8bc17bd72f7acb33dc08a9d7bb544555b145bb07056"
+    },
+    "domain-ml": {
+      "source": "actionbook/rust-skills",
+      "commit": "5c40d3ad785193231b7d0dbfb8e1eb447e5edd94",
+      "sourceType": "github",
+      "skillPath": "skills/domain-ml/SKILL.md",
+      "computedHash": "83531c9a86d8863059f8d04fb73e68e5ec14c6cd83c254f31388aa86802c3827"
+    },
+    "domain-web": {
+      "source": "actionbook/rust-skills",
+      "commit": "5c40d3ad785193231b7d0dbfb8e1eb447e5edd94",
+      "sourceType": "github",
+      "skillPath": "skills/domain-web/SKILL.md",
+      "computedHash": "c42407a385f5f3252ec917337b40cba1bf9802ddd38505dbafea8ab3641ecea2"
+    },
+    "doubt-driven-development": {
+      "source": "addyosmani/agent-skills",
+      "commit": "e997ac5b9a74eab332d5e9793bb38a38c8cfdd74",
+      "sourceType": "github",
+      "skillPath": "skills/doubt-driven-development/SKILL.md",
+      "computedHash": "3369c97f3c95f4bec25a956d54b86b19241e2dcf93b8f1c83bdc5bd2c07351b6"
+    },
+    "frontend-ui-engineering": {
+      "source": "addyosmani/agent-skills",
+      "commit": "e997ac5b9a74eab332d5e9793bb38a38c8cfdd74",
+      "sourceType": "github",
+      "skillPath": "skills/frontend-ui-engineering/SKILL.md",
+      "computedHash": "ed0577a6473f4c90b809115925b34402658d320a4da3e47a7614fbe6733a1a82"
+    },
+    "git-workflow-and-versioning": {
+      "source": "addyosmani/agent-skills",
+      "commit": "e997ac5b9a74eab332d5e9793bb38a38c8cfdd74",
+      "sourceType": "github",
+      "skillPath": "skills/git-workflow-and-versioning/SKILL.md",
+      "computedHash": "860b88bf82d823eaed15b9b9fa9ce4273f94c7bdcf3aeaa3e6649eb578763d4b"
+    },
+    "idea-refine": {
+      "source": "addyosmani/agent-skills",
+      "commit": "e997ac5b9a74eab332d5e9793bb38a38c8cfdd74",
+      "sourceType": "github",
+      "skillPath": "skills/idea-refine/SKILL.md",
+      "computedHash": "f93acea3b4a197e2fda976bc9b7aa1aafedfd819fe190c7b33e70eaf745820fb"
+    },
+    "incremental-implementation": {
+      "source": "addyosmani/agent-skills",
+      "commit": "e997ac5b9a74eab332d5e9793bb38a38c8cfdd74",
+      "sourceType": "github",
+      "skillPath": "skills/incremental-implementation/SKILL.md",
+      "computedHash": "0d61dbaaa3a1222ea1cd7b497f65694c793b256b7f82d227b856cde25057ebfa"
+    },
+    "interview-me": {
+      "source": "addyosmani/agent-skills",
+      "commit": "e997ac5b9a74eab332d5e9793bb38a38c8cfdd74",
+      "sourceType": "github",
+      "skillPath": "skills/interview-me/SKILL.md",
+      "computedHash": "68615337944c1d56cd9db6b934e247ff1d67600dd9db3d41cc9bf7236b9d986c"
+    },
+    "m01-ownership": {
+      "source": "actionbook/rust-skills",
+      "commit": "5c40d3ad785193231b7d0dbfb8e1eb447e5edd94",
+      "sourceType": "github",
+      "skillPath": "skills/m01-ownership/SKILL.md",
+      "computedHash": "22986aee2b6f155cd1c48a89b7e2384e8884852ff5e17fd0002a9ac3f4f7ce7f"
+    },
+    "m02-resource": {
+      "source": "actionbook/rust-skills",
+      "commit": "5c40d3ad785193231b7d0dbfb8e1eb447e5edd94",
+      "sourceType": "github",
+      "skillPath": "skills/m02-resource/SKILL.md",
+      "computedHash": "c0242c9fa805cc3ec7b15f251d4e6c1b364f6ffde33ad55607ca4605299412f1"
+    },
+    "m03-mutability": {
+      "source": "actionbook/rust-skills",
+      "commit": "5c40d3ad785193231b7d0dbfb8e1eb447e5edd94",
+      "sourceType": "github",
+      "skillPath": "skills/m03-mutability/SKILL.md",
+      "computedHash": "fc4b12c6b8c8cb35b1ef0f53649febaf9338c5a7a842a2b6d49ae1c5f1ca6e2a"
+    },
+    "m04-zero-cost": {
+      "source": "actionbook/rust-skills",
+      "commit": "5c40d3ad785193231b7d0dbfb8e1eb447e5edd94",
+      "sourceType": "github",
+      "skillPath": "skills/m04-zero-cost/SKILL.md",
+      "computedHash": "14d740310429fff201f16fb83bf316e2af76e6e9dec8666282a9edb29163ce2b"
+    },
+    "m05-type-driven": {
+      "source": "actionbook/rust-skills",
+      "commit": "5c40d3ad785193231b7d0dbfb8e1eb447e5edd94",
+      "sourceType": "github",
+      "skillPath": "skills/m05-type-driven/SKILL.md",
+      "computedHash": "6e510bbe776cdbc040470157ab76cbd1c9bb8356062dbd3816049d8040c14c09"
+    },
+    "m06-error-handling": {
+      "source": "actionbook/rust-skills",
+      "commit": "5c40d3ad785193231b7d0dbfb8e1eb447e5edd94",
+      "sourceType": "github",
+      "skillPath": "skills/m06-error-handling/SKILL.md",
+      "computedHash": "f0a50a2dc227718bfdb3c75aaf0fee45fe6bff834932ea4527222e58c987cf1c"
+    },
+    "m07-concurrency": {
+      "source": "actionbook/rust-skills",
+      "commit": "5c40d3ad785193231b7d0dbfb8e1eb447e5edd94",
+      "sourceType": "github",
+      "skillPath": "skills/m07-concurrency/SKILL.md",
+      "computedHash": "f4a7025464915bcd2549deacca49aed9761a6479e196ebfb77234d76a3941a89"
+    },
+    "m09-domain": {
+      "source": "actionbook/rust-skills",
+      "commit": "5c40d3ad785193231b7d0dbfb8e1eb447e5edd94",
+      "sourceType": "github",
+      "skillPath": "skills/m09-domain/SKILL.md",
+      "computedHash": "1f6afa680876f208a1f12315cf587001c9252c8cf3dc5dfe2df1dfcd7bcdaf5f"
+    },
+    "m10-performance": {
+      "source": "actionbook/rust-skills",
+      "commit": "5c40d3ad785193231b7d0dbfb8e1eb447e5edd94",
+      "sourceType": "github",
+      "skillPath": "skills/m10-performance/SKILL.md",
+      "computedHash": "d936b9cbe295fb83726654a3882cf3d46fee6a0966ed672489863847cdeb51d7"
+    },
+    "m11-ecosystem": {
+      "source": "actionbook/rust-skills",
+      "commit": "5c40d3ad785193231b7d0dbfb8e1eb447e5edd94",
+      "sourceType": "github",
+      "skillPath": "skills/m11-ecosystem/SKILL.md",
+      "computedHash": "b944854d395a22d69c670628321b7e61091ff11b79a0be20ecafa0fd3d47a156"
+    },
+    "m12-lifecycle": {
+      "source": "actionbook/rust-skills",
+      "commit": "5c40d3ad785193231b7d0dbfb8e1eb447e5edd94",
+      "sourceType": "github",
+      "skillPath": "skills/m12-lifecycle/SKILL.md",
+      "computedHash": "157e3d8769de497ebe74300d594b5085ecbb80e87fced2438a3b2a110174469a"
+    },
+    "m13-domain-error": {
+      "source": "actionbook/rust-skills",
+      "commit": "5c40d3ad785193231b7d0dbfb8e1eb447e5edd94",
+      "sourceType": "github",
+      "skillPath": "skills/m13-domain-error/SKILL.md",
+      "computedHash": "07f8c10f28ed8f68155519a3ed8194c457b8355acf6182e06d9f34a0686880f5"
+    },
+    "m14-mental-model": {
+      "source": "actionbook/rust-skills",
+      "commit": "5c40d3ad785193231b7d0dbfb8e1eb447e5edd94",
+      "sourceType": "github",
+      "skillPath": "skills/m14-mental-model/SKILL.md",
+      "computedHash": "719aa7326dd78c708197ad8175e0e85a68495c569a7df203b290a32f6793b941"
+    },
+    "m15-anti-pattern": {
+      "source": "actionbook/rust-skills",
+      "commit": "5c40d3ad785193231b7d0dbfb8e1eb447e5edd94",
+      "sourceType": "github",
+      "skillPath": "skills/m15-anti-pattern/SKILL.md",
+      "computedHash": "cca1e6bdaa93e83822a52347f77a2b17a28b2b45d71ddad7a485cc1c4bc5abc5"
+    },
+    "meta-cognition-parallel": {
+      "source": "actionbook/rust-skills",
+      "commit": "5c40d3ad785193231b7d0dbfb8e1eb447e5edd94",
+      "sourceType": "github",
+      "skillPath": "skills/meta-cognition-parallel/SKILL.md",
+      "computedHash": "5e07e0e9845142a3d58aed756b9e08771a40561bea08f75987338ca317a1aa86"
+    },
+    "observability-and-instrumentation": {
+      "source": "addyosmani/agent-skills",
+      "commit": "e997ac5b9a74eab332d5e9793bb38a38c8cfdd74",
+      "sourceType": "github",
+      "skillPath": "skills/observability-and-instrumentation/SKILL.md",
+      "computedHash": "3720071b84c8ee80bd5649dbc66da14a5a7b94262c672ca56bcb5b7480b463c4"
+    },
+    "performance-optimization": {
+      "source": "addyosmani/agent-skills",
+      "commit": "e997ac5b9a74eab332d5e9793bb38a38c8cfdd74",
+      "sourceType": "github",
+      "skillPath": "skills/performance-optimization/SKILL.md",
+      "computedHash": "5408f84feeed8c4e5abf5ee6b557e6d4e22a838c95e9d98bf64f49f4d1d16c7e"
+    },
+    "planning-and-task-breakdown": {
+      "source": "addyosmani/agent-skills",
+      "commit": "e997ac5b9a74eab332d5e9793bb38a38c8cfdd74",
+      "sourceType": "github",
+      "skillPath": "skills/planning-and-task-breakdown/SKILL.md",
+      "computedHash": "fcce61a29cf1364e78761639c0eaddd97c033e64531749f62b000c9d0a257f21"
+    },
+    "rust-call-graph": {
+      "source": "actionbook/rust-skills",
+      "commit": "5c40d3ad785193231b7d0dbfb8e1eb447e5edd94",
+      "sourceType": "github",
+      "skillPath": "skills/rust-call-graph/SKILL.md",
+      "computedHash": "2b03ff07f54181ad56bbfd3539bc31029e22ed5e8bfd93f7804fec4eba119622"
+    },
+    "rust-code-navigator": {
+      "source": "actionbook/rust-skills",
+      "commit": "5c40d3ad785193231b7d0dbfb8e1eb447e5edd94",
+      "sourceType": "github",
+      "skillPath": "skills/rust-code-navigator/SKILL.md",
+      "computedHash": "33542fcf1b663ed01839d8333d0683cbe3518f896ab73203e78383e4f5d4c4e7"
+    },
+    "rust-daily": {
+      "source": "actionbook/rust-skills",
+      "commit": "5c40d3ad785193231b7d0dbfb8e1eb447e5edd94",
+      "sourceType": "github",
+      "skillPath": "skills/rust-daily/SKILL.md",
+      "computedHash": "15ffb07abceea4c7b3edcae661ee1750acc921c39b6a66acd18d89d2ce94895c"
+    },
+    "rust-deps-visualizer": {
+      "source": "actionbook/rust-skills",
+      "commit": "5c40d3ad785193231b7d0dbfb8e1eb447e5edd94",
+      "sourceType": "github",
+      "skillPath": "skills/rust-deps-visualizer/SKILL.md",
+      "computedHash": "779778c9133c1ea0d4c2ee582512baf045073ced8a5631b78d4f413e48691e49"
+    },
+    "rust-learner": {
+      "source": "actionbook/rust-skills",
+      "commit": "5c40d3ad785193231b7d0dbfb8e1eb447e5edd94",
+      "sourceType": "github",
+      "skillPath": "skills/rust-learner/SKILL.md",
+      "computedHash": "ee848925d5faa52857e7e9ca3429d5937cf4814285940b0802cea27758ef1144"
+    },
+    "rust-refactor-helper": {
+      "source": "actionbook/rust-skills",
+      "commit": "5c40d3ad785193231b7d0dbfb8e1eb447e5edd94",
+      "sourceType": "github",
+      "skillPath": "skills/rust-refactor-helper/SKILL.md",
+      "computedHash": "d8617e08e5be6363b5164d4dc22509372ca0cb0716a164af5b14bf730dba32e8"
+    },
+    "rust-router": {
+      "source": "actionbook/rust-skills",
+      "commit": "5c40d3ad785193231b7d0dbfb8e1eb447e5edd94",
+      "sourceType": "github",
+      "skillPath": "skills/rust-router/SKILL.md",
+      "computedHash": "07a2d91775024525160057f9065a8fc0ec26453f0f3be06f38963cc374c9d8d4"
+    },
+    "rust-skill-creator": {
+      "source": "actionbook/rust-skills",
+      "commit": "5c40d3ad785193231b7d0dbfb8e1eb447e5edd94",
+      "sourceType": "github",
+      "skillPath": "skills/rust-skill-creator/SKILL.md",
+      "computedHash": "c0c60c7210d0f9d4335227624cd8ba406dd0ba2891ac2db7fe0bd2ca62b03219"
+    },
+    "rust-skills": {
+      "source": "leonardomso/rust-skills",
+      "commit": "0e94a9e517cb2539bfd30694f5d785f610c27374",
+      "sourceType": "github",
+      "skillPath": "SKILL.md",
+      "computedHash": "eb4cf75480d31d48bd1ff4f4ac7d9eabe19b50e294d3166fc558b9d8adf526c4"
+    },
+    "rust-symbol-analyzer": {
+      "source": "actionbook/rust-skills",
+      "commit": "5c40d3ad785193231b7d0dbfb8e1eb447e5edd94",
+      "sourceType": "github",
+      "skillPath": "skills/rust-symbol-analyzer/SKILL.md",
+      "computedHash": "7d14f09bb5a8d0e6465e99472f4e344d1fd0c326b50153a27ec82cacd2c80fd3"
+    },
+    "rust-trait-explorer": {
+      "source": "actionbook/rust-skills",
+      "commit": "5c40d3ad785193231b7d0dbfb8e1eb447e5edd94",
+      "sourceType": "github",
+      "skillPath": "skills/rust-trait-explorer/SKILL.md",
+      "computedHash": "3a5f06e1aa2bfd9b21469996720fa202ca7ed5e675704be21c7a234630bb143e"
+    },
+    "security-and-hardening": {
+      "source": "addyosmani/agent-skills",
+      "commit": "e997ac5b9a74eab332d5e9793bb38a38c8cfdd74",
+      "sourceType": "github",
+      "skillPath": "skills/security-and-hardening/SKILL.md",
+      "computedHash": "208e6266166f4a97792a391487f8df528c6a02ad70a0a86ada699836b2a70730"
+    },
+    "shipping-and-launch": {
+      "source": "addyosmani/agent-skills",
+      "commit": "e997ac5b9a74eab332d5e9793bb38a38c8cfdd74",
+      "sourceType": "github",
+      "skillPath": "skills/shipping-and-launch/SKILL.md",
+      "computedHash": "19d787c1f9daaf7a2982cd181dbed5f014d2fc208a8b2f37a550a594f83ed9c3"
+    },
+    "source-driven-development": {
+      "source": "addyosmani/agent-skills",
+      "commit": "e997ac5b9a74eab332d5e9793bb38a38c8cfdd74",
+      "sourceType": "github",
+      "skillPath": "skills/source-driven-development/SKILL.md",
+      "computedHash": "60cff6e7bfaeebf37929399786730b260ea0441b23e1a05fdb4d7244eac3fae4"
+    },
+    "spec-driven-development": {
+      "source": "addyosmani/agent-skills",
+      "commit": "e997ac5b9a74eab332d5e9793bb38a38c8cfdd74",
+      "sourceType": "github",
+      "skillPath": "skills/spec-driven-development/SKILL.md",
+      "computedHash": "e560111a2823150a1be6d5a264cd3449dbdb9c67de011eea29204b4dee438e58"
+    },
+    "test-driven-development": {
+      "source": "addyosmani/agent-skills",
+      "commit": "e997ac5b9a74eab332d5e9793bb38a38c8cfdd74",
+      "sourceType": "github",
+      "skillPath": "skills/test-driven-development/SKILL.md",
+      "computedHash": "521e792df0e2def3e38141e5336fe642e1f3bda1991a4b8e7b7be131d9e4a113"
+    },
+    "unsafe-checker": {
+      "source": "actionbook/rust-skills",
+      "commit": "5c40d3ad785193231b7d0dbfb8e1eb447e5edd94",
+      "sourceType": "github",
+      "skillPath": "skills/unsafe-checker/SKILL.md",
+      "computedHash": "7a474d999350c2eb6ff0420502e4b78e0ac26b87b5328b4b1ff0824edd89cfcf"
+    },
+    "using-agent-skills": {
+      "source": "addyosmani/agent-skills",
+      "commit": "e997ac5b9a74eab332d5e9793bb38a38c8cfdd74",
+      "sourceType": "github",
+      "skillPath": "skills/using-agent-skills/SKILL.md",
+      "computedHash": "741fa4facdd7970231184d621f4c5eaa5c52dedc3cf53e87b25f9daf4873d2cc"
+    }
+  }
+}

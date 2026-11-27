@@ -1,0 +1,577 @@
+---
+name: cratestack-policy-auth
+description: CrateStack access control and identity — the @@allow / @@deny policy expression language, how auth() resolves, implementing AuthProvider (AuthRefusal, Credential, first_success chains, the conformance kit), CratestackContext and the principal contract, @authn step-up (insufficient_user_authentication), and the cratestack-auth crate (Ed25519 request signing, SD-JWT identity tokens, multi-issuer JWKS). Load when writing or debugging a model or procedure policy, when a read or a relation filter returns 404 or fewer rows than expected, when a policy traverses a self-relation, when an @allow / @deny / @@deny / @authorize / @authn is refused or seems not to apply, when a provider must refuse with a reason or combine several credentials, or when wiring authentication into a CrateStack server.
+---
+
+# Policy and auth
+
+> **Verified against CrateStack 0.20.6.** CrateStack is pre-1.0 and its crates version
+> together, so a minor release can break any of this. Check what you are actually on —
+> `cratestack --version`, and the `cratestack-*` version in `Cargo.toml` — before relying
+> on a fact here. Anything that arrived in a specific release is marked *(since X.Y.Z)*;
+> the full feature-to-release map is in
+> [cratestack/references/version-history.md](../cratestack/references/version-history.md).
+
+Two dialects that look alike and are not:
+
+- **Model / view policy** — `@@allow("action", expr)` and `@@deny(...)`, double
+  `@`, compiled into **SQL** and evaluated by the database.
+- **Procedure / query policy** — `@allow(expr)` and `@deny(...)`, single `@`,
+  evaluated in **Rust** against the decoded arguments and the auth context.
+
+Field-level `@allow` is rejected at parse time. It never existed and enforced
+nothing.
+
+## Deny by default
+
+Both dialects follow the same rule:
+
+```
+deny present:  NOT (deny1 OR deny2 …) AND (allow1 OR allow2 …)
+deny absent:                              (allow1 OR allow2 …)
+empty allow list:                          FALSE
+```
+
+**A model with no `@@allow` for an action denies that action completely.** That
+is a `FALSE` literal in the SQL, not an oversight.
+
+## The action vocabulary
+
+`list`, `detail`, `read`, `create`, `update`, `delete`, `all`. `read` fills both
+the `list` and `detail` slots. A view's `@@allow` supports only `read`; its
+`@@deny`, `read` or `all`.
+
+## Write every policy attribute exactly — a skipped one fails open
+
+On every release through 0.14.0, the generator applied a policy attribute only
+when its text was exactly the documented form. It **silently skipped anything
+else**, and `cratestack check` still said `schema OK`. A skipped `@deny` or
+`@@deny`, or a skipped `@authorize`, leaves the declaration **more permissive
+than written**. Measured on 0.12.0: a procedure with
+`@deny(hasRole("banned")) // note` answered `200 OK` to a banned caller. A
+skipped `@allow` leaves it closed. Spellings that were skipped:
+
+- `@deny (…)`, `@ deny(…)`, `@Deny(…)`, `@@DENY(…)`, `@deyn(…)`,
+  `@authorise(…)`, and a bare `@deny`;
+- anything after the closing `)`: `// comment`, `;`, `,`, a word;
+- a second attribute on the same line (`@no_idempotency @deny(…)`);
+- a model rule naming an action no slot generates (`@@deny("raed", …)`,
+  `@@deny("read,update", …)`), or a view `@@deny` naming anything but `read` or
+  `all`;
+- an invisible character in the name (a zero-width space inside `deny`) or
+  inside a string (`hasRole("ban<U+200B>ned")` compares against a role no caller
+  has);
+- a `@deny(…)` written above a procedure after a blank line, which belonged to
+  the declaration *before* it.
+
+*(since 0.14.1, GHSA-69g4-xvcm-vm2j)* All of these are now refused by
+`cratestack check` (and the LSP), and the generator itself refuses to compile a
+policy it cannot read (`compile_error!` from the `include_*_schema!` call). The
+accepted forms:
+
+```cstack
+model Doc {
+  id      Int @id
+  ownerId Int
+
+  @@allow("read", auth() != null)
+  @@deny("delete", hasRole("banned"))
+}
+
+procedure archive(args: ArchiveArgs): Doc
+  @allow(auth() != null)
+  @deny(hasRole("banned"))
+  @authorize(Doc, update, args.id)
+```
+
+Keep each policy attribute alone on its line, with no trailing comment. Put
+comments on the line above. That form is read the same way on every release. A
+trailing `//` comment is safe since 0.14.1: on 0.14.0 and earlier it made the
+generator skip the rule.
+
+- **Model / view:** `@@allow(` or `@@deny(` directly, a quoted action from the
+  list above (`"…"` or `'…'`; a view accepts `'…'` only since 0.14.1), `,`, a
+  non-empty expression, `)`, then the end of the line or, since 0.14.1, a `//`
+  comment.
+- **Procedure / query:** `@allow(expr)` / `@deny(expr)` with no space before `(`
+  and nothing after `)` (since 0.14.1, a `//` comment is allowed).
+  `@authorize(Model, action, args.path)` takes three arguments and an action from
+  `detail`, `read`, `update`, `delete`. Since 0.14.1, several attributes may share a
+  line if a space separates them; on 0.14.0 and earlier the second was skipped.
+  Attributes belong to the signature above, up to the first blank line (see
+  `cratestack-schema`, "Procedures").
+
+**Upgrading: one change widens access with no error.** An `@allow(…)` or
+`@@allow(…)` with a trailing `// comment`, or sharing a procedure line with
+another attribute, was skipped on 0.14.0 and earlier. The declaration or action
+it names was therefore closed. Since 0.14.1 the rule applies. Confirm that each
+such rule grants what it says before upgrading. To find candidates:
+
+```bash
+grep -rnE --include='*.cstack' '@@?allow\(.*\)\s*//|@[a-z_]+(\(.*\))?\s+@allow' .
+```
+
+To find policy attributes that may have been skipped, use
+`grep -rnEi --include='*.cstack' '@+\s*(allow|deny|authori[sz]e)' .`. Review each
+hit that is not alone on its line in exactly the documented form. A misspelled
+name or one hiding an invisible character does not match; only `cratestack
+check` from a fixed release finds those. Both commands are from the framework
+CHANGELOG entry.
+
+## The predicate language
+
+Terms combined with `&&`, `||` and parentheses.
+
+| Form | Meaning |
+| --- | --- |
+| `auth() != null` / `auth() == null` | authenticated / anonymous |
+| `auth().isSystem()` | true only for a `SystemContext`-minted context; never survives deserialisation |
+| `hasRole("admin")` | the `roles` list contains that string, or `auth().role` is exactly it, or `auth().actor.role` is exactly it *(since 0.17.1, cratestack#1243: `roles` is new and the two legacy reads are independent; through 0.17.0 one `role`, then `actor.role` only when `role` was absent)* |
+| `inTenant("acme")` | `auth().tenant.id` is exactly that string |
+| `field == auth().x` | compare a column to an auth claim (dotted paths work: `auth().organization.id`) |
+| `field == "literal"` / `!=` | compare a column to a bool, int or string literal |
+| `field in [A, B, C]` / `not in [...]` *(since 0.9.1)* | membership; an empty list is a compile error |
+| `a.b.c` | a relation path, with quantifiers `ToOne`, `Some`, `Every`, `None` |
+| a bare field | **only** for a `Boolean` + required field; anything else is a compile error |
+
+Procedure policy adds predicates over the decoded arguments —
+`InputFieldIsTrue { field }` and friends.
+
+**A wrong-typed claim denies; `!=` and `not in` pass only on a decided difference**
+*(since 0.15.4, ADR 0019)*. Comparisons are three-valued (equal, different, undecidable) and an
+undecidable pair satisfies neither `==` nor `!=`, as a SQL `NULL` does; a `@deny` on it
+fires. On 0.15.3 and earlier a `"7"` claim satisfied `auth().tenantId != 7` (a string is not
+an integer), so a policy fed by a claim your identity provider may issue as a string could
+pass for the wrong caller. In a model policy any claim whose type does not match the literal
+is undecidable; in a procedure policy only an integer against a string is, in either order,
+and a `Bool`, `Float` or `Null` operand still passes `!=` (a known gap, in the framework's
+`ROADMAP.md`). A string claim in a numeric comparison denies, and a `BigInt` claim must be a JSON
+integer in a policy comparison. A pushed-down string claim renders as `$N::text`. Audit every
+`!=` and `not in` policy for the claim types it can actually receive.
+
+## The one behaviour that surprises everyone
+
+**A denied model read is not a 403.**
+
+Read policy becomes a `WHERE` predicate, so:
+
+- a denied `find_unique` returns `Ok(None)`, and the generated GET handler turns
+  that into **404**;
+- a denied list read just returns **fewer rows, with no error at all**.
+
+Among model operations, only mutations produce `Forbidden` (403) —
+`"<action> policy denied this operation"`. Update and delete put the policy in their own `WHERE`
+(`… WHERE pk = $1 AND (<policy>) RETURNING …`), so a row that is denied **or
+missing** answers 403; create evaluates the policy in Rust against the input
+values. Procedure and `query` policy also answers 403
+(`"procedure policy denied this operation"` / `"query policy denied this
+operation"`).
+
+This is intentional: distinguishing "denied" from "does not exist" would be an
+existence oracle. Design your clients around 404, not 403, for reads. It is also
+why a `@version` mismatch re-reads through the read policy before answering —
+if you cannot see the row you get `Forbidden`, keeping denials and missing rows
+indistinguishable.
+
+## A related model's read policy governs relation filters and sorts
+
+*(since 0.13.0, GHSA-p55v-6xv5-93p3)* A relation filter or sort
+(`?author.email=…`, `?comments.some.body__contains=…`, `where=`, `sort=author.name`,
+the RPC `list` slots, `@@paged` `totalCount`, the typed builder's relation paths)
+reads the related table in a correlated subquery, and that subquery now applies
+the **related model's** list-slot read policy and `@@soft_delete` filter — the
+same scope `find_many` and `?include=` apply to it. So:
+
+- a related row the caller cannot read behaves as if it did not exist: a to-one
+  filter never matches it (`ne` and `isNull` included), `none` / `every` over only
+  hidden children are true, a sort key through it is `NULL`;
+- **a related model with no read `@@allow` is default-deny here too**: every
+  relation path through it matches nothing. Give it the `@@allow("read", …)`
+  that says who may see it;
+- each hop of a multi-hop path applies its own model's scope.
+
+Before 0.13.0 the subquery applied neither, so any caller who could list a model
+could test and order by columns of related rows it could not read, and rebuild a
+hidden string with `startsWith`. `@@internal("read")` does not change this: it
+removes routes, not the read policy that governs paths through the model.
+
+**Self-relations** (`manager User? @relation(fields:[managerId], references:[id])`
+on `User`) were evaluated uncorrelated before 0.13.0 — compared the inner row with
+itself — in relation filters and sorts **and in read policies that traverse one**
+(`@@allow("read", manager.name == …)`), so they matched every row or none. On the
+server role they now correlate with the outer row. Audit any policy written
+against an older version that traverses a self-relation: it may have admitted
+rows it should not have.
+
+## Where policy is *not* enforced
+
+- **The embedded SQLite backend.** Policies parse, malformed ones still fail
+  compilation, the slots are still on the descriptor — and nothing reads them.
+  Clients are untrusted; authorization is the server's job. Its relation filters
+  and sorts also ignore the related model's `@@soft_delete`, and still evaluate
+  self-relations uncorrelated.
+- **Streamed `@@subscribe` events, in 0.17.0 and earlier.** A subscriber only
+  authenticated; no row-level policy was applied, so every admitted caller —
+  anonymous included — received every event. Fixed *(since 0.17.1,
+  cratestack#1253)*: each event now passes the model's `detail`/`read` policy.
+  See `cratestack-rpc`.
+- **Studio's `rw` database targets.** `mode = "rw"` on a `[target.db]` is
+  database-level access: Studio evaluates no policy and consults no `@@internal`
+  suppression. The audit log is the compensating control, and it is detective,
+  not preventive.
+- **`@@internal("create")`** suppresses the *route*, not the policy. And it does
+  not exempt handler-name collisions, because the handler functions are still
+  emitted.
+
+## Implementing `AuthProvider`
+
+```rust
+pub trait AuthProvider: Clone + Send + Sync + 'static {
+    type Error: Into<CratestackError> + Send;
+    fn authenticate(&self, request: &RequestContext<'_>)
+        -> impl Future<Output = Result<CratestackContext, Self::Error>> + Send;
+    // since 0.17.1 (cratestack#1243): defaulted, see `first_success` below
+    fn credential<'r>(&self, request: &RequestContext<'r>) -> Credential<'r> {
+        Credential::Unknown
+    }
+}
+```
+
+An `async fn authenticate` in the impl satisfies it directly — the verbose
+`impl Future` form in generated docs is convention, not a requirement.
+
+`RequestContext<'a>` gives you `method`, `path`, `query`, `headers`, `body` and
+`extensions`. A plain closure
+`Fn(&HeaderMap) -> Result<CratestackContext, E>` also works via a blanket impl.
+
+Build the context with `CratestackContext::anonymous()`,
+`::authenticated([(name, Value)])`, or `::from_principal(Some(p))`. Policies read
+it through `ctx.auth_field(name)`, which resolves dotted paths through the auth
+identity map and then the principal.
+
+**The principal contract** *(since 0.17.1, cratestack#1243, ADR 0021 §2; 0.17.0 and earlier
+have none of it)*. Reserved top-level claims with fixed types: `sub` (string), `roles` (list of
+strings), `role` (legacy string), `tenant.id` (string), `auth_time` and `exp` (integer
+seconds), `amr` (list of strings), `acr` (string), `cnf` (map; `cnf.jkt` a base64url JWK
+thumbprint), `key_role` (`ambient` | `user_present`). `id` is **not** reserved. Prefer the builder
+to hand-built claim maps (`crates/cratestack-core/src/context/builder.rs`):
+
+```rust
+let ctx = CratestackContext::builder("user-42")         // sub
+    .roles(["admin", "teller"])
+    .tenant("acme")                                     // tenant.id
+    .cnf_jkt(thumbprint)
+    .key_role(KeyRole::UserPresent)
+    .claim("kycStatus", Value::String("verified".into()))
+    .build();
+```
+
+- `build()` equals `from_principal` of the same claims; it never sets `isSystem()` or a verified
+  signer. Other setters: `.auth_time`, `.amr`, `.acr`, `.cnf(member, value)`, `.expires_at`.
+- Typed readers return `None` for absent **or mistyped** claims: `subject()`, `roles()`,
+  `auth_time()`, `amr()`, `acr()`, `cnf(member)`, `cnf_jkt()`, `key_role()`, `expires_at()`.
+- `subject()` (`sub`, then `actor.id`, then `id`; an integer as its digits) is the framework's
+  one "who": audit actor, MCP namespace, sync default (`SyncPrincipal::from_subject`).
+  `principal_actor_id()` now returns `Option<Cow<str>>` and answers the same.
+- An `auth` block that declares a reserved name with another type fails `cratestack check`
+  (`roles String`, `auth_time String`). Declare `roles String[]`, `auth_time Int`.
+- *(since 0.17.0)* An `auth` field whose type is an **ordinal enum** (`Pending = 1`) is
+  refused by `check`: a claim's encoding is the provider's choice, so a comparison could
+  fail open. In policies, ordinal enum variants are written by name and compared as
+  numbers.
+
+Every generated handler authenticates, then calls
+`enrich_context_from_headers(ctx, &headers, trusted_proxy, peer)` before handing
+`&ctx` to the delegates. That is where client IP resolution happens — see
+`cratestack-data-integrity`.
+
+**Shaping a refusal: `AuthRefusal`** *(since 0.17.1, cratestack#1208; every published release up
+to 0.17.0 lacks it)*. Return `AuthRefusal::unauthenticated(message)` (401) or
+`AuthRefusal::forbidden(message)` (403), converted with `.into_error()` (there is no `From`
+impl, so `?` and `.into()` do not compile), when the client must act on *why* it was refused:
+
+```rust
+Err(AuthRefusal::unauthenticated("attestation expired")
+    .with_member("error", Value::String("attestation_expired".into()))
+    .with_challenge(r#"Signature error="attestation_expired""#)
+    .into_error())
+```
+
+- The code stays `UNAUTHORIZED` / `FORBIDDEN` (RPC `unauthenticated` / `permission_denied`).
+- `with_member` adds a top-level envelope member. The names `code`, `message` and `details` are
+  silently ignored (`RESERVED_ENVELOPE_MEMBERS`).
+- `with_details` sets `details`.
+- `with_challenge` adds a `WWW-Authenticate` header; a value that is not printable ASCII is
+  ignored.
+- REST, RPC unary and RPC batch send the same status, members and header. A batch refusal answers
+  the whole batch.
+- `cratestack-mcp` renders it the same way (status, members, `details`, challenges after its own
+  `resource_metadata` one), and can let a non-bearer provider decide presence: see
+  `cratestack-mcp`. The prototype sync endpoints carry the members in their error body, with a new
+  `forbidden` code for a 403, and send the public message, never the error's detail.
+
+The envelope types gained a public `extra` map (`CratestackErrorResponse`, `RpcErrorBody`), and
+`cratestack-client-rust`'s `ClientError::Remote { error }` is now `Option<Box<_>>`. Struct literals
+of either envelope need `extra: Default::default()`. The tests to copy from are
+`crates/cratestack-api/tests/auth_refusal_rest.rs` and `auth_refusal_rpc.rs`. How each generated
+client (Rust, Dart, TypeScript) reads the members and challenges *(since 0.17.1, cratestack#1243)*
+is in `cratestack-clients`.
+
+**On 0.17.0 and earlier**, `Self::Error: Into<CratestackError>` gives only the standard
+`{code, message}` envelope with no extra member, no header and no choice of status. The workaround
+(fespalier's `examples/cratestack`) is a verification layer in front of the router that writes its
+own 401/403 and records the verified caller as a request extension; the `AuthProvider` only turns
+that extension into a `CratestackContext`.
+
+`CachedAuthProvider::new(ctx)` returns a fixed context for every call. It is what
+`POST /rpc/batch` uses so a signing provider authenticates the real batch
+envelope once rather than per frame.
+
+**The canonical request** *(since 0.17.1, cratestack#1243)*. `RequestContext` is what a signing
+client signs: the declared method (`POST` for every RPC call), the declared route relative to the
+router's root (**never a mount prefix**: a router nested under `/api` hands `/rpc/<op_id>`), the raw
+query only where the operation reads one (REST model reads, MCP, sync; `None` on RPC and REST
+procedures), and the exact body bytes before decoding (a batch: the whole body, once). A REST
+model `/<id>` is the decoded id. Tests: `crates/cratestack-api/tests/canonical_request_{rest,rpc}.rs`.
+
+**Several credentials: `first_success`** *(since 0.17.1, cratestack#1243)*. Compose providers
+instead of writing a wrapper:
+
+```rust
+let auth = cratestack::first_success(oauth).or(device_signature);
+```
+
+In order, a member is skipped uncalled when its `credential()` is `Credential::Absent`; its
+authenticated context wins; **its error wins, never rescued by a later member** (fail closed); an
+anonymous answer moves on. No member authenticating is anonymous. `AuthProvider::credential` is a
+defaulted method (default `Credential::Unknown`: always called), read from the request head only
+(the body may be empty). Return `Credential::bearer(request.headers)` or
+`Credential::header(request.headers, "x-signature")` from it so a chain can skip the provider and
+MCP's `CredentialPresence::ask_provider()` can answer 401 before reading the body. Tests:
+`crates/cratestack-core/src/chain_tests.rs`.
+
+**Prove a provider: the conformance kit** *(since 0.17.1, cratestack#1243)*. Any `AuthProvider` you
+write (or wrap from an external library) gets one test, with `cratestack-auth-conformance` as a
+dev-dependency:
+
+```rust
+use cratestack_auth_conformance::{Expected, auth_conformance};
+
+auth_conformance(MyProvider::new(keys))
+    .accepts("user-42", |canonical| sign(canonical))   // headers, or Credentials with extensions
+    .refuses("expired", |c| expired(c), Expected::refusal(&refusal))
+    .run()
+    .await;
+```
+
+It runs REST, RPC unary, RPC batch (root and under a mount prefix) and MCP (with `ask_provider()`)
+and fails, listing every difference, unless the subject (`ctx.subject()`) and the refusal rendering (status, code,
+message, members, `details`, challenges) are the same everywhere, the provider gets the canonical
+request exactly, and it is called once per request. On MCP a plain (non-`AuthRefusal`) error keeps
+MCP's fixed message, so only status and code are compared there. SSE model subscriptions and sync
+are not driven yet. `CoseAuthProvider` and `SignedRequestAuthProvider` pass it. Copy from
+`crates/cratestack-auth-conformance/tests/kit.rs`, `in_house_cose.rs` (extensions) and
+`in_house_signed.rs` (a header signed over `Canonical`).
+
+**Wrapping an external library** *(since 0.17.1, cratestack#1245)*: `examples/auth-pluggable` (a
+standalone workspace) runs one schema and one suite against three providers, one file each in
+`src/providers/`: `inhouse.rs` (`SignedRequestAuthProvider` chained with COSE), `devsig.rs`
+(Authkestra's `authkestra_devsig::verify`: build `SignedRequest` from the `RequestContext`, refuse
+with `AuthRefusal::unauthenticated(..).with_member("error", code)`) and `oidc.rs` (Authkestra's
+`JwtStrategy` with DPoP: rebuild `http::request::Parts` from the canonical method, path and query
+plus the headers, map the token onto the principal contract with `CratestackContext::builder`).
+Each implements `credential()` too. Copy the shape, not the library: CrateStack itself never
+depends on Authkestra, and CI fails if a framework crate does.
+
+## `@default(auth().x)` is not enforcement
+
+It fills a column on create and nothing more. A model with
+`tenantId String @default(auth().tenantId)` and no tenant predicate in its read
+policy is **fully cross-tenant readable**. Auth-defaulted columns are also
+excluded from upsert's `DO UPDATE` set, so the update branch keeps whatever was
+there — verifying that it belongs to the caller is the update policy's job.
+
+Auth-defaulted columns are limited to `String`/`Cuid`, `Int`, `BigInt` *(since
+0.15.4; the claim may be a JSON integer or the canonical decimal string)* and
+`Boolean` (`crates/cratestack-macros/src/model/descriptor/defaults.rs`), and act as
+fallbacks: they fill the field only when the create input omits it. An `auth()`
+default never reaches migration DDL *(since 0.17.0, cratestack#1209)*, and
+`lower(auth().email)` or any other expression around it is refused by `check`.
+
+## `@authorize` on procedures
+
+`@authorize(Model, action, args.path)` runs a model's policy for you against a
+primary key carried in the procedure's arguments, as a one-shot
+`SELECT 1 FROM <table> WHERE pk = $1 AND (<policy>) LIMIT 1`, and answers
+`Forbidden` when nothing matches. Actions are `detail`/`read`, `update` and
+`delete` only, and the path's type must match the model's PK type.
+On 0.14.0 and earlier a malformed or misspelled one was skipped, so
+`authorize_with_db` returned `Ok` without consulting the database. *(since
+0.14.1, GHSA-69g4-xvcm-vm2j)* `cratestack check` refuses it.
+
+## `@authn`: step-up on procedures
+
+*(since 0.17.1, cratestack#1244, ADR 0022)* A procedure can require a fresh or
+strong authentication, not just an identity:
+
+```text
+mutation procedure payOrder(args: PayArgs): Receipt
+  @allow(auth() != null)
+  @authn(maxAge: 300, amr: ["hwk", "user"], acr: ["aal2", "aal3"])
+```
+
+The keys:
+
+- `maxAge`: `now - auth_time` must be at most that many seconds.
+- `amr`: every listed method must be in the caller's `amr`.
+- `acr`: the caller's `acr` must be one of the listed classes.
+
+The rules:
+
+- It runs **after** `@allow`/`@deny`, so a caller the policy refuses gets 403, never a step-up.
+- The facts are the principal contract's `auth_time` / `amr` / `acr`. A missing one fails closed, so
+  your provider must fill them (`CratestackContext::builder(..).auth_time(..).amr(..).acr(..)`).
+- Every path enforces it: REST, RPC unary, each batch frame on its own, MCP tools, and direct
+  `authorize`/`invoke` calls. A `subscription procedure` *(since 0.18.0)* also takes
+  `@authn` (and `@allow` / `@deny` / `@authorize`), evaluated once, when the subscription
+  opens (see `cratestack-rpc`, `references/subscriptions.md`).
+- **Revocation is not a policy check.** *(since 0.20.5, cratestack#1381)* A stream authenticates once, at open. When the app
+  logs a principal out, suspends it or revokes its device, call `db.stream_revocations().revoke(..)` to end
+  its live streams (see `cratestack-rpc`, `references/subscriptions.md`). The tombstone that call can keep
+  refuses new **stream opens** only: it does **not** refuse unary calls, so your `AuthProvider` must still
+  reject a revoked principal itself. Do not poll to detect revocation.
+- *(since 0.17.2, cratestack#1261)* The step-up refusal is **not recorded** under an `Idempotency-Key`
+  (nor MCP's `_meta` key), and neither is the provider's or `@allow`/`@deny`'s: they come before
+  the body, so the layer releases the key and the retry after the re-proof runs once under the same
+  key. On 0.17.1 the refusal is recorded and that retry gets the stored 401 back. Do not return an
+  `AuthRefusal` from a procedure body after a write expecting the same: a body's refusal is
+  recorded. Tests: `crates/cratestack-api/tests/authn_idempotency_{rest,rpc}.rs`,
+  `mcp_authn_idempotency.rs`.
+
+An unmet requirement is RFC 9470's step-up, a 401 (RPC `unauthenticated`) carrying:
+
+- the member `error: "insufficient_user_authentication"`;
+- `details` with `max_age` / `acr_values` / `amr` (only those required) and `unmet` (which failed);
+- on REST, `WWW-Authenticate: Bearer error="insufficient_user_authentication", …, max_age="300",
+  acr_values="aal2 aal3"`.
+
+Do not hand-write that check in a procedure body any more. `cratestack-auth` fills `amr` (the token's
+methods plus `pop`) and a user's `auth_time` (its id token's claim, which is the mint time by
+default). COSE signers report `amr: ["pop"]`.
+
+There is no model-level `@@authn` yet. Tests: `crates/cratestack-api/tests/authn_rest.rs`,
+`authn_rpc.rs`, `mcp_authn.rs`.
+
+**Known issue on 0.17.1: the step-up `401` is recorded under an `Idempotency-Key`**
+(cratestack#1261, fixed in 0.17.2). The idempotency layer (and MCP's admission) records an `AuthRefusal`
+like any other answer, so a client that steps up and resends the call under the **same** key
+gets the stored `401` replayed, and the procedure never runs. `retry_after_step_up` /
+`retryAfterStepUp` hit it whenever the call they retry carries a fixed key; so does a retry after
+renewing an expired credential. A call without a key is unaffected. Do not tell a user the
+same-key retry works on 0.17.1.
+
+## `@device_auth` legs: public means exactly `@allow(true)`
+
+*(since 0.19.7, cratestack#1303)* A procedure marked `@device_auth(role: "...")` (see `cratestack-schema`) is called by a device that
+has no session yet, so every leg except `revoke` (the four required ones and the optional
+`sendEnrolmentCode`) must carry exactly one `@allow(true)` (whitespace-insensitive) and no `@deny`, `@authn`
+or `@authorize`; anything else is a parse error at the marker. `revoke` is the reverse: the device signs it,
+and a `revoke` that admits a caller with no session is refused ("`revoke` must not be public: anyone could revoke any device by its id"). This is decided on the policy's meaning, not its text: `@allow(true)`, `@allow(true || auth() != null)` and `@allow(auth() == null)` are refused; `@allow(auth() != null)`, or `@allow(true)` with `@deny(auth() == null)`, is accepted. A `revoke` with no `@allow` is deny-by-default: accepted, but no device can be revoked.
+
+## `cratestack-auth`
+
+Optional, and broad. The pieces you are most likely to want:
+
+**Ed25519 request signing** (SigV4-style canonical request) —
+`sign_request(SignRequestParams)`, `SignedRequestVerifier`, `DeviceKeyResolver`,
+`NonceStore` (`nonce_store_from_redis_url`), plus
+`canonical_signature_base` / `canonical_query` / `content_sha256_base64url` if
+you need to reproduce the canonicalisation on a client.
+
+`DeviceKeyResolver` has **two required methods** *(since 0.13.0, cratestack#1005)*:
+`lookup_device_verifying_key(key_id: &str)` →
+`Result<Option<VerifyingKey>, AuthError>`, and
+`lookup_device_verifying_keys_by_thumbprint(kid_prefix: &[u8])` →
+`Result<Vec<VerifyingKey>, AuthError>`. The second one returns every **active**
+device key whose RFC 9679 thumbprint starts with the 8-byte COSE `kid`, and
+`Ok(vec![])` for unknown or revoked keys. Filtering on status is your job
+alone: a revoked key you return can still sign. When you enrol a key, store
+`cratestack_cose::thumbprint::kid_from_thumbprint(&cratestack_cose::thumbprint::okp_ed25519_thumbprint(vk.as_bytes()))`
+next to it. That needs the `cratestack-cose` crate, but not its `auth`
+feature. A service with no COSE traffic can return `Ok(Vec::new())`. The
+method has no default on purpose, so a one-method implementation no longer
+compiles.
+
+The COSE enrolment challenge functions `build_cose_enroll_response` /
+`parse_cose_enroll_response` are **no longer in `cratestack-auth`**
+*(since 0.13.0, cratestack#1005)*. Import them from `cratestack_cose::auth`, with
+`cratestack-cose = { …, features = ["auth"] }`. `EnrollResponse`,
+`ENROLL_CHALLENGE_COSE_KID` and `CHALLENGE_SIGNING_KEY_ENV` stay in
+`cratestack-auth`.
+
+Bridge it in with
+`SignedRequestAuthProvider::new(verifier).allow_transport_callers(mode)`, where
+mode is `Never`, `SafeReadOnly` or `AllMethods`.
+
+*(since 0.17.1, cratestack#1243)* `.principal_mapper(PrincipalMapper::..)` picks the context
+shape: `product()` (the default: today's `actor` / `session` / `id` / `role` / `kycStatus` shape
+plus `sub`, `roles` and `cnf` — `kid`, and `jkt` when the id token carried `cnf.jwk`),
+`contract([names])` (contract names plus only the named product claims), or `custom(f)`. A
+service caller's `sub` is `svc:<key id>`. `UserPrincipal` gains `bound_key_jkt`, so a struct
+literal needs it.
+
+Env knobs: `CRATESTACK_AUTH_SIGNATURE_TRUSTED_KEYS`,
+`…_TRUSTED_ISSUERS`, `…_MAX_SKEW_SECONDS`, `…_REPLAY_WINDOW_SECONDS`.
+
+**SD-JWT identity tokens** — `issue_sd_id_token`, `IdTokenVerifier`,
+`IdTokenClaims`, `decode_disclosures_unverified`. Grant constant:
+`urn:cratestack:params:oauth:grant-type:id-sd-jwt`.
+
+**JWKS** — `jwks()`, `MultiIssuerJwksVerifier`, `ServiceSigningKey`,
+`mint_signed_token`, and `jwks_router()` behind the default-on `axum` feature.
+`default-features = false` keeps axum out for signing-only consumers.
+
+Bridges back into the framework: `auth_error_to_cratestack_error` and
+`principal_to_cratestack_context`.
+
+**A COSE signer as `auth()`** *(since 0.16.0, cratestack#1077)*. `cratestack_cose::auth::CoseAuthProvider`
+authenticates a verified signer through the service key registry, and through the device
+key registry only after `.authenticate_devices(true)`, which is **off by default**. With
+the gate on, `auth() != null` holds for any enrolled device key, with no user behind it.
+`with_service_keys` must hold service keys only: a device key placed there authenticates as
+a service whatever the gate. A failing service registry is a `500`, not anonymous, even with
+the gate off. Write user-only rules against `auth()` carefully. Wiring and the security notes are in
+`cratestack-server`.
+
+**Note on env lookups:** every one of these goes through an injectable lookup
+closure rather than calling `std::env::var` directly, because
+`std::env::set_var` is `unsafe` in edition 2024 and this workspace forbids
+`unsafe_code`. Follow that pattern in your own config if you want it unit
+testable.
+
+## Worked example: step-up end to end
+
+*(since 0.17.1, cratestack#1245)* For `@authn` (cratestack#1244) wired through a real provider and the
+generated clients, copy from these examples rather than inventing the shape:
+
+- **`examples/step-up-procedures`** (no database). `payInvoice` under
+  `@authn(maxAge: 300, amr: ["hwk"])`, served on REST and RPC behind `SignedRequestAuthProvider`
+  built as `SignedRequestVerifier::new(Vec::new()).with_id_token_verifier(IdTokenVerifier::new(issuer,
+  jwks_url, None))`: no key registry, the device key is vouched for by the id token's `cnf.jwk`, and
+  the default product mapping copies the token's `auth_time` and `amr` (plus `pop`). The client is a
+  `RequestAuthorizer` that signs each request and carries the current id token in
+  `Authorization: Signature …, id_jwt="…"`; re-proving swaps the token, so the retry carries it.
+  Files: `src/server.rs`, `src/device.rs`, `src/flows.rs`; tests in `tests/rest.rs` and
+  `tests/rpc.rs`.
+- **Calling `retry_after_step_up` on REST**: a closure that returns
+  `client.procedures().pay_invoice(args, &[])` directly does not compile (E0515: the future borrows
+  the temporary `procedures()` value). Wrap it: `move || async move {
+  client.procedures().pay_invoice(args, &[]).await }`, with `client` and `args` as references. An
+  RPC call (`BatchableCall`) can be returned as it is. For a batch, the closure builds and sends the
+  whole batch; the retry sends it again, and only the frames that needed the step-up were refused
+  the first time.
+- **`examples/flutter-riverpod` and `examples/react-vite-swr`**: `clearDoneTasks` under the same
+  `@authn`, a step-up screen from `StepUpRequired`, `retryAfterStepUp`, and a banner keyed on the
+  refusal code (the `error` member, else `code`). Their server fills `auth_time` and `amr` from
+  stand-in headers (`x-auth-time`, `x-auth-amr`). **Never copy that into a real provider**: read the
+  facts from a credential you verified.
