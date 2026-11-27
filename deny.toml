@@ -1,0 +1,44 @@
+# cargo-deny configuration (https://embarkstudios.github.io/cargo-deny/). CI runs `cargo deny check`.
+
+[graph]
+all-features = true
+
+[advisories]
+# Every vulnerability is an error. Unmaintained and unsound advisories fail for direct dependencies (the default).
+yanked = "deny"
+
+[licenses]
+# The usual permissive licences. Anything else (copyleft, unknown, missing) fails until someone decides.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Zlib",
+]
+confidence-threshold = 0.9
+unused-allowed-license = "allow"
+
+[licenses.private]
+# The workspace's own crates are `publish = false` and Apache-2.0; their licence is not re-checked here.
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+# TLS is rustls with ring (sqlx feature `tls-rustls`). Neither OpenSSL nor native-tls may come in by a side door.
+deny = [
+    { crate = "openssl", reason = "TLS is rustls" },
+    { crate = "openssl-sys", reason = "TLS is rustls" },
+    { crate = "native-tls", reason = "TLS is rustls" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
