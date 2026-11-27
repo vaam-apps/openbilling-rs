@@ -1556,9 +1556,14 @@ dependencies = [
  "openbilling-http",
  "openbilling-jwt",
  "openbilling-pg",
+ "openbilling-testkit",
  "openbilling-vpay",
+ "reqwest",
+ "rustls",
+ "serde_json",
  "sqlx",
  "tokio",
+ "url",
 ]
 
 [[package]]

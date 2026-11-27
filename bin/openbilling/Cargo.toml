@@ -23,9 +23,23 @@ openbilling-vpay.workspace = true
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "signal", "time"] }
 
 [dev-dependencies]
-# The SIGTERM test makes its own database, as the other crates' tests do.
+openbilling-core.workspace = true
+openbilling-jwt = { workspace = true, features = ["test-issuer"] }
+openbilling-testkit.workspace = true
+openbilling-vpay = { workspace = true, features = ["stand-in"] }
+reqwest.workspace = true
+rustls.workspace = true
+serde_json.workspace = true
+# The SIGTERM test and the end-to-end suite make their own databases, as the other crates' tests do.
 sqlx.workspace = true
-tokio = { workspace = true, features = ["rt"] }
+tokio = { workspace = true, features = ["macros", "net", "rt", "rt-multi-thread", "sync", "time"] }
+url.workspace = true
+
+# The end-to-end suite (`e2e/`): this binary, started as a process (`CARGO_BIN_EXE_openbilling`), against a real
+# PostgreSQL 19. A test target of this package because only its own tests are handed the built binary's path.
+[[test]]
+name = "e2e"
+path = "../../e2e/main.rs"
 
 [lints]
 workspace = true

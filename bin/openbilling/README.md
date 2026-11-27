@@ -34,4 +34,5 @@ configuration from a lookup (the database URL needed once and never shown, the i
 not at all, vpay whole or not at all), and the
 built binary run as a process (`tests/cli.rs`: `--version`, `--help`, colour, usage errors, `serve` without a
 database, and `serve` stopping with exit 0 on `SIGTERM`, which needs `OPENBILLING_TEST_DATABASE_URL` and makes its own
-database).
+database), and the end-to-end suite, this package's `e2e` target ([`e2e/`](../../e2e/README.md)): `serve` against a
+fresh PostgreSQL 19 database, driven through its API. It needs `OPENBILLING_TEST_DATABASE_URL` and skips without it.

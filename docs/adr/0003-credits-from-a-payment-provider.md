@@ -222,6 +222,7 @@ by their provider ids.
 |---|---|
 | ~~A real token verifier: a JWT against an issuer's keys~~ | ~~Authkestra's resource server or CrateStack's multi-issuer JWKS verifier behind the `TokenVerifier` port; then bind beyond `127.0.0.1`~~ **Built 2026-11-27** (D1 to D6): `openbilling-jwt`, on jsonwebtoken and ring |
 | Several issuers, DPoP-bound tokens | One issuer, plain bearer tokens, as built; add a trust map and DPoP when a deployment needs them |
+| An `Idempotency-Key` is namespaced by the exact `Authorization` header (CrateStack 0.20.6's default fingerprint, *verified 2026-11-27* in `cratestack-axum-0.20.6/src/idempotency/fingerprint.rs`), so a retry with a refreshed token is not replayed by point 17's layer: it runs again, and the ledger's once-only ids answer it (the end-to-end suite's once-only scenario shows both) | Key the layer on the verified `sub` (`with_principal_fingerprint`, after the token is verified) so a key survives a token refresh; until then point 17's second sentence is what holds |
 | Minting and rotating the vpay token | A `client_credentials` client with an RS256 `private_key_jwt` beside the service, or in the adapter |
 | Payments whose `metadata` was changed at vpay | Record the top-up's target in openbilling when it is created, and refuse a read-back that differs |
 | A periodic reconciliation of pending top-ups | List pending payments and read each back, as vpay's reconciler does for rails |
