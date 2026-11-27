@@ -1,0 +1,337 @@
+name: release
+
+# Publishes the image `ghcr.io/<owner>/<repository>` (ghcr.io/vaam-apps/openbilling-rs) and, for a release, the
+# Helm chart `oci://ghcr.io/<owner>/charts/openbilling` (ADR 0005). The shape is vaam-apps/vpay's
+# (`.github/workflows/release.yml` at master, read 2026-11-27): one build per architecture on a native runner, pushed
+# by digest; one job that assembles the multi-arch index, tags it and signs it; one job that publishes the chart.
+#
+# Tags:
+#   v1.2.3 (cut by release-please.yml)  ->  `1.2.3`, `1.2`   and the chart 1.2.3
+#   a push to main                      ->  `sha-<7>`, `edge` (development only; no chart)
+# There is never a `latest`: production runs fixed versions only, and the chart refuses `latest`.
+#
+# Nothing here has run yet: the first evidence is the first push to main after this lands.
+
+on:
+  push:
+    tags: ["v*"]
+    branches: [main]
+
+# Two publishes of the same ref must not race for one tag; never cancel one half-way through `imagetools create`.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+
+# The floor every job gets. `packages: write` is granted to the jobs that push, and `id-token: write` (the identity
+# cosign's keyless signature certifies, and a credential that can be exchanged elsewhere) only to the jobs that
+# sign. A job-level block replaces this one.
+permissions:
+  contents: read
+
+jobs:
+  meta:
+    name: Names and versions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      image: ${{ steps.names.outputs.image }}
+      charts: ${{ steps.names.outputs.charts }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # A GHCR path must be lower case; the owner and repository names are not guaranteed to be.
+      - id: names
+        env:
+          OWNER: ${{ github.repository_owner }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          echo "image=${REGISTRY}/${REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+          echo "charts=${REGISTRY}/${OWNER,,}/charts" >> "$GITHUB_OUTPUT"
+      # On a tag, every version line must be the tag's: release-please writes all three, so a mismatch means a tag cut
+      # by hand or a marker that stopped being rewritten. `[^ #"]*`, never `.*$`: the lines end in a comment.
+      - name: The versions are the tag's
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF#refs/tags/v}"
+          cargo="$(sed -n 's/^version = "\([^"]*\)" # x-release-please-version$/\1/p' Cargo.toml | head -1)"
+          chart="$(sed -n 's/^version: *\([^ #"]*\) # x-release-please-version$/\1/p' deploy/openbilling/Chart.yaml | head -1)"
+          app="$(sed -n 's/^appVersion: *"\([^"]*\)" # x-release-please-version$/\1/p' deploy/openbilling/Chart.yaml | head -1)"
+          echo "tag=${tag} Cargo.toml=${cargo} chart=${chart} appVersion=${app}"
+          [[ "$cargo" == "$tag" ]] || { echo "::error::Cargo.toml's version '${cargo}' is not the tag v${tag}: openbilling --version would lie"; exit 1; }
+          [[ "$chart" == "$tag" ]] || { echo "::error::Chart.yaml's version '${chart}' is not the tag v${tag}"; exit 1; }
+          [[ "$app" == "$tag" ]] || { echo "::error::Chart.yaml's appVersion '${app}' is not the tag v${tag}: the chart would default to an image this release did not build"; exit 1; }
+
+  # One job per architecture, each pushing an unnamed manifest (`push-by-digest`) that `merge` assembles.
+  build:
+    name: Build (${{ matrix.platform.arch }})
+    needs: [meta]
+    runs-on: ${{ matrix.platform.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - arch: amd64
+            runner: ubuntu-24.04
+            docker: linux/amd64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            docker: linux/arm64
+    env:
+      IMAGE: ${{ needs.meta.outputs.image }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # Labels only; the tags go on the index, once, in `merge`.
+      - id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
+        with:
+          images: ${{ env.IMAGE }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.licenses=Apache-2.0
+            org.opencontainers.image.title=openbilling
+      # The smoke stage first: `--version` and `--help`, run on the runtime base as the runtime user. Nothing is
+      # pushed if it fails, and its layers are the ones the image build below reuses.
+      - name: Smoke test
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: docker/openbilling/Dockerfile
+          target: smoke
+          platforms: ${{ matrix.platform.docker }}
+          push: false
+          cache-from: type=gha,scope=openbilling-${{ matrix.platform.arch }}
+      - id: build
+        name: Build and push by digest
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: docker/openbilling/Dockerfile
+          target: runtime
+          platforms: ${{ matrix.platform.docker }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          # Every build step recorded, and an SBOM: for a distroless image with no shell, they are the description of
+          # what is inside. Both ride in the index.
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=openbilling-${{ matrix.platform.arch }}
+          cache-to: type=gha,mode=max,scope=openbilling-${{ matrix.platform.arch }}
+      - name: Record the digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/digests"
+          touch "${RUNNER_TEMP}/digests/${DIGEST#sha256:}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: digests-${{ matrix.platform.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # The multi-arch index, its tags and its signature.
+  merge:
+    name: Index, tags and signature
+    needs: [meta, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    outputs:
+      digest: ${{ steps.index.outputs.digest }}
+    env:
+      IMAGE: ${{ needs.meta.outputs.image }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-*
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # `latest=false`: metadata-action adds `latest` to a semver tag by default, and production never runs it.
+      - id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
+        with:
+          images: ${{ env.IMAGE }}
+          flavor: |
+            latest=false
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=sha-,format=short,enable={{is_default_branch}}
+            type=raw,value=edge,enable={{is_default_branch}}
+      - name: Refuse a latest tag
+        run: |
+          set -euo pipefail
+          if jq -e '.tags[] | select(endswith(":latest"))' <<< "$DOCKER_METADATA_OUTPUT_JSON" > /dev/null; then
+            echo "::error::the tags include latest; production runs fixed versions only (ADR 0005)"
+            exit 1
+          fi
+          jq -r '.tags[]' <<< "$DOCKER_METADATA_OUTPUT_JSON"
+      - name: Create the index
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          set -euo pipefail
+          # Both substitutions word-split into separate arguments on purpose: the documented buildx recipe.
+          # shellcheck disable=SC2046
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf "${IMAGE}@sha256:%s " *)
+      - id: index
+        name: Read back the index digest
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          digest="$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" --format '{{json .Manifest}}' | jq -er .digest)"
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          echo "${IMAGE}@${digest}" >> "$GITHUB_STEP_SUMMARY"
+      - uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
+      # Keyless: the Fulcio certificate binds the index to this workflow file at this ref, and the Rekor entry makes
+      # that public. Renaming this file changes the identity every `cosign verify` names. The index digest is signed,
+      # which covers a pull by tag or by that digest.
+      - name: Sign (cosign keyless, GitHub OIDC)
+        env:
+          DIGEST: ${{ steps.index.outputs.digest }}
+        run: cosign sign --yes "${IMAGE}@${DIGEST}"
+
+  # The chart, for a release only. An OCI chart's tag is its `version`, so an `edge` chart would mean republishing one
+  # version over itself; between releases the chart is a directory in a clone.
+  publish-chart:
+    name: Publish the Helm chart
+    needs: [meta, merge]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    env:
+      CHARTS: ${{ needs.meta.outputs.charts }}
+      IMAGE: ${{ needs.meta.outputs.image }}
+      IMAGE_DIGEST: ${{ needs.merge.outputs.digest }}
+      CHART_DIR: deploy/openbilling
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+        with:
+          version: v4.3.2
+      - uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
+
+      # The published chart pins the image this release built, by tag (appVersion) and digest. The values file in git
+      # leaves the digest empty, since it cannot know it; this is the one line that changes.
+      - name: Pin the image digest
+        run: |
+          set -euo pipefail
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::no image digest from merge: '${IMAGE_DIGEST}'"; exit 1; }
+          marker='digest: "" # digest: set by release.yml'
+          [[ "$(grep -cF -- "$marker" "${CHART_DIR}/values.yaml")" == 1 ]] || { echo "::error::values.yaml has not exactly one '${marker}' line"; exit 1; }
+          sed -i "s|digest: \"\" # digest: set by release.yml|digest: \"${IMAGE_DIGEST}\" # digest: set by release.yml|" "${CHART_DIR}/values.yaml"
+          grep -nF -- "$IMAGE_DIGEST" "${CHART_DIR}/values.yaml"
+
+      # ci.yml does not run on tags. The chart's own checks again, on what is about to be published: the common
+      # library by sha256, lint, and the render, which must now pin every image by digest.
+      - name: Check the chart
+        run: |
+          set -euo pipefail
+          helm dependency build "$CHART_DIR"
+          want="$(sed -n 's/^COMMON_SHA256=\([0-9a-f]\{64\}\)$/\1/p' "${CHART_DIR}/tests/check.sh")"
+          got="$(sha256sum "${CHART_DIR}/charts/common-5.3.0.tgz" | cut -d' ' -f1)"
+          [[ -n "$want" && "$got" == "$want" ]] || { echo "::error::the common library is ${got}, not the pinned ${want}"; exit 1; }
+          helm lint --strict "$CHART_DIR"
+          helm template openbilling "$CHART_DIR" > "${RUNNER_TEMP}/render.yaml"
+          sh "${CHART_DIR}/tests/render-check.sh" "${RUNNER_TEMP}/render.yaml" --require-digest
+          version="$(sed -n 's/^version: *\([^ #"]*\) # x-release-please-version$/\1/p' "${CHART_DIR}/Chart.yaml" | head -1)"
+          grep -qF "image: ${IMAGE}:${version}@${IMAGE_DIGEST}" "${RUNNER_TEMP}/render.yaml" || { echo "::error::the render does not pin ${IMAGE}:${version}@${IMAGE_DIGEST}"; exit 1; }
+          echo "VERSION=${version}" >> "$GITHUB_ENV"
+
+      # Two logins: helm reads its own credential store, cosign reads docker's.
+      - name: Log in to GHCR (helm)
+        env:
+          ACTOR: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: helm registry login "$REGISTRY" --username "$ACTOR" --password-stdin <<< "$GHCR_TOKEN"
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # `helm push` overwrites a version silently, so this asks first. Four outcomes, as vpay's guard:
+      #   published and signed   -> a real collision: stop;
+      #   published, unsigned    -> a previous run died between push and sign: sign it, do not push;
+      #   not found              -> push;
+      #   anything else          -> the registry did not answer: stop.
+      - id: state
+        name: Is this version already published, and signed?
+        run: |
+          set -euo pipefail
+          chart="oci://${CHARTS}/openbilling"
+          if out="$(helm show chart "$chart" --version "$VERSION" 2>&1)"; then
+            digest="$(sed -n 's/^Digest: \(sha256:[0-9a-f]\{64\}\)$/\1/p' <<< "$out" | head -1)"
+            [[ -n "$digest" ]] || { echo "::error::${chart}:${VERSION} is published but helm printed no digest for it"; exit 1; }
+            if cosign download signature "${CHARTS}/openbilling@${digest}" > /dev/null 2>&1; then
+              echo "::error::${chart}:${VERSION} is already published and signed; refusing to overwrite it"
+              exit 1
+            fi
+            echo "${chart}:${VERSION} is published (${digest}) and unsigned: signing it, not pushing"
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          elif grep -q 'not found' <<< "$out"; then
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::could not tell whether ${chart}:${VERSION} is published: ${out}"
+            exit 1
+          fi
+
+      # `helm push` prints its `Digest:` line on stderr.
+      - id: push
+        name: Package and push
+        if: steps.state.outputs.published != 'true'
+        run: |
+          set -euo pipefail
+          helm package "$CHART_DIR" --destination "${RUNNER_TEMP}/chart"
+          helm push "${RUNNER_TEMP}/chart/openbilling-${VERSION}.tgz" "oci://${CHARTS}" 2>&1 | tee "${RUNNER_TEMP}/push.log"
+          digest="$(sed -n 's/^Digest: \(sha256:[0-9a-f]\{64\}\)$/\1/p' "${RUNNER_TEMP}/push.log" | head -1)"
+          [[ -n "$digest" ]] || { echo "::error::helm push printed no digest; there is nothing to sign"; exit 1; }
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          echo "oci://${CHARTS}/openbilling:${VERSION}@${digest}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Sign the chart (cosign keyless, GitHub OIDC)
+        env:
+          DIGEST: ${{ steps.push.outputs.digest || steps.state.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ -n "$DIGEST" ]] || { echo "::error::no chart digest to sign"; exit 1; }
+          cosign sign --yes "${CHARTS}/openbilling@${DIGEST}"
