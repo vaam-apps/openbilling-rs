@@ -1,0 +1,13 @@
+# The image build's context is the repository root (docker/openbilling/Dockerfile). What it never needs:
+.git
+target
+.agents
+.claude
+.goose
+.kiro
+.github
+deploy
+docs
+**/node_modules
+skills-lock.json
+.env
