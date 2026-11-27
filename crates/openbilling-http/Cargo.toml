@@ -12,14 +12,17 @@ publish.workspace = true
 [dependencies]
 cratestack.workspace = true
 openbilling-core.workspace = true
+openbilling-metrics.workspace = true
 
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["time"] }
+tracing.workspace = true
 
 [dev-dependencies]
 openbilling-pg.workspace = true
+openbilling-telemetry = { workspace = true, features = ["testkit"] }
 openbilling-testkit.workspace = true
 openbilling-vpay = { workspace = true, features = ["stand-in"] }
 sqlx.workspace = true

@@ -45,7 +45,9 @@ From a clone (development), build the dependency first: `helm dependency build d
 | Service | `ClusterIP`, port `8080`, named `http` |
 | ServiceAccount | Its own, with no token mounted |
 | NetworkPolicy | Off. When on: ingress from the namespace on 8080; egress to DNS, PostgreSQL (5432) and HTTPS (443, the payment provider). Narrow it to your cluster |
-| ServiceMonitor | Off, and of no use yet: openbilling serves no `/metrics`, so it would scrape a 404. Needs the Prometheus Operator's CRDs |
+| OpenTelemetry | Off. `openbilling.otel.endpoint` turns it on (the collector's base URL); see *OpenTelemetry* below |
+| Dashboards | Off. `configMaps.dashboards.enabled: true` ships the two Grafana dashboards as a ConfigMap labelled `grafana_dashboard: "1"`, for Grafana's sidecar |
+| ServiceMonitor | Off, and of no use: openbilling serves no `/metrics`, it pushes OTLP (above). Needs the Prometheus Operator's CRDs |
 
 There is no migration Job: the binary has no command that only migrates, and `serve` does it safely at start with any
 number of replicas. Without `openbilling.auth` every `/v1` call answers `401` (`RefuseAll`,
@@ -68,13 +70,32 @@ see [values.yaml](values.yaml)), plus:
 | `openbilling.auth.rolesClaim` | empty (`roles`) | The claim with the roles, a dotted path (`realm_access.roles`) |
 | `openbilling.auth.roleMap` | empty | `value=operator,value=producer`: the issuer's role values for openbilling's two roles |
 | `openbilling.config` | `allowed:` with `debt_limit`, `balance` and `member_cap` all `at_or_above` | The service's configuration file, policy only: rendered as YAML into the ConfigMap, mounted read-only at `/etc/openbilling/config.yaml` and named by `OPENBILLING_CONFIG`; its checksum is on the pod, so a change rolls it. Each check `at_or_above`, `above` or `never` (report only); see [`bin/openbilling`](../../bin/openbilling/README.md) |
+| `openbilling.otel.endpoint` | empty (off) | The OTLP/HTTP collector's base URL: `http(s)://host[:port][/path]`, no user or password |
+| `openbilling.otel.environment` | empty | `deployment.environment.name` of every signal |
 | `controllers.main.containers.main.image.tag` | `{{ .Chart.AppVersion }}` | A fixed version |
 | `controllers.main.containers.main.image.digest` | empty in git; the release's digest in a published chart | `sha256:…` |
 
 The vpay adapter's settings (`OPENBILLING_VPAY_*`, `bin/openbilling/README.md`) go under
 `controllers.main.containers.main.env`, the files they name mounted with `persistence` from Secrets of your own.
 
-**Refused** (the render fails, naming the value): an empty `existingSecret` or `key`; an `auth.issuer` without an
+## OpenTelemetry
+
+`openbilling.otel.endpoint` sets `OTEL_EXPORTER_OTLP_ENDPOINT`; empty leaves OpenTelemetry off. A collector that needs a
+credential gets it as a header **from a file**: mount a Secret of your own with `persistence` (`type: secret`) and set
+`OPENBILLING_OTEL_HEADERS_FILE` under `controllers.main.containers.main.env`; the chart never holds a credential, and
+`OTEL_EXPORTER_OTLP_HEADERS` is refused by the binary. Egress to the collector's port needs a rule of its own in
+`networkpolicies.main.rules.egress` when the policy is on: the render is refused when none allows the endpoint's port (`tests/values/otel.yaml` shows one). What is exported, and what never is, is in
+[`openbilling-telemetry`](../../crates/openbilling-telemetry/README.md).
+
+## Dashboards
+
+`deploy/dashboards/` is the canonical copy ([its README](../dashboards/README.md) explains each panel); `dashboards/`
+in this chart is a copy a chart can read (Helm cannot read outside the chart), and
+`crates/openbilling-telemetry/tests/dashboards.rs` fails when they differ: copy with
+`cp deploy/dashboards/*.json deploy/openbilling/dashboards/`. The ConfigMap reads them with `.Files.Get`; its first
+render is CI's (*unverified*: no Helm was available when it was written).
+
+**Refused** (the render fails, naming the value): an empty `existingSecret` or `key`; an `otel.endpoint` that is not an http(s) URL or holds a credential, or, with the NetworkPolicy on, whose port no egress rule allows; an `auth.issuer` without an
 `auth.audience` or the reverse, `jwksUrl`, `rolesClaim` or `roleMap` without both, an issuer that is not `https` or
 loopback `http`; in `openbilling.config`, a key other than `allowed`, a check other than `debt_limit`, `balance` and `member_cap`, or
 a mode other than `at_or_above`, `above` and `never` (the binary refuses the same at start); an image tagged `latest`; a tag
@@ -92,7 +113,7 @@ sh deploy/openbilling/tests/check.sh    # helm (v4) and kubeconform on PATH; the
 | `tests/check.sh` | The versions of `Cargo.toml` and `Chart.yaml` agree; the common library's archive is the pinned sha256; `helm lint --strict`; `helm template` of each accepted values file, then `render-check.sh` and kubeconform (strict, Kubernetes 1.35.0) on it; the defaults render the issuer and the audience empty (the service refuses every `/v1` call); the configuration file of the defaults is every check `at_or_above` and `full.yaml`'s its own, each mounted where `OPENBILLING_CONFIG` says with the ConfigMap's checksum on the pod, and, with `OPENBILLING_BIN` naming a built binary, accepted by `openbilling serve`; each refused file
 refused with its message. CI's `chart` job runs it |
 | `tests/render-check.sh` | On a render: no Secret, no credential in a URL, `OPENBILLING_DATABASE_URL` from a Secret, every image a fixed version or a digest, `--require-digest` for a digest on every image |
-| `tests/values/` | `full.yaml` (everything on, the token verifier and a configuration file that is not the defaults included), `edge-with-digest.yaml`, and `refused-*.yaml`, each with the message it must be refused with on its `# expect:` line |
+| `tests/values/` | `full.yaml` (everything on, the token verifier and a configuration file that is not the defaults included), `edge-with-digest.yaml`, `otel.yaml` (OpenTelemetry and the dashboards' ConfigMap on), and `refused-*.yaml`, each with the message it must be refused with on its `# expect:` line |
 | `tests/schemas/` | The ServiceMonitor JSON schema, vendored from datreeio/CRDs-catalog at `b50f3fb` (ADR 0005, *Agent notes*) |
 
 `Chart.yaml`'s `version` and `appVersion` are written by release-please. Never edit them by hand.

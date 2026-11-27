@@ -24,3 +24,4 @@ mod payments;
 mod prepaid_balance;
 mod price_versions;
 mod statements;
+mod telemetry;

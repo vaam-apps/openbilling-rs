@@ -12,6 +12,14 @@ openbilling:
     existingSecret: openbilling-database
     # -- The key of that Secret that holds the URL.
     key: uri
+  otel:
+    # -- The OpenTelemetry collector's base URL (OTLP/HTTP with JSON bodies): `/v1/traces`, `/v1/metrics` and
+    # `/v1/logs` are appended. **Empty: OpenTelemetry is off.** Headers, which carry a credential, are never a value:
+    # mount a file from a Secret of your own with `persistence` and point OPENBILLING_OTEL_HEADERS_FILE at it
+    # (README, *OpenTelemetry*).
+    endpoint: ""
+    # -- `deployment.environment.name` on every signal; empty leaves it out.
+    environment: ""
   # -- The token verifier (ADR 0003, amended 2026-11-27, D1 to D6): a JWT against one issuer's keys. Unset by
   # default, and then every /v1 call answers 401 (`RefuseAll`): nothing is ever open by default. Set `issuer` and
   # `audience` together, or neither; the other three need both. None of them is a secret.
@@ -75,6 +83,9 @@ controllers:
           # Service and the probes to reach it. Without `openbilling.auth` every /v1 call answers 401 (ADR 0003);
           # enable the NetworkPolicy below to choose who may connect.
           OPENBILLING_LISTEN: "0.0.0.0:8080"
+          # OpenTelemetry: empty is off (the binary reads a blank variable as unset).
+          OTEL_EXPORTER_OTLP_ENDPOINT: "{{ .Values.openbilling.otel.endpoint }}"
+          OTEL_RESOURCE_ATTRIBUTES: "deployment.environment.name={{ .Values.openbilling.otel.environment }}"
           # The token verifier, from `openbilling.auth`. An empty value is unset to the binary, so the defaults
           # render these empty and the service keeps refusing every /v1 call.
           OPENBILLING_AUTH_ISSUER: "{{ .Values.openbilling.auth.issuer }}"
@@ -147,6 +158,15 @@ configMaps:
     enabled: true
     data:
       config.yaml: "{{ toYaml .Values.openbilling.config }}"
+  # -- Off by default. The Grafana dashboards (deploy/dashboards, copied into this chart's dashboards/ and held equal
+  # by a test) as a ConfigMap labelled for Grafana's dashboard sidecar. Set `enabled: true` to ship them.
+  dashboards:
+    enabled: false
+    labels:
+      grafana_dashboard: "1"
+    data:
+      openbilling-service.json: '{{ .Files.Get "dashboards/openbilling-service.json" }}'
+      openbilling-queue.json: '{{ .Files.Get "dashboards/openbilling-queue.json" }}'
 
 persistence:
   config:
@@ -207,8 +227,8 @@ networkpolicies:
             - port: 443
               protocol: TCP
 
-# -- Off by default, and of no use yet: openbilling serves no `/metrics` today, so a ServiceMonitor would scrape a
-# 404. Here so a deployment can switch it on when the endpoint ships. Needs the Prometheus Operator's CRDs.
+# -- Off by default, and of no use yet: openbilling serves no `/metrics` today (it pushes OTLP instead, see
+# `openbilling.otel`), so a ServiceMonitor would scrape a 404. Needs the Prometheus Operator's CRDs.
 serviceMonitor:
   main:
     enabled: false

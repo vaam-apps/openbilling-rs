@@ -6,6 +6,8 @@ members = [
     "crates/openbilling-testkit",
     "crates/openbilling-vpay",
     "crates/openbilling-http",
+    "crates/openbilling-metrics",
+    "crates/openbilling-telemetry",
     "crates/openbilling-jwt",
     "bin/openbilling",
 ]
@@ -25,6 +27,8 @@ openbilling-testkit = { path = "crates/openbilling-testkit" }
 openbilling-pg = { path = "crates/openbilling-pg" }
 openbilling-vpay = { path = "crates/openbilling-vpay" }
 openbilling-http = { path = "crates/openbilling-http" }
+openbilling-metrics = { path = "crates/openbilling-metrics" }
+openbilling-telemetry = { path = "crates/openbilling-telemetry" }
 openbilling-jwt = { path = "crates/openbilling-jwt" }
 
 anstream = "1.0.0"
@@ -62,6 +66,10 @@ sha2 = "0.11.2"
 subtle = "2.6.1"
 tower = { version = "0.5.3", default-features = false, features = ["util"] }
 url = "2.5.9"
+# `tracing`: the spans CrateStack emits and ours. `tracing-subscriber` with the registry only (no env filter, no
+# formatter, no regex): the layer in `openbilling-telemetry` is the one subscriber.
+tracing = { version = "0.1.44", default-features = false, features = ["std", "attributes"] }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["registry", "std"] }
 thiserror = "2.0.21"
 tokio = { version = "1.54.1", default-features = false }
 # `=0.9.0`, not 0.9.1: CrateStack 0.20.6, the stack ADR 0001 names, pins sqlx `=0.9.0`, and Cargo cannot hold two

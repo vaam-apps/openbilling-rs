@@ -19,15 +19,18 @@ openbilling-core.workspace = true
 openbilling-http.workspace = true
 openbilling-jwt.workspace = true
 openbilling-pg.workspace = true
+openbilling-telemetry.workspace = true
 openbilling-vpay.workspace = true
 # The configuration file (`OPENBILLING_CONFIG`): the deployer's policy, as YAML.
 serde.workspace = true
 serde-saphyr.workspace = true
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "signal", "time"] }
+tracing.workspace = true
 
 [dev-dependencies]
 openbilling-core.workspace = true
 openbilling-jwt = { workspace = true, features = ["test-issuer"] }
+openbilling-telemetry = { workspace = true, features = ["testkit"] }
 openbilling-testkit.workspace = true
 openbilling-vpay = { workspace = true, features = ["stand-in"] }
 reqwest.workspace = true

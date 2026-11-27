@@ -23,6 +23,28 @@ use crate::generated::cratestack_schema::{
 use crate::intake;
 use crate::time::{date_time, timestamp};
 
+/// Counts a `getAllowed` verdict by the check that decided it and the mode (the deployer's comparison) that check
+/// ran under. `refused` is the ledger's own word (`debt_limit`, `balance`, `member_cap`); anything else is `other`,
+/// so no value of the database becomes a label. An allowed answer has no deciding check: `none`.
+fn verdict(allowed: bool, refused: Option<&str>, policy: AllowedPolicy) {
+    let (check, mode) = match (allowed, refused) {
+        (true, _) => ("none", "none"),
+        (false, Some("debt_limit")) => ("debt_limit", policy.debt_limit.as_str()),
+        (false, Some("balance")) => ("balance", policy.balance.as_str()),
+        (false, Some("member_cap")) => ("member_cap", policy.member_cap.as_str()),
+        (false, _) => ("other", "none"),
+    };
+    openbilling_metrics::global().add(
+        openbilling_metrics::Counter::AllowedChecks,
+        &[
+            ("check", check),
+            ("mode", mode),
+            ("verdict", if allowed { "allowed" } else { "refused" }),
+        ],
+        1,
+    );
+}
+
 /// What the procedures call: the ledger (in the service, [`PgLedger`](openbilling_pg::PgLedger)), and the
 /// payment provider when one is configured; and the deployer's policy for `getAllowed`.
 pub struct Services<L, P> {
@@ -125,7 +147,9 @@ where
             balanceMode: policy.balance.as_str().to_owned(),
             memberCapMode: policy.member_cap.as_str().to_owned(),
         };
-        db.queries().allowed_row(&args, ctx).await
+        let row = db.queries().allowed_row(&args, ctx).await?;
+        verdict(row.allowed, row.refused.as_deref(), policy);
+        Ok(row)
     }
 
     async fn list_credits(

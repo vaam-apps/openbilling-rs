@@ -23,6 +23,13 @@ is a plain parameterized query (the owner's decision of 2026-11-27). It implemen
 | `…007_always_book_debt.sql` | The owner's decision of 2026-11-27, "Always book as debt": `ob_drain` again, with no `limit` refusal (what finds no credit is debt whatever the limit; a debt past the largest amount is `overflow`); `ob_allowed` again, refusing `debt_limit` first; the view `ob_past_debt_limit`, the owners flagged |
 | `…008_allowed_policy.sql` | The owner's decision of 2026-11-27, "Its not the role of this service to judge that" (ADR 0001, amended, F1 to F4): the domain `ob_comparison` (`at_or_above`, `above`, `never`; anything else, or nothing, fails at the call), `ob_reached`, a plain comparison with no special case, and `ob_allowed` again, taking one mode per check (debt limit, balance, member cap) and answering the numbers beside the verdict: net balance, drawable credit, debt, limit, `past_limit`, the member's usage this month, cap and remainder |
 
+**Telemetry.** Every `LedgerStore` and `PriceBook` method, `prepare_partitions` and `queue_stats` runs in a
+`db.query` span (`db.operation`, never a parameter), and records into `openbilling-telemetry`'s registry: events at
+intake by result and refusal rule, the drain's decisions and a debit posting per applied event, its duration and its
+last success (the drain's lag), and a posting per credit, allowance or reversal that was not a replay.
+`PgLedger::queue_stats` (the backlog and the age of the oldest event) and `sample_metrics` (those and the pool's
+gauges) feed the gauges the dashboards read.
+
 Each function says why it is `LANGUAGE sql` with a SQL-standard body or `plpgsql`. The functions raise SQLSTATEs of
 class `OB`; `src/sqlstate.rs` maps each one, in one table, to a refusal or an error class.
 

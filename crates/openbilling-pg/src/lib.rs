@@ -23,7 +23,7 @@ mod ledger;
 mod price_list;
 pub mod sqlstate;
 
-pub use ledger::{LedgerSettings, NOTIFY_CHANNEL, PgLedger, Wakeup, Woken};
+pub use ledger::{LedgerSettings, NOTIFY_CHANNEL, PgLedger, QueueStats, Wakeup, Woken};
 
 /// The migrations, in order: hand-written SQL, embedded in the binary.
 const MIGRATIONS: [(i64, &str, &str); 8] = [

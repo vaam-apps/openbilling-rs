@@ -39,6 +39,11 @@ every `/v1` call is a `401`, and `serve` says so on start; an empty value is uns
 `OPENBILLING_AUTH_ROLES_CLAIM` and `OPENBILLING_AUTH_ROLE_MAP` ([`openbilling-jwt`](../../crates/openbilling-jwt/README.md)),
 and the vpay adapter's `OPENBILLING_VPAY_*` (all of them, or none: without them top-ups and webhooks answer `503`).
 
+OpenTelemetry is configured by the standard `OTEL_*` variables (**off unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set**; the
+[crate's README](../../crates/openbilling-telemetry/README.md) lists them and what is refused). `serve` starts the
+exporter first, so the start-up work is traced, reads the queue and pool gauges every 15 s, wraps each drain pass and
+partition run in a span, counts the loops' errors by class, and flushes the exporter for up to 5 s when it stops.
+
 **Colour.** The help is coloured by clap's `Styles` (headers bold, literals cyan, placeholders dimmed), and the
 status lines and refusals by `anstream` and `anstyle`. Both write plain text when the stream is not a terminal,
 honour `NO_COLOR`, and colour a pipe under `CLICOLOR_FORCE=1`; `tests/cli.rs` holds all three.

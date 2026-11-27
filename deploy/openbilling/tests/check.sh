@@ -69,7 +69,8 @@ printf '%s sha256:%s\n' "$COMMON_ARCHIVE" "$got"
 # name|values file (empty: the defaults)|render-check flags
 accepted="defaults||
 full|$here/values/full.yaml|--require-digest
-edge-with-digest|$here/values/edge-with-digest.yaml|--require-digest"
+edge-with-digest|$here/values/edge-with-digest.yaml|--require-digest
+otel|$here/values/otel.yaml|"
 
 printf '%s\n' "$accepted" | while IFS='|' read -r name values flags; do
     set --

@@ -56,6 +56,33 @@ The refusals values cannot say. Each names the value to change. Run before the c
     {{- end -}}
   {{- end -}}
 
+  {{- $otel := dig "otel" dict (.Values.openbilling | default dict) -}}
+  {{- $endpoint := toString (dig "endpoint" "" $otel) -}}
+  {{- if and $endpoint (not (regexMatch "^https?://[^/@ ]+(/[^ ]*)?$" $endpoint)) -}}
+    {{- fail "openbilling.otel.endpoint: an http(s) URL with no user or password (a credential is a header, from a file), or empty for no OpenTelemetry" -}}
+  {{- end -}}
+  {{- /* With the NetworkPolicy on, the collector's port must be one its egress rules allow, or the pod would silently lose its telemetry. */ -}}
+  {{- $policy := dig "main" dict (.Values.networkpolicies | default dict) -}}
+  {{- if and $endpoint (dig "enabled" false $policy) -}}
+    {{- $authority := regexFind "^[^/]*" (regexReplaceAll "^https?://" $endpoint "") -}}
+    {{- $port := ternary "443" "80" (hasPrefix "https://" $endpoint) -}}
+    {{- $given := trimPrefix ":" (regexFind ":[0-9]+$" $authority) -}}
+    {{- if $given -}}
+      {{- $port = $given -}}
+    {{- end -}}
+    {{- $open := false -}}
+    {{- range $rule := (dig "rules" "egress" (list) $policy) -}}
+      {{- range $p := (dig "ports" (list) $rule) -}}
+        {{- if eq (toString (dig "port" "" $p)) $port -}}
+          {{- $open = true -}}
+        {{- end -}}
+      {{- end -}}
+    {{- end -}}
+    {{- if not $open -}}
+      {{- fail (printf "openbilling.otel.endpoint: the NetworkPolicy is on and networkpolicies.main.rules.egress allows no port %s, the collector's; add a rule for it" $port) -}}
+    {{- end -}}
+  {{- end -}}
+
   {{- /* Production runs fixed versions only (ADR 0005). */ -}}
   {{- $image := dig "main" "containers" "main" "image" dict (.Values.controllers | default dict) -}}
   {{- $tag := tpl (toString (dig "tag" "" $image)) . -}}

@@ -1,0 +1,31 @@
+# OpenTelemetry on, the NetworkPolicy on with the collector's port allowed, and the dashboards shipped as a
+# ConfigMap for Grafana's sidecar.
+openbilling:
+  database:
+    existingSecret: billing-db-app
+    key: uri
+  otel:
+    endpoint: https://otel-collector.observability.svc:4318
+    environment: production
+networkpolicies:
+  main:
+    enabled: true
+    rules:
+      egress:
+        - ports:
+            - port: 53
+              protocol: UDP
+            - port: 53
+              protocol: TCP
+        - ports:
+            - port: 5432
+              protocol: TCP
+        - ports:
+            - port: 443
+              protocol: TCP
+        - ports:
+            - port: 4318
+              protocol: TCP
+configMaps:
+  dashboards:
+    enabled: true

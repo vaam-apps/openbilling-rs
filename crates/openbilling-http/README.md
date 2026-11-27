@@ -64,6 +64,15 @@ CrateStack's bookkeeping.
 to `ob_allowed` (the service's configuration file; a new field since 2026-11-27). `MUTATIONS` and `READS` name the procedures, held equal
 to the schema by a test. `generated::cratestack_schema` is what CrateStack generates.
 
+## Telemetry
+
+`router` wraps the whole surface in one layer: an `http.server.request` span per request (not for `/healthz` and
+`/readyz`, which are metrics only) and the request duration by method, route, procedure and status class. The route
+and the procedure are fixed names (`/v1/$procs/{name}`, `recordUsage`, never a path with an id). CrateStack's own
+procedure and list spans are its children. `getAllowed` counts its verdict by the check that decided; every error
+the API answers is counted by class. Nothing a caller sent is a label or an attribute. The list is in
+[`openbilling-telemetry`](../openbilling-telemetry/README.md).
+
 ## The contract
 
 CrateStack 0.20.6 produces no OpenAPI document. The contract is CrateStack's: `schema/openbilling.contracts.lock`
@@ -87,4 +96,5 @@ A change to the contract that breaks a locked one fails `contract check`; `contr
 |---|---|
 | Unit tests in `src/` (bearer parsing, the default verifier, error classes) | nothing |
 | `tests/api.rs`: the procedure lists are the schema's; health, and readiness following the database; nothing served without an accepted token, on every model and read; every write needs a key; another owner and a producer refused by the policies; the webhook verifies, reads back (a "succeeded" event for a pending payment books nothing) and answers `503` when the ledger is down | nothing: a ledger that is down and a pool to nowhere |
+| `tests/otel.rs`: one scripted flow (configure, open, credit, intake, a refused batch, the drain, `getAllowed` twice, a bad token, partitions) exported to a collector in the process: the spans of the routes, procedures and database calls, the metrics by value, a log, and a scan of every byte received for the tokens, owner, account, member, event and credit ids, idempotency keys and amounts the flow sent | `OPENBILLING_TEST_DATABASE_URL` as below |
 | `tests/flow.rs`: configure, open, credit (replayed by the key and by the ledger), a payment credit refused, usage refused to an owner, intake and a refused batch naming its event, the drain, then balance, `allowed`, credits, the statement and the usage series as the owner and the operator; the models owner-scoped, filtered and sorted; a top-up through the vpay stand-in, its webhook crediting once, reconciliation, a pending and a succeeded refund; the operator's settings (a debt limit and a member cap, refused to a producer and for an unknown owner), `getAllowed` under the deployer's policy (each check alone, a lenient policy, the numbers the same, a mode in the request ignored), a price list loaded and replayed and a malformed one refused, raw usage refused before the version, a dimension given twice refused, a raw event rated half to even and its outcome carrying its rating | `OPENBILLING_TEST_DATABASE_URL` (skips without it; fails under `OPENBILLING_TEST_REQUIRE_DB=1`) |
