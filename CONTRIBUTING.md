@@ -29,6 +29,13 @@ cargo test --workspace --locked
 cargo deny check            # if cargo-deny is installed
 ```
 
+A change to the image or the Helm chart also runs:
+
+```sh
+docker build -f docker/openbilling/Dockerfile --target smoke .   # if Docker is installed
+sh deploy/openbilling/tests/check.sh                            # needs helm (v4) and kubeconform
+```
+
 The database test skips unless `OPENBILLING_TEST_DATABASE_URL` is set. To run it:
 
 ```sh
@@ -43,6 +50,10 @@ request.
 
 [Conventional Commits](https://www.conventionalcommits.org/): `<type>[(scope)][!]: <description>`, with the types
 `feat fix docs style refactor perf test build ci chore revert`. One focused change per commit.
+
+Commits are the release notes. release-please reads them on `main`, keeps a release pull request open with the next
+version and the changelog, and a maintainer merges it to release
+([ADR 0005](docs/adr/0005-release-fixed-versions-image-and-chart.md)). Never change a version by hand.
 
 ## 5. Open a pull request
 
