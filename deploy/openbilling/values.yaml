@@ -1,0 +1,162 @@
+# openbilling on the bjw-s common library v5 (Chart.yaml). Everything below the `openbilling` block is the common
+# library's own values, as app-template takes them: https://bjw-s-labs.github.io/helm-charts/docs/app-template/
+# Strings are Helm templates, evaluated once by the library (`global.templateEvaluation`).
+#
+# The chart holds no secret: the database URL comes from a Secret that already exists, named below.
+
+# -- The chart's own settings. Refused when wrong by templates/_validate.tpl.
+openbilling:
+  database:
+    # -- The existing Secret that holds the PostgreSQL 19 database URL (`postgres://…` or `postgresql://…`). The
+    # chart never makes it. A CloudNativePG cluster's `<cluster>-app` Secret has the URL under `uri`.
+    existingSecret: openbilling-database
+    # -- The key of that Secret that holds the URL.
+    key: uri
+
+controllers:
+  main:
+    type: deployment
+    # -- One replica by default. More are safe for the drain (`FOR UPDATE SKIP LOCKED`) and for the migrations,
+    # which each pod applies at start under sqlx's advisory lock (ADR 0005).
+    replicas: 1
+    strategy: RollingUpdate
+    containers:
+      main:
+        image:
+          repository: ghcr.io/vaam-apps/openbilling-rs
+          # -- A fixed release, `appVersion` by default. Never `latest` (templates/_validate.tpl refuses it); a
+          # floating tag (`edge`, `X.Y`) is refused without a digest.
+          tag: "{{ .Chart.AppVersion }}"
+          # -- The image index digest, `sha256:…`. Empty here; the chart release.yml publishes carries the digest
+          # of the image built for the same release (the line below is the one it rewrites).
+          digest: "" # digest: set by release.yml
+          pullPolicy: IfNotPresent
+        # `openbilling serve` applies the migrations (compiled into the binary), then serves the API, the payment
+        # provider's webhook, `/healthz` and `/readyz`, and runs the drain. There is no separate migrate command,
+        # so there is no migration Job.
+        args:
+          - serve
+        env:
+          # The binary's own default is 127.0.0.1:8080, this machine only; a pod must listen on its address for the
+          # Service and the probes to reach it. Until a token verifier ships every /v1 call answers 401
+          # (ADR 0003); enable the NetworkPolicy below to choose who may connect.
+          OPENBILLING_LISTEN: "0.0.0.0:8080"
+          OPENBILLING_DATABASE_URL:
+            valueFrom:
+              secretKeyRef:
+                name: "{{ .Values.openbilling.database.existingSecret }}"
+                key: "{{ .Values.openbilling.database.key }}"
+        # Named, so the probes can say `http`; the common library does not add it. The port is 8080 in three places,
+        # here, OPENBILLING_LISTEN and the Service: move them together.
+        ports:
+          - name: http
+            containerPort: 8080
+            protocol: TCP
+        probes:
+          # `/healthz` answers once the server listens, which is after the migrations: the startup probe gives them
+          # up to 5 minutes before liveness counts.
+          startup:
+            enabled: true
+            custom: true
+            spec:
+              httpGet:
+                path: /healthz
+                port: http
+              periodSeconds: 5
+              failureThreshold: 60
+          liveness:
+            enabled: true
+            custom: true
+            spec:
+              httpGet:
+                path: /healthz
+                port: http
+              periodSeconds: 10
+              timeoutSeconds: 2
+              failureThreshold: 3
+          # `/readyz` asks the database; a pod whose database does not answer leaves the Service.
+          readiness:
+            enabled: true
+            custom: true
+            spec:
+              httpGet:
+                path: /readyz
+                port: http
+              periodSeconds: 5
+              timeoutSeconds: 3
+              failureThreshold: 3
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+              - ALL
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            memory: 256Mi
+
+defaultPodOptions:
+  # The image's user: distroless `nonroot`, uid and gid 65532.
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    seccompProfile:
+      type: RuntimeDefault
+  # The service never calls the Kubernetes API.
+  automountServiceAccountToken: false
+  # `serve` stops on SIGTERM and finishes the requests in flight.
+  terminationGracePeriodSeconds: 30
+
+service:
+  main:
+    controller: main
+    ports:
+      http:
+        port: 8080
+
+# -- Off by default. A starting point: callers from this namespace on the HTTP port; DNS, PostgreSQL (5432) and
+# HTTPS (443, the payment provider) out. Narrow `to` and `from` to your cluster before relying on it.
+networkpolicies:
+  main:
+    enabled: false
+    controller: main
+    policyTypes:
+      - Ingress
+      - Egress
+    rules:
+      ingress:
+        - from:
+            - podSelector: {}
+          ports:
+            - port: 8080
+              protocol: TCP
+      egress:
+        - ports:
+            - port: 53
+              protocol: UDP
+            - port: 53
+              protocol: TCP
+        - ports:
+            - port: 5432
+              protocol: TCP
+        - ports:
+            - port: 443
+              protocol: TCP
+
+# -- Off by default, and of no use yet: openbilling serves no `/metrics` today, so a ServiceMonitor would scrape a
+# 404. Here so a deployment can switch it on when the endpoint ships. Needs the Prometheus Operator's CRDs.
+serviceMonitor:
+  main:
+    enabled: false
+    service:
+      identifier: main
+    endpoints:
+      - port: http
+        scheme: http
+        path: /metrics
+        interval: 1m
+        scrapeTimeout: 10s

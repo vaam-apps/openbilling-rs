@@ -80,3 +80,104 @@ fn serve_without_a_database_says_what_is_missing() {
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(stderr.contains("OPENBILLING_DATABASE_URL"), "{stderr}");
 }
+
+/// A fresh, empty database on the server `OPENBILLING_TEST_DATABASE_URL` names, as a URL, or `None` to skip
+/// (agent guide, rule 10: a failure instead under `OPENBILLING_TEST_REQUIRE_DB=1`). Left behind, as the other
+/// crates' test databases are: CI's server is thrown away.
+fn fresh_database() -> Option<String> {
+    use sqlx::postgres::PgConnectOptions;
+    use sqlx::{AssertSqlSafe, ConnectOptions, Connection, Executor};
+
+    let url = match std::env::var("OPENBILLING_TEST_DATABASE_URL") {
+        Ok(url) if !url.trim().is_empty() => url,
+        _ => {
+            let required = std::env::var("OPENBILLING_TEST_REQUIRE_DB").is_ok_and(|v| v == "1");
+            assert!(
+                !required,
+                "OPENBILLING_TEST_REQUIRE_DB=1 but OPENBILLING_TEST_DATABASE_URL is unset"
+            );
+            eprintln!("skipped: OPENBILLING_TEST_DATABASE_URL is unset");
+            return None;
+        }
+    };
+    let admin: PgConnectOptions = url.parse().unwrap();
+    let name = format!("ob_test_cli_{}", std::process::id());
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let mut conn = sqlx::PgConnection::connect_with(&admin).await.unwrap();
+            conn.execute(AssertSqlSafe(format!("DROP DATABASE IF EXISTS {name}")))
+                .await
+                .unwrap();
+            conn.execute(AssertSqlSafe(format!("CREATE DATABASE {name}")))
+                .await
+                .unwrap();
+            conn.close().await.unwrap();
+        });
+    Some(admin.database(&name).to_url_lossy().to_string())
+}
+
+/// `serve` stops on `SIGTERM`, which is how Kubernetes stops a pod. As PID 1 in a container, a process without a
+/// handler would ignore it and be killed at the end of its grace period.
+#[cfg(unix)]
+#[test]
+fn serve_stops_cleanly_on_sigterm() {
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    let Some(url) = fresh_database() else {
+        return;
+    };
+    let mut child = Command::new(env!("CARGO_BIN_EXE_openbilling"))
+        .arg("serve")
+        .env("OPENBILLING_DATABASE_URL", url)
+        .env("OPENBILLING_LISTEN", "127.0.0.1:0")
+        .env_remove("OPENBILLING_DATABASE_URL_FILE")
+        .env_remove("OPENBILLING_VPAY_BASE_URL")
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stderr = child.stderr.take().unwrap();
+    let (lines, received) = mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+            if lines.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let line = received
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .unwrap_or_else(|_| {
+                let _ = child.kill();
+                panic!("serve did not say it was listening");
+            });
+        if line.contains("listening on") {
+            break;
+        }
+    }
+    let killed = Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(killed.success());
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            panic!("serve did not stop within 10 s of SIGTERM");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert!(status.success(), "serve exits 0 on SIGTERM: {status:?}");
+}

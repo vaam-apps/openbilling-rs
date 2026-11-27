@@ -15,7 +15,8 @@ into a partitioned queue once, drains them into a double-entry ledger across an 
 promotions, adjustments, refunds and chargebacks. Every rule is SQL; Rust holds the types, the ports and the tests.
 Credits from a payment provider (vpay first) and an external API in CrateStack are built
 ([ADR 0003](docs/adr/0003-credits-from-a-payment-provider.md)), with callers refused until a real token verifier is
-wired. The database tests have not yet run against a PostgreSQL 19 outside CI.
+wired. The database tests have not yet run against a PostgreSQL 19 outside CI. The release pipeline (a signed image
+and a Helm chart, [ADR 0005](docs/adr/0005-release-fixed-versions-image-and-chart.md)) is written and has not yet run.
 
 ## Features
 
@@ -51,8 +52,13 @@ Legend: ✅ built and tested in CI · ⚠️ built, but partial or not yet prove
 | Testing | A conformance suite for every `PriceBook` | ✅ | 9 cases, run in CI on PostgreSQL 19 |
 | Testing | End-to-end scenarios against the real service and PostgreSQL | 📋 | Metered usage, prepaid balance, organisation caps, once-only, concurrency, price versions, statements, payment round-trip |
 | Command line | `openbilling serve`, `--help`, `--version`, with clap and colour | ⚠️ | Colour off when not a terminal, `NO_COLOR` and `CLICOLOR_FORCE` honoured (tested); the help and the colour are tested, `serve` has not yet run against a PostgreSQL 19 |
-| Release | A signed container image and an OCI Helm chart (bjw-s app-template v5) | 📋 | |
+| Release | Versions from the commits: release-please's release pull request, a `vX.Y.Z` tag, a changelog | ⚠️ | `release-please.yml`, through a GitHub App token; not yet run: the App and its two secrets are not set yet ([ADR 0005](docs/adr/0005-release-fixed-versions-image-and-chart.md)) |
+| Release | A container image, amd64 and arm64, distroless and non-root, signed (cosign keyless), with provenance and an SBOM | ⚠️ | `docker/openbilling/Dockerfile`; `X.Y.Z` and `X.Y` on a tag, `sha-<7>` and `edge` on `main`, never `latest`. Not yet built anywhere: the first build is CI's |
+| Release | A smoke test of the image (`--version`, `--help` on the runtime base) on every pull request | ⚠️ | CI's `image` job, pushes nothing; not yet run |
+| Release | An OCI Helm chart on the bjw-s common library 5.3.0, signed, pinning its release's image by tag and digest | ⚠️ | `deploy/openbilling`, published at `oci://ghcr.io/vaam-apps/charts/openbilling` on a tag; linted, rendered and schema-checked by `tests/check.sh` locally, not yet in CI or in a cluster |
+| Command line | `serve` stops cleanly on `SIGTERM` (how Kubernetes stops a pod) | ⚠️ | Tested against a real database only in CI, which has not run it yet |
 | CI | fmt, clippy, tests on PostgreSQL 19, cargo deny, MSRV | ✅ | |
+| CI | The chart: lint, a values matrix, kubeconform, no secret and every image pinned in each render | ⚠️ | CI's `chart` job runs `deploy/openbilling/tests/check.sh`; run locally, not yet in CI |
 | CI | The CrateStack contract: `cratestack check`, `contract check`, `ops.json` current, no operation open to an anonymous caller | ✅ | Run by the `API contract` job |
 
 ## Build and test
@@ -76,6 +82,34 @@ OPENBILLING_DATABASE_URL=postgres://postgres@127.0.0.1:5432/postgres cargo run -
 `OPENBILLING_TEST_REQUIRE_DB=1` turns the skip into a failure; CI sets it. `docker stop openbilling-pg` removes the
 database.
 
+## Releases
+
+Versions come from the commits ([ADR 0005](docs/adr/0005-release-fixed-versions-image-and-chart.md)): release-please
+keeps a release pull request open on `main` with the next version and its changelog, and merging it tags `vX.Y.Z`.
+Nobody edits a version line by hand; `Cargo.toml`'s workspace version and the chart's `version` and `appVersion`
+carry `x-release-please-version` and move together.
+
+| Ref | Image `ghcr.io/vaam-apps/openbilling-rs` | Chart `oci://ghcr.io/vaam-apps/charts/openbilling` |
+|---|---|---|
+| tag `vX.Y.Z` | `X.Y.Z`, `X.Y` | `X.Y.Z`, whose default image is `X.Y.Z` by tag and digest |
+| push to `main` | `sha-<7>`, `edge` (development only) | none |
+
+There is no `latest`: production runs fixed versions only, and the chart refuses `latest` and any floating tag without
+a digest. Images are built for amd64 and arm64 and carry their provenance and an SBOM; images and charts are signed
+with cosign keyless, by `release.yml`'s identity ([the chart's README](deploy/openbilling/README.md) has the
+`cosign verify` lines).
+
+```sh
+docker build -f docker/openbilling/Dockerfile --target smoke .   # the image's smoke test, as CI runs it
+sh deploy/openbilling/tests/check.sh                            # the chart's checks (helm v4, kubeconform)
+```
+
+**Not yet run.** The first release needs the owner: a GitHub App installed on this repository with
+`contents: write` and `pull-requests: write`, and its Client ID and private key set as the secrets
+`RELEASE_PLEASE_APP_CLIENT_ID` and `RELEASE_PLEASE_APP_PRIVATE_KEY`. Without them release-please cannot open its pull
+request, and no tag is made. The image and chart packages must also be made public on GHCR to be pulled without a
+secret.
+
 ## Layout
 
 | Path | What |
@@ -86,6 +120,10 @@ database.
 | `crates/openbilling-vpay` | The vpay adapter of `PaymentProvider`, and a stand-in for vpay's API for tests |
 | `crates/openbilling-http` | The external API: a CrateStack schema over the ledger's tables, its procedures, bearer authentication, and the payment provider's webhook |
 | `bin/openbilling` | The service binary: `openbilling serve` |
+| `docker/openbilling/` | The image: cargo-chef, distroless, non-root, a smoke stage |
+| `deploy/openbilling/` | The Helm chart, on the bjw-s common library 5.3.0, and its checks (`tests/`) |
+| `release-please-config.json`, `.release-please-manifest.json` | The versions release-please writes |
+| `.github/workflows/` | `ci.yml` (Rust, the API contract, the image's smoke test, the chart), `release-please.yml`, `release.yml` |
 | `docs/adr/` | The decisions |
 | `docs/api/` | The API's contract, as CrateStack states it |
 

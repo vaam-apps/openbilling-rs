@@ -6,3 +6,4 @@
 | [0002](0002-an-owner-holds-several-accounts.md) | An owner holds several accounts | Accepted (2026-11-27) |
 | [0003](0003-credits-from-a-payment-provider.md) | Credits come from a payment provider through a port, vpay first; the external API is CrateStack | Proposed (2026-11-27) |
 | [0004](0004-a-versioned-price-book-in-sql.md) | A versioned price book in SQL | Accepted (2026-11-27) |
+| [0005](0005-release-fixed-versions-image-and-chart.md) | Releases: release-please, fixed versions in production, a signed image and a chart on bjw-s common v5 | Proposed (2026-11-27) |

@@ -20,6 +20,11 @@ conformance suite and the vpay adapter; the external API in CrateStack (`openbil
 bearer authentication that refuses everyone until a real token verifier is wired; `openbilling serve` with the drain.
 Not built: detaching and dropping old partitions, a JWT verifier, minting the vpay token, raw events through the
 API.
+**Slice ANR-1144** ([ADR 0005](docs/adr/0005-release-fixed-versions-image-and-chart.md)): the release pipeline,
+written and **not yet run**: release-please (versions from the commits, a GitHub App token), the image
+(`docker/openbilling`, cargo-chef, distroless, non-root, a smoke stage), the Helm chart (`deploy/openbilling`, the
+bjw-s common library 5.3.0) and `release.yml` (`X.Y.Z` and `X.Y` on a tag, `sha-<7>` and `edge` on `main`, never
+`latest`; signed; the chart pinned to its release's digest). `serve` stops on `SIGTERM`.
 
 ## Layout
 
@@ -30,11 +35,14 @@ API.
 | `crates/openbilling-testkit` | The conformance suites: `ledger_conformance!(factory)` of `LedgerStore` (`src/cases.rs`) and `price_book_conformance!(factory)` of `PriceBook` (`src/price_cases.rs`), and fixtures; of `PaymentProvider`, `payment_conformance!(factory)` over a `ProviderFixture` (`src/payments.rs`) |
 | `crates/openbilling-vpay` | The vpay adapter of `PaymentProvider` (reqwest 0.13, rustls on ring); its webhook verifier is held to vpay's scheme and a vector; the feature `stand-in` is a stand-in for vpay's API, test code only. Every vpay fact is in ADR 0003's *Agent notes* |
 | `crates/openbilling-http` | The external API: `schema/openbilling.cstack` (CrateStack 0.20.6, REST, under `/v1`), its procedure bodies (writes call `PgLedger`), `BearerAuth` over the `TokenVerifier` port (`RefuseAll` ships), the webhook route, `schema/openbilling.contracts.lock`. Its models map onto the ledger's tables: never run `cratestack migrate` on this schema |
-| `bin/openbilling` | The service binary (`anyhow`, clap with `color` and `wrap_help`, `anstream`): `serve` |
+| `bin/openbilling` | The service binary (`anyhow`, clap with `color` and `wrap_help`, `anstream`): `serve`, which migrates at start and stops on `SIGINT` or `SIGTERM` |
+| `docker/openbilling/Dockerfile` | The image (ADR 0005): `chef`, `planner`, `builder` (`--locked`), `smoke` (`--version`, `--help` on the runtime base), `runtime` (the last, the default target). Bases pinned by tag and digest in its header: move both together, read the digest from the registry |
+| `deploy/openbilling/` | The Helm chart (ADR 0005): values for the bjw-s common library 5.3.0 (`Chart.yaml`, `Chart.lock`; `charts/` is built, not committed), `templates/common.yaml` (the loader) and `templates/_validate.tpl` (the refusals), `tests/check.sh` (everything CI checks), `tests/render-check.sh`, `tests/values/` (a `refused-*.yaml` says its message on `# expect:`), `tests/schemas/` (vendored; re-vendor, never edit). The digest line of `values.yaml` is rewritten by `release.yml`: keep its comment |
+| `release-please-config.json`, `.release-please-manifest.json` | release-please's configuration and the last released version. The version lines it writes carry `# x-release-please-version`: never edit them by hand |
 | `docs/api/` | The API's contract as CrateStack states it: `ops.json` (`cratestack contract ops --json`), checked in CI |
 | `docs/adr/` | The decisions, with an index in `docs/adr/README.md` |
 | `Cargo.toml`, `clippy.toml`, `deny.toml` | Workspace (edition 2024, resolver 3, MSRV `rust-version`), lints (`unsafe_code` forbidden, `unwrap`/`expect` warn outside tests), dependency policy |
-| `.github/workflows/ci.yml`, `.github/dependabot.yml` | CI (format, clippy, tests with a PostgreSQL service, cargo deny, MSRV) and weekly updates of crates and actions |
+| `.github/workflows/`, `.github/dependabot.yml` | `ci.yml` (format, clippy, tests with a PostgreSQL service, cargo deny, MSRV, the API contract, the image's smoke test on pull requests, the chart), `release-please.yml` (the release pull request and the tag, App token), `release.yml` (the image and the chart, signed), and weekly updates of crates and actions |
 | `.agents/`, `.claude/`, `.goose/`, `.kiro/`, `skills-lock.json` | The pinned skills; never edited by hand |
 
 ## Rules
@@ -99,6 +107,9 @@ cargo deny check                       # deny.toml: advisories, licences, bans, 
 cargo +1.98 check --workspace --all-targets --locked   # MSRV: rust-version of Cargo.toml (CrateStack 0.20.6's)
 CRATESTACK_REQUIRE_VERSION=0.20.6 cratestack check --schema crates/openbilling-http/schema/openbilling.cstack
 CRATESTACK_REQUIRE_VERSION=0.20.6 cratestack contract check --schema crates/openbilling-http/schema/openbilling.cstack --lock crates/openbilling-http/schema/openbilling.contracts.lock
+docker build -f docker/openbilling/Dockerfile --target smoke .   # pull requests: the image builds, --version and --help run
+sh deploy/openbilling/tests/check.sh                            # the chart (helm v4.3.2 and kubeconform v0.8.0 on PATH)
+actionlint                                                      # not in CI; run it on any workflow change
 ```
 
 A database for the tests (PostgreSQL 19; the store refuses an older one). Its user must be allowed to create
@@ -111,4 +122,13 @@ export OPENBILLING_TEST_DATABASE_URL=postgres://postgres@127.0.0.1:5432/postgres
 
 ## Commits
 
-Conventional Commits: `<type>[(scope)][!]: <description>`.
+Conventional Commits: `<type>[(scope)][!]: <description>`. They are the release notes: release-please turns `feat`,
+`fix` and the other types into the changelog and the next version (ADR 0005), so a commit's type and description are
+what a reader of the release sees.
+
+## Releases
+
+Never edit a version line, tag by hand or push `latest`. Merging release-please's pull request tags `vX.Y.Z`;
+`release.yml` refuses a tag whose `Cargo.toml` or `Chart.yaml` version differs. A change to the image or the chart
+runs `sh deploy/openbilling/tests/check.sh` and, where a daemon exists, the smoke build; a new base image or chart
+dependency is pinned by version and digest, read from its registry and marked *verified* with the date.

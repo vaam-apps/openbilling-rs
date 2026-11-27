@@ -1,0 +1,8 @@
+# expect: never `latest`
+controllers:
+  main:
+    containers:
+      main:
+        image:
+          tag: latest
+          digest: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
