@@ -15,8 +15,11 @@ the configured draw order, debt and debt limits, member caps, and the reads; a v
 (half to even, once per event; unpriced meters and dimensions refused) and kept with their version. Every rule is SQL
 in `crates/openbilling-pg/migrations/`; `PgLedger` calls it through the `LedgerStore` and `PriceBook` ports, and
 `openbilling-testkit` holds the conformance suites. **The suites have not run against a PostgreSQL 19 outside CI**
-(none was available where they were written). Not built: detaching and dropping old partitions, a worker loop, the
-binary's service, an external read API (CrateStack's, being built).
+(none was available where they were written). **Slice ANR-1143** ([ADR 0003](docs/adr/0003-credits-from-a-payment-provider.md)): a `PaymentProvider` port with its
+conformance suite and the vpay adapter; the external API in CrateStack (`openbilling-http`), with policies and
+bearer authentication that refuses everyone until a real token verifier is wired; `openbilling serve` with the drain.
+Not built: detaching and dropping old partitions, a JWT verifier, minting the vpay token, raw events through the
+API.
 
 ## Layout
 
@@ -24,8 +27,11 @@ binary's service, an external read API (CrateStack's, being built).
 |---|---|
 | `crates/openbilling-core` | Types, no I/O, no async runtime, no rule: the ids (`EventId`, `AccountId`, `OwnerId`, `MemberId`, `CreditId`, `CurrencyCode`, `AccountLabel`, `MeterId`, `DimensionKey`, `DimensionValue`), `Amount` (`i64` micro-units), `Quantity`, `Timestamp`/`UtcDay`/`UtcMonth`, the configuration, credits, priced and raw events, `EventOutcome`, the ports `LedgerStore` and `PriceBook` with `LedgerError`, `Refusal`, `ListPosition` and `Rule`, and `Error` with `ErrorClass` through `Classify` |
 | `crates/openbilling-pg` | The PostgreSQL store on sqlx `=0.9.0` (held to CrateStack 0.20.6's pin); refuses a server older than PostgreSQL 19. `migrations/` holds every rule (hand-written SQL, applied by `migrator()`); `src/ledger.rs` is `PgLedger`, a thin caller; `src/price_list.rs` parses the YAML price list (serde-saphyr) and nothing more; `src/sqlstate.rs` the one map of SQLSTATEs. `tests/` need `OPENBILLING_TEST_DATABASE_URL` and make a fresh database per test |
-| `crates/openbilling-testkit` | The conformance suites: `ledger_conformance!(factory)` of `LedgerStore` (`src/cases.rs`) and `price_book_conformance!(factory)` of `PriceBook` (`src/price_cases.rs`), and fixtures |
-| `bin/openbilling` | The service binary (`anyhow`). Answers `--help` and `--version` for now |
+| `crates/openbilling-testkit` | The conformance suites: `ledger_conformance!(factory)` of `LedgerStore` (`src/cases.rs`) and `price_book_conformance!(factory)` of `PriceBook` (`src/price_cases.rs`), and fixtures; of `PaymentProvider`, `payment_conformance!(factory)` over a `ProviderFixture` (`src/payments.rs`) |
+| `crates/openbilling-vpay` | The vpay adapter of `PaymentProvider` (reqwest 0.13, rustls on ring); its webhook verifier is held to vpay's scheme and a vector; the feature `stand-in` is a stand-in for vpay's API, test code only. Every vpay fact is in ADR 0003's *Agent notes* |
+| `crates/openbilling-http` | The external API: `schema/openbilling.cstack` (CrateStack 0.20.6, REST, under `/v1`), its procedure bodies (writes call `PgLedger`), `BearerAuth` over the `TokenVerifier` port (`RefuseAll` ships), the webhook route, `schema/openbilling.contracts.lock`. Its models map onto the ledger's tables: never run `cratestack migrate` on this schema |
+| `bin/openbilling` | The service binary (`anyhow`, clap with `color` and `wrap_help`, `anstream`): `serve` |
+| `docs/api/` | The API's contract as CrateStack states it: `ops.json` (`cratestack contract ops --json`), checked in CI |
 | `docs/adr/` | The decisions, with an index in `docs/adr/README.md` |
 | `Cargo.toml`, `clippy.toml`, `deny.toml` | Workspace (edition 2024, resolver 3, MSRV `rust-version`), lints (`unsafe_code` forbidden, `unwrap`/`expect` warn outside tests), dependency policy |
 | `.github/workflows/ci.yml`, `.github/dependabot.yml` | CI (format, clippy, tests with a PostgreSQL service, cargo deny, MSRV) and weekly updates of crates and actions |
@@ -90,7 +96,9 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked        # CI sets OPENBILLING_TEST_DATABASE_URL and OPENBILLING_TEST_REQUIRE_DB=1
 cargo deny check                       # deny.toml: advisories, licences, bans, sources
-cargo +1.94 check --workspace --all-targets --locked   # MSRV: rust-version of Cargo.toml
+cargo +1.98 check --workspace --all-targets --locked   # MSRV: rust-version of Cargo.toml (CrateStack 0.20.6's)
+CRATESTACK_REQUIRE_VERSION=0.20.6 cratestack check --schema crates/openbilling-http/schema/openbilling.cstack
+CRATESTACK_REQUIRE_VERSION=0.20.6 cratestack contract check --schema crates/openbilling-http/schema/openbilling.cstack --lock crates/openbilling-http/schema/openbilling.contracts.lock
 ```
 
 A database for the tests (PostgreSQL 19; the store refuses an older one). Its user must be allowed to create

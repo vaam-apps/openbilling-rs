@@ -80,6 +80,31 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo test --workspace --locked
 
+  api-contract:
+    name: API contract (CrateStack)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      # The CLI must be the release the crates are pinned to (Cargo.toml, `cratestack`).
+      CRATESTACK_REQUIRE_VERSION: "0.20.6"
+      SCHEMA: crates/openbilling-http/schema/openbilling.cstack
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the CrateStack CLI
+        run: npm install --global @cratestack/cli@0.20.6
+      - name: The schema checks
+        run: cratestack check --schema "$SCHEMA"
+      - name: The contract is a locked generation
+        run: cratestack contract check --schema "$SCHEMA" --lock crates/openbilling-http/schema/openbilling.contracts.lock
+      - name: docs/api/ops.json is what the schema says
+        run: |
+          cratestack contract ops --schema "$SCHEMA" --json > /tmp/ops.json
+          diff -u docs/api/ops.json /tmp/ops.json
+          # Every operation needs a caller, and the analysis understood every rule.
+          jq -e '[.ops[] | select((.unanalysed | length > 0) or (.requires_principal | not))] | length == 0' /tmp/ops.json
+
   deny:
     name: Dependencies (cargo deny)
     runs-on: ubuntu-24.04

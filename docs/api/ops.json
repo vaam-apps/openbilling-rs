@@ -1,0 +1,261 @@
+{
+  "ok": true,
+  "schema": "openbilling",
+  "transport": "rest",
+  "ops": [
+    {
+      "key": "GET /accounts",
+      "kind": "model.list",
+      "allow": [
+        "owner == auth().sub || hasRole(\"operator\")"
+      ],
+      "deny": [],
+      "roles": [
+        "operator"
+      ],
+      "requires_principal": true,
+      "unanalysed": [],
+      "contract_digest": "bb579d8189bd2146d352887cc8f40549df5e2970aaae71067bbbd37cc505b8ee"
+    },
+    {
+      "key": "GET /accounts/{id}",
+      "kind": "model.get",
+      "allow": [
+        "owner == auth().sub || hasRole(\"operator\")"
+      ],
+      "deny": [],
+      "roles": [
+        "operator"
+      ],
+      "requires_principal": true,
+      "unanalysed": [],
+      "contract_digest": "b5acca7c50a203dada5284b8a5c9a83eaa405af998bc521d64be1d98ed0bbbfa"
+    },
+    {
+      "key": "GET /lots",
+      "kind": "model.list",
+      "allow": [
+        "account.owner == auth().sub || hasRole(\"operator\")"
+      ],
+      "deny": [],
+      "roles": [
+        "operator"
+      ],
+      "requires_principal": true,
+      "unanalysed": [],
+      "contract_digest": "25771176cccabd5bea211c41d5df76c07744d85ed30cbb36e9cd86058c8d776a"
+    },
+    {
+      "key": "GET /lots/{id}",
+      "kind": "model.get",
+      "allow": [
+        "account.owner == auth().sub || hasRole(\"operator\")"
+      ],
+      "deny": [],
+      "roles": [
+        "operator"
+      ],
+      "requires_principal": true,
+      "unanalysed": [],
+      "contract_digest": "0a3d073e6279db0fc3da8c6ad1c58fd333632851d36b35612c608c80574f5caa"
+    },
+    {
+      "key": "GET /usage_outcomes",
+      "kind": "model.list",
+      "allow": [
+        "owner == auth().sub || hasRole(\"operator\")"
+      ],
+      "deny": [],
+      "roles": [
+        "operator"
+      ],
+      "requires_principal": true,
+      "unanalysed": [],
+      "contract_digest": "4c556258dbda9355f764799dcc8e6d97b515d55fdd07dbc34eaef8eccadba2a6"
+    },
+    {
+      "key": "GET /usage_outcomes/{id}",
+      "kind": "model.get",
+      "allow": [
+        "owner == auth().sub || hasRole(\"operator\")"
+      ],
+      "deny": [],
+      "roles": [
+        "operator"
+      ],
+      "requires_principal": true,
+      "unanalysed": [],
+      "contract_digest": "fb9de9b7d5c149de35b760844e42167ef55559105aeb43a0e06b6b8e3fefd966"
+    },
+    {
+      "key": "POST /$procs/configure",
+      "kind": "procedure",
+      "allow": [
+        "hasRole(\"operator\")"
+      ],
+      "deny": [],
+      "roles": [
+        "operator"
+      ],
+      "requires_principal": true,
+      "unanalysed": [],
+      "contract_digest": "391cf9b37331050cb6f1218512a6a33cca3055da4db6a5ead0a16340bb679d26"
+    },
+    {
+      "key": "POST /$procs/getAllowed",
+      "kind": "procedure",
+      "allow": [
+        "args.owner == auth().sub || hasRole(\"operator\") || hasRole(\"producer\")"
+      ],
+      "deny": [],
+      "roles": [
+        "operator",
+        "producer"
+      ],
+      "requires_principal": true,
+      "unanalysed": [],
+      "contract_digest": "30ae36f7d09bb29dbb9974878295acb8c47bf7e904841b05393cade51e6de73f"
+    },
+    {
+      "key": "POST /$procs/getBalance",
+      "kind": "procedure",
+      "allow": [
+        "args.owner == auth().sub || hasRole(\"operator\")"
+      ],
+      "deny": [],
+      "roles": [
+        "operator"
+      ],
+      "requires_principal": true,
+      "unanalysed": [],
+      "contract_digest": "638cd03a325311e9905cbac6cd44ac30094b9ecfe4825130d88ec99c384cc1e0"
+    },
+    {
+      "key": "POST /$procs/getStatement",
+      "kind": "procedure",
+      "allow": [
+        "args.owner == auth().sub || hasRole(\"operator\")"
+      ],
+      "deny": [],
+      "roles": [
+        "operator"
+      ],
+      "requires_principal": true,
+      "unanalysed": [],
+      "contract_digest": "ab7ddfa4409db771a92107e0be2c9d317f926e28f9a659e01558fec27ec81622"
+    },
+    {
+      "key": "POST /$procs/getUsageSeries",
+      "kind": "procedure",
+      "allow": [
+        "args.owner == auth().sub || hasRole(\"operator\")"
+      ],
+      "deny": [],
+      "roles": [
+        "operator"
+      ],
+      "requires_principal": true,
+      "unanalysed": [],
+      "contract_digest": "bcd0a49de7d74d82a607f3ff6ec06dc398da18a6938d584ce3cd447a99867f94"
+    },
+    {
+      "key": "POST /$procs/grantCredit",
+      "kind": "procedure",
+      "allow": [
+        "hasRole(\"operator\")"
+      ],
+      "deny": [],
+      "roles": [
+        "operator"
+      ],
+      "requires_principal": true,
+      "unanalysed": [],
+      "contract_digest": "cb9b5018195c451c2a1be264ac2b870dbbb938dd2eeba62ca74c7d11d8feb49f"
+    },
+    {
+      "key": "POST /$procs/listCredits",
+      "kind": "procedure",
+      "allow": [
+        "args.owner == auth().sub || hasRole(\"operator\")"
+      ],
+      "deny": [],
+      "roles": [
+        "operator"
+      ],
+      "requires_principal": true,
+      "unanalysed": [],
+      "contract_digest": "5c4ddfaf28017049b8972a6fc1c42f1214b40d7a47935c43469f2a6a3ed51601"
+    },
+    {
+      "key": "POST /$procs/openAccount",
+      "kind": "procedure",
+      "allow": [
+        "hasRole(\"operator\")"
+      ],
+      "deny": [],
+      "roles": [
+        "operator"
+      ],
+      "requires_principal": true,
+      "unanalysed": [],
+      "contract_digest": "bf3c0d6c6464bd734b701cce21bebe3b75cc974be6f3822d03faf479f60dd862"
+    },
+    {
+      "key": "POST /$procs/reconcilePayment",
+      "kind": "procedure",
+      "allow": [
+        "hasRole(\"operator\")"
+      ],
+      "deny": [],
+      "roles": [
+        "operator"
+      ],
+      "requires_principal": true,
+      "unanalysed": [],
+      "contract_digest": "fa494cbc5451e82fb9f9f63272b84c31d8dd39c1b342e4726b1dd89816db42f7"
+    },
+    {
+      "key": "POST /$procs/reconcileRefund",
+      "kind": "procedure",
+      "allow": [
+        "hasRole(\"operator\")"
+      ],
+      "deny": [],
+      "roles": [
+        "operator"
+      ],
+      "requires_principal": true,
+      "unanalysed": [],
+      "contract_digest": "a13abe1675434d57d4e63232e493a29876334b50fe985e90ecb069e6c7a6973a"
+    },
+    {
+      "key": "POST /$procs/recordUsage",
+      "kind": "procedure",
+      "allow": [
+        "hasRole(\"producer\") || hasRole(\"operator\")"
+      ],
+      "deny": [],
+      "roles": [
+        "operator",
+        "producer"
+      ],
+      "requires_principal": true,
+      "unanalysed": [],
+      "contract_digest": "02bb5d84c66a32f30cc472a50b6a942cbde5b12c074fc71986d3441caf996e40"
+    },
+    {
+      "key": "POST /$procs/startTopUp",
+      "kind": "procedure",
+      "allow": [
+        "args.owner == auth().sub || hasRole(\"operator\")"
+      ],
+      "deny": [],
+      "roles": [
+        "operator"
+      ],
+      "requires_principal": true,
+      "unanalysed": [],
+      "contract_digest": "0634f0385fa6084c534183a32bdeb4aec64890c145244254044435797c920de2"
+    }
+  ]
+}

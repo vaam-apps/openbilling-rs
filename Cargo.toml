@@ -4,14 +4,16 @@ members = [
     "crates/openbilling-core",
     "crates/openbilling-pg",
     "crates/openbilling-testkit",
+    "crates/openbilling-vpay",
+    "crates/openbilling-http",
     "bin/openbilling",
 ]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-# The MSRV: sqlx 0.9 declares rust-version 1.94.0 (edition 2024 alone needs 1.85). CI's MSRV job checks it.
-rust-version = "1.94"
+# The MSRV: CrateStack 0.20.6 declares rust-version 1.98.0 (sqlx 0.9 needs 1.94). CI's MSRV job checks it.
+rust-version = "1.98"
 license = "Apache-2.0"
 repository = "https://github.com/vaam-apps/openbilling-rs"
 publish = false
@@ -19,17 +21,40 @@ publish = false
 [workspace.dependencies]
 openbilling-core = { path = "crates/openbilling-core" }
 openbilling-testkit = { path = "crates/openbilling-testkit" }
+openbilling-pg = { path = "crates/openbilling-pg" }
+openbilling-vpay = { path = "crates/openbilling-vpay" }
+openbilling-http = { path = "crates/openbilling-http" }
 
+anstream = "1.0.0"
+anstyle = "1.0.14"
 anyhow = "1.0.105"
+# The command line: derive, coloured help (`color`), help wrapped to the terminal (`wrap_help`).
+clap = { version = "4.6.7", default-features = false, features = ["std", "derive", "help", "usage", "error-context", "suggestions", "color", "wrap_help"] }
+# CrateStack, the external API (ADR 0003). Its crates require each other exactly; it pins sqlx `=0.9.0`.
+cratestack = { package = "cratestack-pg", version = "=0.20.6", default-features = false, features = ["postgres", "codec-json"] }
+axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "tokio", "query"] }
+hex = "0.4.3"
+# hmac 0.13 and sha2 0.11: the digest 0.11 line, which the lockfile already holds.
+hmac = "0.13.0"
+# reqwest 0.13 as CrateStack's client builds it: rustls with no provider of its own, so rustls uses the one the
+# workspace already holds (ring, through sqlx). One reqwest, and no aws-lc-rs.
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider"] }
+# rustls on ring: the provider the reqwest above uses, installed process-wide by `openbilling-vpay`.
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std"] }
 serde = { version = "1.0.229", default-features = false, features = ["std", "derive"] }
 # The YAML price list (ADR 0004): pure Rust, no panic on input, a budget on what a document may cost, duplicate keys
 # refused, and `Spanned` values that carry their line and column. Deserializing only.
 serde-saphyr = { version = "2.2.0", default-features = false, features = ["deserialize"] }
+serde_json = "1.0.154"
+sha2 = "0.11.2"
+subtle = "2.6.1"
+tower = { version = "0.5.3", default-features = false, features = ["util"] }
+url = "2.5.9"
 thiserror = "2.0.21"
 tokio = { version = "1.54.1", default-features = false }
 # `=0.9.0`, not 0.9.1: CrateStack 0.20.6, the stack ADR 0001 names, pins sqlx `=0.9.0`, and Cargo cannot hold two
 # semver-compatible versions of one crate. Move both together.
-sqlx = { version = "=0.9.1", default-features = false, features = [
+sqlx = { version = "=0.9.0", default-features = false, features = [
     "runtime-tokio",
     "tls-rustls",
     "postgres",

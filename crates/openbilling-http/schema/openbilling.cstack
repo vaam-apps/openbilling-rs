@@ -1,0 +1,396 @@
+// The external API of openbilling-rs (ADR 0003), served by CrateStack 0.20.6 over REST.
+//
+// Reads: models mapped onto the ledger's own tables, queried on demand (filters, fields, sort, paging), and
+// `query` blocks of plain SQL for the reads that are not one table, each served by a read procedure. Writes:
+// mutation procedures whose Rust bodies call the ledger's PostgreSQL functions through the store.
+//
+// The tables are created by openbilling-pg's hand-written migrations. Nothing here may own them: `cratestack migrate`
+// is never run on this schema, and no snapshot is kept. Every model is read-only (`@@internal` removes the write
+// routes; no write is allowed by a policy either).
+//
+// Who: `auth().sub` is the caller's subject, the owner of the accounts it may read; `hasRole("operator")` reads
+// and runs everything; `hasRole("producer")` sends usage and asks whether a member may spend.
+
+datasource db {
+  provider = "postgresql"
+  url = env("OPENBILLING_DATABASE_URL")
+}
+
+auth Principal {
+  sub   String
+  roles String[]
+}
+
+enum LotKind {
+  allowance
+  promotion
+  adjustment
+  payment
+}
+
+enum OutcomeState {
+  pending
+  applied
+  refused
+}
+
+// Credit the operator books by hand. A payment credit comes only from the payment provider (ADR 0003).
+enum OperatorCreditSource {
+  promotion
+  adjustment
+}
+
+// ---- Models over the ledger's tables, read-only ----
+
+model Account {
+  accountId String   @id
+  owner     String
+  currency  String
+  label     String
+  openedAt  DateTime
+  lots      Lot[]    @relation(fields: [accountId], references: [accountId])
+
+  @@map("ob_account")
+  @@paged
+  @@allow("read", owner == auth().sub || hasRole("operator"))
+  @@internal("create")
+  @@internal("update")
+  @@internal("delete")
+}
+
+model Lot {
+  lotId     Uuid      @id
+  accountId String
+  kind      LotKind
+  source    String?
+  creditId  String?
+  amount    BigInt
+  remaining BigInt
+  expiresAt DateTime?
+  openedAt  DateTime
+  account   Account   @relation(fields: [accountId], references: [accountId])
+
+  @@map("ob_lot")
+  @@paged
+  @@allow("read", account.owner == auth().sub || hasRole("operator"))
+  @@internal("create")
+  @@internal("update")
+  @@internal("delete")
+}
+
+model UsageOutcome {
+  eventId    String       @id
+  owner      String
+  currency   String
+  member     String
+  amount     BigInt
+  state      OutcomeState
+  reason     String?
+  occurredAt DateTime
+  decidedAt  DateTime
+
+  @@map("ob_event_outcome")
+  @@paged
+  @@allow("read", owner == auth().sub || hasRole("operator"))
+  @@internal("create")
+  @@internal("update")
+  @@internal("delete")
+}
+
+// ---- Reads that are not one table: query blocks, each served by a read procedure ----
+
+type BalanceRow {
+  accountId           String
+  label               String
+  currency            String
+  availableMicros     BigInt
+  ownerAvailableMicros BigInt
+  debtMicros          BigInt
+  netMicros           BigInt
+}
+
+// An owner's accounts in a currency, in draw order, now: what each one's drawable lots hold, and the owner's
+// total, debt and net. The rule is the ledger's read `ob_balance_of`.
+query balanceRows(owner: String, currency: String): BalanceRow[]
+  @@sql("""
+    SELECT b.o_account_id AS "accountId", b.o_label AS "label", $2::text AS "currency",
+           b.o_available AS "availableMicros",
+           ob_clamp(sum(b.o_available) OVER ()) AS "ownerAvailableMicros",
+           b.o_debt AS "debtMicros",
+           ob_clamp(sum(b.o_available) OVER () - b.o_debt) AS "netMicros"
+    FROM ob_balance_of($1, $2, ob_micros(now())) b
+  """)
+  @allow(owner == auth().sub || hasRole("operator"))
+
+type AllowedRow {
+  allowed               Boolean
+  refused               String?
+  balanceMicros         BigInt
+  memberRemainingMicros BigInt?
+}
+
+// May the member spend for the owner in the currency now? The rule is the ledger's read `ob_allowed`.
+query allowedRow(owner: String, currency: String, member: String): AllowedRow
+  @@sql("""
+    SELECT a.o_refused IS NULL AS "allowed", a.o_refused AS "refused", a.o_balance AS "balanceMicros",
+           a.o_member_remaining AS "memberRemainingMicros"
+    FROM ob_allowed($1, $2, $3, ob_micros(now())) a
+  """)
+  @allow(owner == auth().sub || hasRole("operator") || hasRole("producer"))
+
+type CreditRow {
+  source       String
+  creditId     String
+  accountId    String
+  label        String
+  amountMicros BigInt
+  expiresAt    DateTime?
+  bookedAt     DateTime
+}
+
+// Every credit booked on the owner's accounts in the currency, newest first.
+query creditRows(owner: String, currency: String): CreditRow[]
+  @@sql("""
+    SELECT c.source AS "source", c.credit_id AS "creditId", c.account_id AS "accountId", a.label AS "label",
+           c.amount AS "amountMicros", c.expires_at AS "expiresAt", c.created_at AS "bookedAt"
+    FROM ob_credit c JOIN ob_account a ON a.account_id = c.account_id
+    WHERE a.owner = $1 AND a.currency = $2
+    ORDER BY c.created_at DESC, c.source, c.credit_id
+  """)
+  @allow(owner == auth().sub || hasRole("operator"))
+
+type StatementLine {
+  line         String
+  kind         String
+  reference    String?
+  day          String?
+  amountMicros BigInt
+}
+
+// An owner's statement in a currency for one UTC month. Lines (`line` = "line"): `usage` per UTC day of
+// occurrence, negative; `payment`, `promotion`, `adjustment` per credit booked in the month, signed;
+// `refund`, `chargeback` per reversal booked in the month, negative; `allowance` per account granted the
+// month's allowance, on the first of the month. Then one total per kind (`line` = "total", no reference, no
+// day). Lines by day, kind and reference; totals by kind. Days are `YYYY-MM-DD`, UTC.
+query statementLines(owner: String, currency: String, year: Int, month: Int): StatementLine[]
+  @@sql("""
+    WITH bounds AS (
+        SELECT make_date($3::integer, $4::integer, 1) AS first_day,
+               (make_date($3::integer, $4::integer, 1) + interval '1 month')::date AS next_day
+    ), lines AS (
+        SELECT 'usage'::text AS kind, NULL::text AS reference, o.occurred_on AS day, -o.amount::numeric AS amount
+        FROM ob_event_outcome o CROSS JOIN bounds b
+        WHERE o.state = 'applied' AND o.owner = $1 AND o.currency = $2
+          AND o.occurred_on >= b.first_day AND o.occurred_on < b.next_day
+        UNION ALL
+        SELECT c.source, c.credit_id, ob_utc_day(c.created_at), c.amount::numeric
+        FROM ob_credit c JOIN ob_account a ON a.account_id = c.account_id CROSS JOIN bounds b
+        WHERE a.owner = $1 AND a.currency = $2
+          AND ob_utc_day(c.created_at) >= b.first_day AND ob_utc_day(c.created_at) < b.next_day
+        UNION ALL
+        SELECT r.kind, r.reversal_id, ob_utc_day(r.created_at), -r.amount::numeric
+        FROM ob_reversal r
+        JOIN ob_credit c ON c.source = r.source AND c.credit_id = r.payment_id
+        JOIN ob_account a ON a.account_id = c.account_id
+        CROSS JOIN bounds b
+        WHERE a.owner = $1 AND a.currency = $2
+          AND ob_utc_day(r.created_at) >= b.first_day AND ob_utc_day(r.created_at) < b.next_day
+        UNION ALL
+        SELECT 'allowance', l.account_id, l.allowance_month, l.amount::numeric
+        FROM ob_lot l JOIN ob_account a ON a.account_id = l.account_id CROSS JOIN bounds b
+        WHERE l.kind = 'allowance' AND a.owner = $1 AND a.currency = $2 AND l.allowance_month = b.first_day
+    )
+    SELECT 'line'::text AS "line", l.kind AS "kind", l.reference AS "reference",
+           to_char(l.day, 'YYYY-MM-DD') AS "day", ob_clamp(sum(l.amount)) AS "amountMicros"
+    FROM lines l GROUP BY l.kind, l.reference, l.day
+    UNION ALL
+    SELECT 'total'::text, l.kind, NULL::text, NULL::text, ob_clamp(sum(l.amount))
+    FROM lines l GROUP BY l.kind
+    ORDER BY 1, 4, 2, 3
+  """)
+  @allow(owner == auth().sub || hasRole("operator"))
+
+type UsageDay {
+  day          String
+  amountMicros BigInt
+}
+
+// An owner's applied usage in a currency per UTC day of occurrence, from the UTC day of `fromTime` to the UTC
+// day of `toTime`, both included, oldest first. Days with no usage have no row.
+query usageDays(owner: String, currency: String, fromTime: DateTime, toTime: DateTime): UsageDay[]
+  @@sql("""
+    SELECT to_char(o.occurred_on, 'YYYY-MM-DD') AS "day", ob_clamp(sum(o.amount)) AS "amountMicros"
+    FROM ob_event_outcome o
+    WHERE o.state = 'applied' AND o.owner = $1 AND o.currency = $2
+      AND o.occurred_on >= ob_utc_day($3) AND o.occurred_on <= ob_utc_day($4)
+    GROUP BY o.occurred_on
+    ORDER BY o.occurred_on
+  """)
+  @allow(owner == auth().sub || hasRole("operator"))
+
+type OwnerCurrency {
+  owner    String @length(min: 1, max: 255)
+  currency String @length(min: 1, max: 16)
+}
+
+type AllowedInput {
+  owner    String @length(min: 1, max: 255)
+  currency String @length(min: 1, max: 16)
+  member   String @length(min: 1, max: 128)
+}
+
+type StatementInput {
+  owner    String @length(min: 1, max: 255)
+  currency String @length(min: 1, max: 16)
+  year     Int    @range(min: 1970, max: 9999)
+  month    Int    @range(min: 1, max: 12)
+}
+
+type UsageSeriesInput {
+  owner    String @length(min: 1, max: 255)
+  currency String @length(min: 1, max: 16)
+  fromTime DateTime
+  toTime   DateTime
+}
+
+procedure getBalance(args: OwnerCurrency): BalanceRow[]
+  @allow(args.owner == auth().sub || hasRole("operator"))
+
+procedure getAllowed(args: AllowedInput): AllowedRow
+  @allow(args.owner == auth().sub || hasRole("operator") || hasRole("producer"))
+
+procedure listCredits(args: OwnerCurrency): CreditRow[]
+  @allow(args.owner == auth().sub || hasRole("operator"))
+
+procedure getStatement(args: StatementInput): StatementLine[]
+  @allow(args.owner == auth().sub || hasRole("operator"))
+
+procedure getUsageSeries(args: UsageSeriesInput): UsageDay[]
+  @allow(args.owner == auth().sub || hasRole("operator"))
+
+// ---- Writes: mutation procedures calling the ledger's functions ----
+
+type LotOrderEntry {
+  kind               LotKind
+  soonestExpiryFirst Boolean
+}
+
+type ConfigurationInput {
+  currencies String[]
+  labels     String[]
+  lotOrder   LotOrderEntry[]
+}
+
+type Done {
+  done Boolean
+}
+
+// Sets the currencies, the account labels in draw order and the lot order (`ob_configure`).
+mutation procedure configure(args: ConfigurationInput): Done
+  @allow(hasRole("operator"))
+
+type NewAccountInput {
+  accountId String @length(min: 1, max: 128)
+  owner     String @length(min: 1, max: 255)
+  currency  String @length(min: 1, max: 16)
+  label     String @length(min: 1, max: 64)
+}
+
+type AccountOpened {
+  accountId String
+  replayed  Boolean
+}
+
+// Opens an account, once by its id (`ob_open_account`).
+mutation procedure openAccount(args: NewAccountInput): AccountOpened
+  @allow(hasRole("operator"))
+
+type CreditInput {
+  creditId     String               @length(min: 1, max: 128)
+  source       OperatorCreditSource
+  owner        String               @length(min: 1, max: 255)
+  currency     String               @length(min: 1, max: 16)
+  label        String               @length(min: 1, max: 64)
+  amountMicros BigInt
+  expiresAt    DateTime?
+}
+
+type CreditBooked {
+  accountId       String
+  transaction     String
+  replayed        Boolean
+  repaidMicros    BigInt
+  debtAddedMicros BigInt
+}
+
+// Books a promotion or an adjustment, once by its source and id (`ob_credit`).
+mutation procedure grantCredit(args: CreditInput): CreditBooked
+  @allow(hasRole("operator"))
+
+type UsageEventInput {
+  eventId      String   @length(min: 1, max: 128)
+  owner        String   @length(min: 1, max: 255)
+  member       String   @length(min: 1, max: 128)
+  currency     String   @length(min: 1, max: 16)
+  amountMicros BigInt
+  occurredAt   DateTime
+}
+
+type UsageBatch {
+  events UsageEventInput[]
+}
+
+type EventAnswer {
+  eventId String
+  answer  String
+}
+
+type IntakeResult {
+  accepted Int
+  replayed Int
+  answers  EventAnswer[]
+}
+
+// Takes pre-priced usage events in, all or nothing, once by each event's id and day (`ob_intake`).
+mutation procedure recordUsage(args: UsageBatch): IntakeResult
+  @allow(hasRole("producer") || hasRole("operator"))
+
+type TopUpInput {
+  key          String @length(min: 1, max: 128)
+  owner        String @length(min: 1, max: 255)
+  currency     String @length(min: 1, max: 16)
+  label        String @length(min: 1, max: 64)
+  amountMicros BigInt
+  successUrl   String @length(min: 1, max: 2048)
+  cancelUrl    String @length(min: 1, max: 2048)
+}
+
+type TopUpStarted {
+  payment     String
+  status      String
+  checkoutId  String
+  checkoutUrl String?
+}
+
+// Asks the payment provider for a payment that credits the owner's account once it succeeds.
+mutation procedure startTopUp(args: TopUpInput): TopUpStarted
+  @allow(args.owner == auth().sub || hasRole("operator"))
+
+type ProviderObject {
+  id String @length(min: 1, max: 128)
+}
+
+type Settlement {
+  outcome     String
+  accountId   String?
+  transaction String?
+  replayed    Boolean
+}
+
+// Reads a payment back from the provider and books it if it succeeded (`ob_credit`, source payment).
+mutation procedure reconcilePayment(args: ProviderObject): Settlement
+  @allow(hasRole("operator"))
+
+// Reads a refund back from the provider and books it as a reversal if it succeeded (`ob_reverse`).
+mutation procedure reconcileRefund(args: ProviderObject): Settlement
+  @allow(hasRole("operator"))

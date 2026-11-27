@@ -10,7 +10,16 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+anstream.workspace = true
+anstyle.workspace = true
 anyhow.workspace = true
+clap.workspace = true
+cratestack.workspace = true
+openbilling-core.workspace = true
+openbilling-http.workspace = true
+openbilling-pg.workspace = true
+openbilling-vpay.workspace = true
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "signal", "time"] }
 
 [lints]
 workspace = true

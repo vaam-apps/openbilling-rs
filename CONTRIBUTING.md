@@ -11,7 +11,7 @@ covered by an issue, open one first and say what you want to change and why. A c
 
 ## 2. Build
 
-You need Rust 1.94 or later and, for the database tests, Docker (or PostgreSQL 19 or later: older versions
+You need Rust 1.98 or later and, for the database tests, Docker (or PostgreSQL 19 or later: older versions
 are not supported, and the database test fails against them).
 
 ```sh
