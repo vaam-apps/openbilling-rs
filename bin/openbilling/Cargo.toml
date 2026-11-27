@@ -18,8 +18,10 @@ cratestack.workspace = true
 openbilling-core.workspace = true
 openbilling-http.workspace = true
 openbilling-pg.workspace = true
+openbilling-telemetry.workspace = true
 openbilling-vpay.workspace = true
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "signal", "time"] }
+tracing.workspace = true
 
 [dev-dependencies]
 # The SIGTERM test makes its own database, as the other crates' tests do.

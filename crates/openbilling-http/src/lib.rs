@@ -110,6 +110,88 @@ async fn require_idempotency_key(request: Request, next: Next) -> Response {
     next.run(request).await
 }
 
+/// The route and the procedure of a request, from fixed names: a path never becomes a label or an attribute as it
+/// is, so an id in a path cannot leave the process.
+fn classify(path: &str) -> (&'static str, &'static str) {
+    if let Some(name) = path.strip_prefix("/v1/$procs/") {
+        let known = MUTATIONS.iter().chain(READS.iter()).find(|n| **n == name);
+        return ("/v1/$procs/{name}", known.copied().unwrap_or("unknown"));
+    }
+    if let Some(rest) = path.strip_prefix("/v1/") {
+        let model = rest.split('/').next().unwrap_or_default();
+        let route = match model {
+            "accounts" => "/v1/accounts",
+            "lots" => "/v1/lots",
+            "usage_outcomes" => "/v1/usage_outcomes",
+            _ => "/v1/other",
+        };
+        return (route, "");
+    }
+    match path {
+        WEBHOOK_PATH => (WEBHOOK_PATH, ""),
+        "/healthz" => ("/healthz", ""),
+        "/readyz" => ("/readyz", ""),
+        _ => ("other", ""),
+    }
+}
+
+/// The method as a closed label.
+fn method_label(method: &Method) -> &'static str {
+    match *method {
+        Method::GET => "GET",
+        Method::POST => "POST",
+        Method::PUT => "PUT",
+        Method::PATCH => "PATCH",
+        Method::DELETE => "DELETE",
+        Method::HEAD => "HEAD",
+        Method::OPTIONS => "OPTIONS",
+        _ => "OTHER",
+    }
+}
+
+/// The outermost layer: one `http.server.request` span per request (not for the probes) and the request duration
+/// by method, route and status class. CrateStack's own spans for the procedure and the list route are its children.
+async fn observe(request: Request, next: Next) -> Response {
+    let method = method_label(request.method());
+    let (route, procedure) = classify(request.uri().path());
+    let probe = matches!(route, "/healthz" | "/readyz");
+    let began = std::time::Instant::now();
+    let response = if probe {
+        next.run(request).await
+    } else {
+        let span = tracing::info_span!(
+            "http.server.request",
+            http.request.method = method,
+            http.route = route,
+            http.response.status_code = tracing::field::Empty,
+        );
+        let response = tracing::Instrument::instrument(next.run(request), span.clone()).await;
+        span.record(
+            "http.response.status_code",
+            i64::from(response.status().as_u16()),
+        );
+        response
+    };
+    let status = match response.status().as_u16() {
+        100..=199 => "1xx",
+        200..=299 => "2xx",
+        300..=399 => "3xx",
+        400..=499 => "4xx",
+        _ => "5xx",
+    };
+    openbilling_telemetry::global().observe(
+        openbilling_telemetry::Histogram::HttpServer,
+        &[
+            ("method", method),
+            ("route", route),
+            ("procedure", procedure),
+            ("status", status),
+        ],
+        began.elapsed().as_secs_f64(),
+    );
+    response
+}
+
 async fn healthz() -> &'static str {
     "ok"
 }
@@ -169,4 +251,5 @@ where
         )
         .with_state(services)
         .nest(API_PREFIX, api)
+        .layer(middleware::from_fn(observe))
 }

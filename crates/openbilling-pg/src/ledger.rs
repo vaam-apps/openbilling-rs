@@ -14,6 +14,7 @@ use openbilling_core::{
     NotAllowed, Opened, OutcomeView, OwnerId, PriceBook, PriceVersionId, PriceVersionView, Rated,
     RawEvent, RefusalReason, Reversal, Timestamp, UsageEvent, UtcDay, UtcMonth, Window, WithinKind,
 };
+use openbilling_telemetry::{Counter, Gauge, Histogram, global};
 use sqlx::PgPool;
 use sqlx::postgres::PgListener;
 
@@ -43,6 +44,15 @@ impl Default for LedgerSettings {
             notify_interval: Duration::from_millis(100),
         }
     }
+}
+
+/// What the usage queue holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QueueStats {
+    /// Events received and not yet decided.
+    pub backlog: u64,
+    /// The age of the oldest of them; zero with none.
+    pub oldest_age: Duration,
 }
 
 /// The ledger on PostgreSQL. Clones share one pool.
@@ -76,6 +86,7 @@ impl PgLedger {
     /// # Errors
     ///
     /// A [`LedgerError::Store`] when the database fails.
+    #[tracing::instrument(name = "db.query", skip_all, fields(db.system = "postgresql", db.operation = "prepare_partitions"))]
     pub async fn prepare_partitions(&self) -> Result<u32, LedgerError> {
         let made: i32 = sqlx::query_scalar("SELECT ob_prepare_partitions($1, $2)")
             .bind(i32::from(self.settings.window.days()))
@@ -84,6 +95,54 @@ impl PgLedger {
             .await
             .map_err(ledger_error)?;
         u32::try_from(made).map_err(|_| corrupt())
+    }
+
+    /// What the queue holds now: how many events are received and not yet decided, and how old the oldest is.
+    ///
+    /// # Errors
+    ///
+    /// A [`LedgerError::Store`] when the database fails.
+    #[tracing::instrument(name = "db.query", skip_all, fields(db.system = "postgresql", db.operation = "queue_stats"))]
+    pub async fn queue_stats(&self) -> Result<QueueStats, LedgerError> {
+        let (backlog, age): (i64, Option<f64>) = sqlx::query_as(
+            "SELECT count(*)::bigint, extract(epoch FROM now() - min(received_at))::float8 \
+             FROM ob_usage_event WHERE state = 'received'",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(ledger_error)?;
+        Ok(QueueStats {
+            backlog: u64::try_from(backlog).map_err(|_| corrupt())?,
+            oldest_age: Duration::from_secs_f64(age.unwrap_or(0.0).max(0.0)),
+        })
+    }
+
+    /// Sets the pool and queue gauges of the metrics: connections idle and in use, the pool's maximum, the queue's
+    /// backlog and the age of its oldest event. The pool's gauges need no query; the queue's is one. A database
+    /// that does not answer leaves the queue gauges as they were: the errors counter and the drain's lag say so.
+    pub async fn sample_metrics(&self) {
+        let metrics = global();
+        let size = self.pool.size() as usize;
+        let idle = self.pool.num_idle();
+        #[allow(clippy::cast_precision_loss)]
+        {
+            metrics.set(Gauge::PoolConnections, &[("state", "idle")], idle as f64);
+            metrics.set(
+                Gauge::PoolConnections,
+                &[("state", "used")],
+                size.saturating_sub(idle) as f64,
+            );
+            metrics.set(
+                Gauge::PoolMax,
+                &[],
+                f64::from(self.pool.options().get_max_connections()),
+            );
+        }
+        if let Ok(queue) = self.queue_stats().await {
+            #[allow(clippy::cast_precision_loss)]
+            metrics.set(Gauge::QueueBacklog, &[], queue.backlog as f64);
+            metrics.set(Gauge::QueueOldestAge, &[], queue.oldest_age.as_secs_f64());
+        }
     }
 
     /// A listener for the workers' wake-up. It holds a connection of its own, which must be a direct session: `LISTEN`
@@ -274,9 +333,99 @@ fn outcome(state: &str, reason: Option<&str>) -> Result<EventOutcome, LedgerErro
     }
 }
 
+/// Counts a drain pass: its result, its duration, each decision, and a debit posting for each applied event.
+fn record_drain(result: &Result<DrainReport, LedgerError>, began: Instant) {
+    let metrics = global();
+    metrics.observe(Histogram::Drain, &[], began.elapsed().as_secs_f64());
+    match result {
+        Ok(report) => {
+            metrics.add(Counter::DrainRuns, &[("result", "ok")], 1);
+            metrics.drain_succeeded();
+            let applied = report.applied() as u64;
+            metrics.add(Counter::DrainEvents, &[("outcome", "applied")], applied);
+            metrics.add(Counter::LedgerPostings, &[("kind", "usage_debit")], applied);
+            for reason in RefusalReason::ALL {
+                let refused = report
+                    .decided
+                    .iter()
+                    .filter(|d| d.outcome == EventOutcome::Refused(reason))
+                    .count() as u64;
+                metrics.add(
+                    Counter::DrainEvents,
+                    &[("outcome", "refused"), ("reason", reason.as_str())],
+                    refused,
+                );
+            }
+        }
+        Err(_) => metrics.add(Counter::DrainRuns, &[("result", "error")], 1),
+    }
+}
+
+/// Counts a booked credit, reversal or allowance as a ledger posting; a replay booked nothing.
+fn posted(credited: Credited, kind: &'static str) -> Result<Credited, LedgerError> {
+    if !credited.replayed {
+        global().add(Counter::LedgerPostings, &[("kind", kind)], 1);
+    }
+    Ok(credited)
+}
+
 impl PgLedger {
     /// Calls `ob_intake` with one batch, priced or raw, and notifies the workers when it wrote anything.
     async fn take_in(&self, batch: IntakeBatch<'_>) -> Result<IntakeReport, LedgerError> {
+        let events = batch.ids.len() as u64;
+        let result = self.take_in_rows(batch).await;
+        let metrics = global();
+        match &result {
+            Ok(report) => {
+                metrics.add(
+                    Counter::IntakeEvents,
+                    &[("result", "accepted")],
+                    report.accepted() as u64,
+                );
+                metrics.add(
+                    Counter::IntakeEvents,
+                    &[("result", "replayed")],
+                    report.replayed() as u64,
+                );
+            }
+            Err(error) => {
+                if let Some(rule) = error.rule() {
+                    metrics.add(
+                        Counter::IntakeEvents,
+                        &[("result", "refused"), ("reason", rule.as_str())],
+                        events,
+                    );
+                }
+            }
+        }
+        result
+    }
+
+    async fn drain_rows(&self, limit: u32) -> Result<DrainReport, LedgerError> {
+        let rows: Vec<DrainRow> = sqlx::query_as(
+            "SELECT o_event_id, o_occurred_day, o_state, o_reason, o_amount, o_price_version::text \
+             FROM ob_drain($1)",
+        )
+        .bind(i32::try_from(limit).unwrap_or(i32::MAX))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(ledger_error)?;
+        let decided = rows
+            .into_iter()
+            .map(|(id, occurred_on, state, reason, micros, price_version)| {
+                Ok(Decided {
+                    event: EventId::new(id).map_err(|_| corrupt())?,
+                    occurred_on: day(occurred_on)?,
+                    outcome: outcome(&state, reason.as_deref())?,
+                    amount: amount(micros)?,
+                    price_version: version(price_version)?,
+                })
+            })
+            .collect::<Result<Vec<_>, LedgerError>>()?;
+        Ok(DrainReport { decided })
+    }
+
+    async fn take_in_rows(&self, batch: IntakeBatch<'_>) -> Result<IntakeReport, LedgerError> {
         let window = self.settings.window;
         let rows: Vec<(String, String)> = sqlx::query_as(
             "SELECT o_event_id, o_answer \
@@ -319,6 +468,7 @@ impl PgLedger {
 }
 
 impl LedgerStore for PgLedger {
+    #[tracing::instrument(name = "db.query", skip_all, fields(db.system = "postgresql", db.operation = "now"))]
     async fn now(&self) -> Result<Timestamp, LedgerError> {
         let micros: i64 = sqlx::query_scalar("SELECT ob_micros(now())")
             .fetch_one(&self.pool)
@@ -327,6 +477,7 @@ impl LedgerStore for PgLedger {
         Timestamp::from_unix_micros(micros).map_err(|_| corrupt())
     }
 
+    #[tracing::instrument(name = "db.query", skip_all, fields(db.system = "postgresql", db.operation = "configure"))]
     async fn configure(&self, config: &LedgerConfig) -> Result<(), LedgerError> {
         let currencies: Vec<&str> = config.currencies.iter().map(CurrencyCode::as_str).collect();
         let labels: Vec<&str> = config.labels.iter().map(AccountLabel::as_str).collect();
@@ -348,6 +499,7 @@ impl LedgerStore for PgLedger {
         Ok(())
     }
 
+    #[tracing::instrument(name = "db.query", skip_all, fields(db.system = "postgresql", db.operation = "open_account"))]
     async fn open_account(&self, account: &NewAccount) -> Result<Opened, LedgerError> {
         let replayed: bool = sqlx::query_scalar("SELECT ob_open_account($1, $2, $3, $4)")
             .bind(account.id.as_str())
@@ -360,6 +512,7 @@ impl LedgerStore for PgLedger {
         Ok(Opened { replayed })
     }
 
+    #[tracing::instrument(name = "db.query", skip_all, fields(db.system = "postgresql", db.operation = "set_debt_limit"))]
     async fn set_debt_limit(
         &self,
         owner: &OwnerId,
@@ -376,6 +529,7 @@ impl LedgerStore for PgLedger {
         Ok(())
     }
 
+    #[tracing::instrument(name = "db.query", skip_all, fields(db.system = "postgresql", db.operation = "set_member_cap"))]
     async fn set_member_cap(
         &self,
         owner: &OwnerId,
@@ -394,6 +548,7 @@ impl LedgerStore for PgLedger {
         Ok(())
     }
 
+    #[tracing::instrument(name = "db.query", skip_all, fields(db.system = "postgresql", db.operation = "grant_allowance"))]
     async fn grant_allowance(
         &self,
         account: &AccountId,
@@ -411,9 +566,10 @@ impl LedgerStore for PgLedger {
         .fetch_one(&self.pool)
         .await
         .map_err(ledger_error)?;
-        credited(row)
+        posted(credited(row)?, "allowance")
     }
 
+    #[tracing::instrument(name = "db.query", skip_all, fields(db.system = "postgresql", db.operation = "credit"))]
     async fn credit(&self, credit: &openbilling_core::Credit) -> Result<Credited, LedgerError> {
         let (account, owner, currency, label) = match &credit.to {
             CreditTarget::Account(id) => (Some(id.as_str()), None, None, None),
@@ -443,9 +599,10 @@ impl LedgerStore for PgLedger {
         .fetch_one(&self.pool)
         .await
         .map_err(ledger_error)?;
-        credited(row)
+        posted(credited(row)?, "credit")
     }
 
+    #[tracing::instrument(name = "db.query", skip_all, fields(db.system = "postgresql", db.operation = "reverse"))]
     async fn reverse(&self, reversal: &Reversal) -> Result<Credited, LedgerError> {
         let row = sqlx::query_as(
             "SELECT o_account_id, o_txn_id::text, o_replayed, o_repaid, o_debt_added \
@@ -458,37 +615,27 @@ impl LedgerStore for PgLedger {
         .fetch_one(&self.pool)
         .await
         .map_err(ledger_error)?;
-        credited(row)
+        posted(credited(row)?, "reversal")
     }
 
+    #[tracing::instrument(name = "db.query", skip_all, fields(db.system = "postgresql", db.operation = "intake"))]
     async fn intake(&self, events: &[UsageEvent]) -> Result<IntakeReport, LedgerError> {
         self.take_in(IntakeBatch::priced(events)).await
     }
 
+    #[tracing::instrument(name = "db.query", skip_all, fields(db.system = "postgresql", db.operation = "drain", openbilling.events.decided = tracing::field::Empty))]
     async fn drain(&self, limit: u32) -> Result<DrainReport, LedgerError> {
-        let rows: Vec<DrainRow> = sqlx::query_as(
-            "SELECT o_event_id, o_occurred_day, o_state, o_reason, o_amount, o_price_version::text \
-             FROM ob_drain($1)",
-        )
-        .bind(i32::try_from(limit).unwrap_or(i32::MAX))
-        .fetch_all(&self.pool)
-        .await
-        .map_err(ledger_error)?;
-        let decided = rows
-            .into_iter()
-            .map(|(id, occurred_on, state, reason, micros, price_version)| {
-                Ok(Decided {
-                    event: EventId::new(id).map_err(|_| corrupt())?,
-                    occurred_on: day(occurred_on)?,
-                    outcome: outcome(&state, reason.as_deref())?,
-                    amount: amount(micros)?,
-                    price_version: version(price_version)?,
-                })
-            })
-            .collect::<Result<Vec<_>, LedgerError>>()?;
-        Ok(DrainReport { decided })
+        let began = Instant::now();
+        let result = self.drain_rows(limit).await;
+        record_drain(&result, began);
+        if let Ok(report) = &result {
+            tracing::Span::current()
+                .record("openbilling.events.decided", report.decided.len() as u64);
+        }
+        result
     }
 
+    #[tracing::instrument(name = "db.query", skip_all, fields(db.system = "postgresql", db.operation = "balance"))]
     async fn balance(
         &self,
         owner: &OwnerId,
@@ -523,6 +670,7 @@ impl LedgerStore for PgLedger {
         })
     }
 
+    #[tracing::instrument(name = "db.query", skip_all, fields(db.system = "postgresql", db.operation = "allowed"))]
     async fn allowed(
         &self,
         owner: &OwnerId,
@@ -553,6 +701,7 @@ impl LedgerStore for PgLedger {
         })
     }
 
+    #[tracing::instrument(name = "db.query", skip_all, fields(db.system = "postgresql", db.operation = "lots"))]
     async fn lots(&self, account: &AccountId) -> Result<Vec<LotView>, LedgerError> {
         let rows: Vec<LotRow> = sqlx::query_as(
             "SELECT o_kind, o_credit_id, o_month_day, o_amount, o_remaining, o_expires_micros \
@@ -582,6 +731,7 @@ impl LedgerStore for PgLedger {
             .collect()
     }
 
+    #[tracing::instrument(name = "db.query", skip_all, fields(db.system = "postgresql", db.operation = "outcome"))]
     async fn outcome(&self, event: &EventId) -> Result<Option<OutcomeView>, LedgerError> {
         // A plain read: no rule, so no function (the owner's decision of 2026-11-27).
         let row: Option<OutcomeRow> = sqlx::query_as(
@@ -603,6 +753,7 @@ impl LedgerStore for PgLedger {
         .transpose()
     }
 
+    #[tracing::instrument(name = "db.query", skip_all, fields(db.system = "postgresql", db.operation = "daily_usage"))]
     async fn daily_usage(
         &self,
         owner: &OwnerId,
@@ -622,6 +773,7 @@ impl LedgerStore for PgLedger {
 }
 
 impl PriceBook for PgLedger {
+    #[tracing::instrument(name = "db.query", skip_all, fields(db.system = "postgresql", db.operation = "load_price_list"))]
     async fn load_price_list(&self, yaml: &str) -> Result<Loaded, LedgerError> {
         let list = crate::price_list::parse(yaml)?;
         let (id, effective_micros, content_hash, replayed): (String, i64, String, bool) =
@@ -657,6 +809,7 @@ impl PriceBook for PgLedger {
         })
     }
 
+    #[tracing::instrument(name = "db.query", skip_all, fields(db.system = "postgresql", db.operation = "price_versions"))]
     async fn price_versions(&self) -> Result<Vec<PriceVersionView>, LedgerError> {
         // A plain read: no rule, so no function (the owner's decision of 2026-11-27).
         let rows: Vec<(String, i64, String)> = sqlx::query_as(
@@ -677,6 +830,7 @@ impl PriceBook for PgLedger {
             .collect()
     }
 
+    #[tracing::instrument(name = "db.query", skip_all, fields(db.system = "postgresql", db.operation = "rate"))]
     async fn rate(&self, event: &RawEvent) -> Result<Rated, LedgerError> {
         let keys: Vec<&str> = event.dimensions.iter().map(|(k, _)| k.as_str()).collect();
         let values: Vec<&str> = event.dimensions.iter().map(|(_, v)| v.as_str()).collect();
@@ -699,6 +853,7 @@ impl PriceBook for PgLedger {
         })
     }
 
+    #[tracing::instrument(name = "db.query", skip_all, fields(db.system = "postgresql", db.operation = "intake_raw"))]
     async fn intake_raw(&self, events: &[RawEvent]) -> Result<IntakeReport, LedgerError> {
         self.take_in(IntakeBatch::raw(events)).await
     }

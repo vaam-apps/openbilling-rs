@@ -6,9 +6,19 @@
 use cratestack::CratestackError;
 use openbilling_core::{Classify, ErrorClass, LedgerError, PaymentError, SettleError};
 
+/// Counts an error the API answers, by class: the class is a closed set, the message is not looked at.
+fn count(class: ErrorClass) {
+    openbilling_telemetry::global().add(
+        openbilling_telemetry::Counter::Errors,
+        &[("class", class.as_str()), ("source", "api")],
+        1,
+    );
+}
+
 /// The CrateStack error of a class, with `message`.
 #[must_use]
 pub fn of_class(class: ErrorClass, message: String) -> CratestackError {
+    count(class);
     match class {
         ErrorClass::Invalid => CratestackError::Validation(message),
         ErrorClass::Conflict => CratestackError::Conflict(message),
@@ -49,6 +59,7 @@ pub fn settle(error: &SettleError) -> CratestackError {
 /// A request value the ledger's types refuse (an id outside its alphabet, an amount out of range).
 #[must_use]
 pub fn invalid(field: &str, error: &openbilling_core::Error) -> CratestackError {
+    count(ErrorClass::Invalid);
     CratestackError::Validation(format!("{field}: {error}"))
 }
 

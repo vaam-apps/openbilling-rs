@@ -10,6 +10,12 @@ The refusals values cannot say. Each names the value to change. Run before the c
     {{- fail "openbilling.database.key: name the key of that Secret that holds the URL" -}}
   {{- end -}}
 
+  {{- $otel := dig "otel" dict (.Values.openbilling | default dict) -}}
+  {{- $endpoint := toString (dig "endpoint" "" $otel) -}}
+  {{- if and $endpoint (not (regexMatch "^https?://[^/@ ]+(/[^ ]*)?$" $endpoint)) -}}
+    {{- fail "openbilling.otel.endpoint: an http(s) URL with no user or password (a credential is a header, from a file), or empty for no OpenTelemetry" -}}
+  {{- end -}}
+
   {{- /* Production runs fixed versions only (ADR 0005). */ -}}
   {{- $image := dig "main" "containers" "main" "image" dict (.Values.controllers | default dict) -}}
   {{- $tag := tpl (toString (dig "tag" "" $image)) . -}}

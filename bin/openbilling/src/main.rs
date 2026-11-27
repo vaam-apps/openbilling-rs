@@ -49,7 +49,22 @@ serve reads its configuration from the environment:
   OPENBILLING_VPAY_PAYMENT_METHOD_TYPES
       The payment method types every intent offers, comma-separated.
   OPENBILLING_VPAY_WEBHOOK_TOLERANCE_SECS
-      How old a webhook signature may be; default 300.";
+      How old a webhook signature may be; default 300.
+
+OpenTelemetry is off unless an endpoint is set (traces, metrics and logs over OTLP/HTTP with JSON bodies):
+  OTEL_EXPORTER_OTLP_ENDPOINT
+      The collector's base URL; /v1/traces, /v1/metrics and /v1/logs are appended. The per-signal
+      OTEL_EXPORTER_OTLP_{TRACES,METRICS,LOGS}_ENDPOINT give a full URL instead.
+  OPENBILLING_OTEL_HEADERS_FILE
+      A file of `Name: value` lines sent with every export (a credential): https, or this machine only.
+      OTEL_EXPORTER_OTLP_HEADERS is refused: an environment variable shows in a process listing.
+  OTEL_SERVICE_NAME, OTEL_RESOURCE_ATTRIBUTES
+      service.name (default openbilling); deployment.environment.name and service.instance.id are read.
+  OTEL_TRACES_SAMPLER_ARG, OTEL_METRIC_EXPORT_INTERVAL, OTEL_BSP_SCHEDULE_DELAY, OTEL_EXPORTER_OTLP_TIMEOUT
+      The share of traces kept (0 to 1, default 1) and the intervals and timeout in milliseconds.
+  OTEL_TRACES_EXPORTER, OTEL_METRICS_EXPORTER, OTEL_LOGS_EXPORTER
+      none turns a signal off. OTEL_SDK_DISABLED=true turns all off. OTEL_EXPORTER_OTLP_PROTOCOL, when set,
+      must be http/json.";
 
 /// Usage billing on PostgreSQL alone.
 #[derive(Debug, Parser)]

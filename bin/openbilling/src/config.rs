@@ -37,6 +37,8 @@ pub struct Settings {
     pub database_url: DatabaseUrl,
     pub listen: SocketAddr,
     pub vpay: Option<VpayConfig>,
+    /// OpenTelemetry, from the standard `OTEL_*` variables; `None` unless an endpoint is set.
+    pub otel: Option<openbilling_telemetry::Settings>,
 }
 
 fn read_file(path: &str, what: &str) -> Result<String> {
@@ -71,10 +73,18 @@ impl Settings {
             None => None,
             Some(base_url) => Some(vpay(base_url, &get)?),
         };
+        // The error names the variable and never its value; a headers file is read here and nowhere else.
+        let otel = openbilling_telemetry::Settings::from_lookup(
+            &lookup,
+            env!("CARGO_PKG_VERSION"),
+            |path| std::fs::read_to_string(path).ok(),
+        )
+        .context("the OpenTelemetry configuration")?;
         Ok(Self {
             database_url: DatabaseUrl(database_url),
             listen,
             vpay,
+            otel,
         })
     }
 }
@@ -150,6 +160,10 @@ mod tests {
         assert_eq!(ok.database_url.expose(), url);
         assert_eq!(ok.listen.to_string(), DEFAULT_LISTEN);
         assert!(ok.vpay.is_none());
+        assert!(
+            ok.otel.is_none(),
+            "telemetry is off unless an endpoint is set"
+        );
         assert!(!format!("{ok:?}").contains("hunter2"));
         assert!(settings(&[]).is_err());
         let both = settings(&[
@@ -161,6 +175,28 @@ mod tests {
         let missing =
             settings(&[("OPENBILLING_DATABASE_URL_FILE", "/nowhere/at/all")]).unwrap_err();
         assert!(format!("{missing:#}").contains("OPENBILLING_DATABASE_URL_FILE"));
+    }
+
+    #[test]
+    fn telemetry_is_on_with_an_endpoint_and_a_bad_setting_is_refused_by_name() {
+        let base = ("OPENBILLING_DATABASE_URL", "postgres://db/x");
+        let on = settings(&[
+            base,
+            ("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318"),
+        ])
+        .unwrap()
+        .otel
+        .unwrap();
+        assert_eq!(on.resource.service_version, env!("CARGO_PKG_VERSION"));
+        let refused = settings(&[
+            base,
+            ("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318"),
+            ("OTEL_EXPORTER_OTLP_HEADERS", "authorization=Bearer hunter2"),
+        ])
+        .unwrap_err();
+        let text = format!("{refused:#}");
+        assert!(text.contains("OTEL_EXPORTER_OTLP_HEADERS"), "{text}");
+        assert!(!text.contains("hunter2"), "{text}");
     }
 
     #[test]

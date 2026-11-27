@@ -11,11 +11,13 @@ publish.workspace = true
 
 [dependencies]
 openbilling-core.workspace = true
+openbilling-telemetry.workspace = true
 serde.workspace = true
 serde-saphyr.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["time"] }
+tracing.workspace = true
 
 [dev-dependencies]
 openbilling-testkit.workspace = true

@@ -19,7 +19,11 @@ does not answer) is exit 1, printed as `error: …`.
 **Configuration** is the environment, listed in `--help`: `OPENBILLING_DATABASE_URL` or
 `OPENBILLING_DATABASE_URL_FILE` (never printed), `OPENBILLING_LISTEN` (default `127.0.0.1:8080`: this machine
 only, since callers are not yet authenticated by a real issuer, and `serve` says so on start), and the vpay adapter's
-`OPENBILLING_VPAY_*` (all of them, or none: without them top-ups and webhooks answer `503`).
+`OPENBILLING_VPAY_*` (all of them, or none: without them top-ups and webhooks answer `503`), and OpenTelemetry's
+`OTEL_*` variables (**off unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set**; the crate's README lists them and what is
+refused). `serve` starts the exporter first, so the start-up work is traced, reads the queue and pool gauges every 15
+s, wraps each drain pass and partition run in a span, counts the loops' errors by class, and flushes the exporter for
+up to 5 s when it stops.
 
 **Colour.** The help is coloured by clap's `Styles` (headers bold, literals cyan, placeholders dimmed), and the
 status lines and refusals by `anstream` and `anstyle`. Both write plain text when the stream is not a terminal,

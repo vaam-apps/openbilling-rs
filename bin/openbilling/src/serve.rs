@@ -9,7 +9,9 @@ use openbilling_core::{Classify, LedgerStore};
 use openbilling_http::auth::{BearerAuth, RefuseAll};
 use openbilling_http::{Services, prepare, router};
 use openbilling_pg::{LedgerSettings, PgLedger, PgStore, Woken};
+use openbilling_telemetry::{Counter, global};
 use openbilling_vpay::VpayProvider;
+use tracing::Instrument as _;
 
 use crate::config::Settings;
 use crate::{ACCENT, WARN};
@@ -20,6 +22,19 @@ const DRAIN_BATCH: u32 = 500;
 const POLL: Duration = Duration::from_secs(5);
 /// How often partitions are made ahead (ADR 0001, point 10).
 const PARTITIONS_EVERY: Duration = Duration::from_secs(3600);
+/// How often the queue and pool gauges are read.
+const SAMPLE_EVERY: Duration = Duration::from_secs(15);
+/// How long the exporter may take to flush when the service stops.
+const FLUSH: Duration = Duration::from_secs(5);
+
+/// Counts an error of a loop by class and where it happened.
+fn count_error(class: openbilling_core::ErrorClass, source: &'static str) {
+    global().add(
+        Counter::Errors,
+        &[("class", class.as_str()), ("source", source)],
+        1,
+    );
+}
 
 /// Drains until a drain takes nothing, then waits for a wake-up or the poll. A failure is reported by its class
 /// and retried after the poll: the table is the truth.
@@ -35,10 +50,31 @@ async fn drain_forever(ledger: PgLedger) {
         }
     };
     loop {
-        match ledger.drain(DRAIN_BATCH).await {
-            Ok(report) if !report.decided.is_empty() => continue,
+        // One span per pass: the database calls it makes are its children.
+        let pass = tracing::info_span!(
+            "drain.cycle",
+            openbilling.batch.limit = u64::from(DRAIN_BATCH),
+            openbilling.events.decided = tracing::field::Empty,
+            openbilling.events.applied = tracing::field::Empty,
+            openbilling.events.refused = tracing::field::Empty,
+        );
+        match ledger.drain(DRAIN_BATCH).instrument(pass.clone()).await {
+            Ok(report) if !report.decided.is_empty() => {
+                pass.record("openbilling.events.decided", report.decided.len() as u64);
+                pass.record("openbilling.events.applied", report.applied() as u64);
+                pass.record(
+                    "openbilling.events.refused",
+                    (report.decided.len() - report.applied()) as u64,
+                );
+                continue;
+            }
             Ok(_) => {}
             Err(error) => {
+                count_error(error.class(), "drain");
+                tracing::warn!(
+                    openbilling.error.class = error.class().as_str(),
+                    "drain failed"
+                );
                 anstream::eprintln!(
                     "{WARN}openbilling:{WARN:#} drain failed ({})",
                     error.class()
@@ -58,7 +94,13 @@ async fn drain_forever(ledger: PgLedger) {
 async fn partitions_forever(ledger: PgLedger) {
     loop {
         tokio::time::sleep(PARTITIONS_EVERY).await;
-        if let Err(error) = ledger.prepare_partitions().await {
+        let pass = tracing::info_span!("partitions.run");
+        if let Err(error) = ledger.prepare_partitions().instrument(pass).await {
+            count_error(error.class(), "partitions");
+            tracing::warn!(
+                openbilling.error.class = error.class().as_str(),
+                "preparing partitions failed"
+            );
             anstream::eprintln!(
                 "{WARN}openbilling:{WARN:#} preparing partitions failed ({})",
                 error.class()
@@ -112,7 +154,31 @@ impl StopSignals {
     }
 }
 
+/// Reads the queue and pool gauges now and then.
+async fn sample_forever(ledger: PgLedger) {
+    loop {
+        ledger.sample_metrics().await;
+        tokio::time::sleep(SAMPLE_EVERY).await;
+    }
+}
+
 pub async fn serve(settings: Settings) -> Result<()> {
+    // Telemetry first, so the start-up work is traced too. Off unless an endpoint is set; the metrics registry
+    // records either way and costs a lock and an add.
+    let telemetry = match &settings.otel {
+        Some(otel) => {
+            let guard = openbilling_telemetry::start(otel, global())
+                .context("starting the OpenTelemetry exporter")?;
+            anstream::eprintln!(
+                "{ACCENT}openbilling:{ACCENT:#} exporting OpenTelemetry (traces {}, metrics {}, logs {})",
+                otel.signals.traces,
+                otel.signals.metrics,
+                otel.signals.logs
+            );
+            Some(guard)
+        }
+        None => None,
+    };
     // The URL is never in an error: openbilling-pg's errors are fixed text.
     let store = PgStore::connect(settings.database_url.expose())
         .await
@@ -147,7 +213,8 @@ pub async fn serve(settings: Settings) -> Result<()> {
 
     let stop = StopSignals::register();
     let drain = tokio::spawn(drain_forever(ledger.clone()));
-    let partitions = tokio::spawn(partitions_forever(ledger));
+    let partitions = tokio::spawn(partitions_forever(ledger.clone()));
+    let sampler = tokio::spawn(sample_forever(ledger));
 
     let listener = tokio::net::TcpListener::bind(settings.listen)
         .await
@@ -167,8 +234,13 @@ pub async fn serve(settings: Settings) -> Result<()> {
     // to come back: stop both loops first. A drain cut short rolls its transaction back; the table is the truth.
     drain.abort();
     partitions.abort();
+    sampler.abort();
     let _ = drain.await;
     let _ = partitions.await;
+    let _ = sampler.await;
     store.close().await;
+    if let Some(telemetry) = telemetry {
+        telemetry.shutdown(FLUSH).await;
+    }
     Ok(())
 }

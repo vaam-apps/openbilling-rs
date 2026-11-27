@@ -23,6 +23,25 @@ use crate::generated::cratestack_schema::{
 use crate::intake;
 use crate::time::timestamp;
 
+/// Counts a `getAllowed` verdict by the check that decided it. `refused` is the ledger's own word (`balance` or
+/// `member_cap`); anything else is `other`, so no value of the database becomes a label.
+fn verdict(allowed: bool, refused: Option<&str>) {
+    let check = match (allowed, refused) {
+        (true, _) => "none",
+        (false, Some("balance")) => "balance",
+        (false, Some("member_cap")) => "member_cap",
+        (false, _) => "other",
+    };
+    openbilling_telemetry::global().add(
+        openbilling_telemetry::Counter::AllowedChecks,
+        &[
+            ("check", check),
+            ("verdict", if allowed { "allowed" } else { "refused" }),
+        ],
+        1,
+    );
+}
+
 /// What the procedures call: the ledger (in the service, [`PgLedger`](openbilling_pg::PgLedger)), and the
 /// payment provider when one is configured.
 pub struct Services<L, P> {
@@ -119,7 +138,9 @@ where
             currency: args.args.currency,
             member: args.args.member,
         };
-        db.queries().allowed_row(&args, ctx).await
+        let row = db.queries().allowed_row(&args, ctx).await?;
+        verdict(row.allowed, row.refused.as_deref());
+        Ok(row)
     }
 
     async fn list_credits(

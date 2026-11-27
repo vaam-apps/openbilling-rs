@@ -21,6 +21,13 @@ is a plain parameterized query (the owner's decision of 2026-11-27). It implemen
 | `…005_rated_events.sql` | Raw events ([ADR 0004](../../docs/adr/0004-a-versioned-price-book-in-sql.md)): `meter`, `quantity`, `dimensions` and `price_version` on the event and its outcome, the partial index of rated events that occurred after they were received, the guards again, and the raw payload hash (`ob_raw_payload_canonical`, `ob_raw_payload_hash`) |
 | `…006_price_book.sql` | The price book: `ob_price_version`, `ob_price_meter`, `ob_price_dimension`, `ob_price`; the content hash, the seal and append-only triggers, `ob_price_back_dated`; `ob_load_price_list`; `ob_round_half_even`, `ob_price_of`, `ob_rate`; `ob_intake` and `ob_drain` again, with raw events |
 
+**Telemetry.** Every `LedgerStore` and `PriceBook` method, `prepare_partitions` and `queue_stats` runs in a
+`db.query` span (`db.operation`, never a parameter), and records into `openbilling-telemetry`'s registry: events at
+intake by result and refusal rule, the drain's decisions and a debit posting per applied event, its duration and its
+last success (the drain's lag), and a posting per credit, allowance or reversal that was not a replay.
+`PgLedger::queue_stats` (the backlog and the age of the oldest event) and `sample_metrics` (those and the pool's
+gauges) feed the gauges the dashboards read.
+
 Each function says why it is `LANGUAGE sql` with a SQL-standard body or `plpgsql`. The functions raise SQLSTATEs of
 class `OB`; `src/sqlstate.rs` maps each one, in one table, to a refusal or an error class.
 

@@ -57,6 +57,8 @@ Legend: ✅ built and tested in CI · ⚠️ built, but partial or not yet prove
 | Release | A smoke test of the image (`--version`, `--help` on the runtime base) on every pull request | ⚠️ | CI's `image` job, pushes nothing; not yet run |
 | Release | An OCI Helm chart on the bjw-s common library 5.3.0, signed, pinning its release's image by tag and digest | ⚠️ | `deploy/openbilling`, published at `oci://ghcr.io/vaam-apps/charts/openbilling` on a tag; linted, rendered and schema-checked by `tests/check.sh` locally, not yet in CI or in a cluster |
 | Command line | `serve` stops cleanly on `SIGTERM` (how Kubernetes stops a pod) | ⚠️ | Tested against a real database only in CI, which has not run it yet |
+| Observability | Traces, metrics and logs over OTLP/HTTP, off unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set | ⚠️ | CrateStack `=0.20.6` emits `tracing` spans and has no exporter, so a layer exports them with ours: routes, procedures, database calls, the drain and partition loops; metrics for events, the queue, `getAllowed`, errors by class and the pool; no id or amount can be an attribute ([ADR 0007](docs/adr/0007-opentelemetry-through-a-layer-over-cratestacks-spans.md)). Proven against a collector in the process on PostgreSQL 19; never against a real collector |
+| Observability | Grafana dashboards as code, one README line per panel | ⚠️ | [`deploy/dashboards`](deploy/dashboards/README.md): the service, and the queue, the drain and PostgreSQL; a test holds every query to what the service exports. Never loaded into a Grafana |
 | CI | fmt, clippy, tests on PostgreSQL 19, cargo deny, MSRV | ✅ | |
 | CI | The chart: lint, a values matrix, kubeconform, no secret and every image pinned in each render | ⚠️ | CI's `chart` job runs `deploy/openbilling/tests/check.sh`; run locally, not yet in CI |
 | CI | The CrateStack contract: `cratestack check`, `contract check`, `ops.json` current, no operation open to an anonymous caller | ✅ | Run by the `API contract` job |
@@ -118,9 +120,11 @@ secret.
 | `crates/openbilling-pg` | The PostgreSQL store: the migrations, which hold every rule, the YAML price list's parser, and `PgLedger`, which calls them. Needs PostgreSQL 19 or later |
 | `crates/openbilling-testkit` | The conformance suites of `LedgerStore` and `PriceBook`, one macro each, and of `PaymentProvider`, and their fixtures |
 | `crates/openbilling-vpay` | The vpay adapter of `PaymentProvider`, and a stand-in for vpay's API for tests |
+| `crates/openbilling-telemetry` | OpenTelemetry: the `tracing` layer and its allowlist, the closed metrics, the OTLP/JSON exporter, and a collector for tests |
 | `crates/openbilling-http` | The external API: a CrateStack schema over the ledger's tables, its procedures, bearer authentication, and the payment provider's webhook |
 | `bin/openbilling` | The service binary: `openbilling serve` |
 | `docker/openbilling/` | The image: cargo-chef, distroless, non-root, a smoke stage |
+| `deploy/dashboards/` | The Grafana dashboards, with a README for each panel |
 | `deploy/openbilling/` | The Helm chart, on the bjw-s common library 5.3.0, and its checks (`tests/`) |
 | `release-please-config.json`, `.release-please-manifest.json` | The versions release-please writes |
 | `.github/workflows/` | `ci.yml` (Rust, the API contract, the image's smoke test, the chart), `release-please.yml`, `release.yml` |
