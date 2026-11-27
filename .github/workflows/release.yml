@@ -5,6 +5,10 @@ name: release
 # (`.github/workflows/release.yml` at master, read 2026-11-27): one build per architecture on a native runner, pushed
 # by digest; one job that assembles the multi-arch index, tags it and signs it; one job that publishes the chart.
 #
+# The image is a static musl binary on distroless/static (ADR 0006): each architecture's job builds its own musl target
+# (`x86_64-unknown-linux-musl` on amd64, `aarch64-unknown-linux-musl` on arm64) in the Dockerfile, which fails the build
+# if the binary is not static.
+#
 # Tags:
 #   v1.2.3 (cut by release-please.yml)  ->  `1.2.3`, `1.2`   and the chart 1.2.3
 #   a push to main                      ->  `sha-<7>`, `edge` (development only; no chart)

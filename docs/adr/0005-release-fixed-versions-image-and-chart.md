@@ -67,6 +67,8 @@ authenticated by a real issuer (ADR 0003).
 
 **The image** (`docker/openbilling/Dockerfile`).
 
+*Amended 2026-11-27: items 8 and 9 (the Debian builder and the glibc runtime) are replaced by [ADR 0006](0006-a-static-musl-binary-on-distroless-static.md): a static musl binary on distroless/static.*
+
 8. Multi-stage with cargo-chef, so the dependencies are a layer of their own; `cargo build --release --locked` of
    `bin/openbilling` on `rust:1.98.1-slim-trixie` (the toolchain CI uses; the MSRV is 1.98).
 9. The runtime is `gcr.io/distroless/cc-debian13:nonroot`: glibc, CA certificates (sqlx and reqwest read the
