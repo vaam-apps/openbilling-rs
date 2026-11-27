@@ -1,0 +1,4 @@
+# expect: openbilling.auth.roleMap: needs openbilling.auth.issuer and openbilling.auth.audience
+openbilling:
+  auth:
+    roleMap: billing-admin=operator

@@ -12,6 +12,23 @@ openbilling:
     existingSecret: openbilling-database
     # -- The key of that Secret that holds the URL.
     key: uri
+  # -- The token verifier (ADR 0003, amended 2026-11-27, D1 to D6): a JWT against one issuer's keys. Unset by
+  # default, and then every /v1 call answers 401 (`RefuseAll`): nothing is ever open by default. Set `issuer` and
+  # `audience` together, or neither; the other three need both. None of them is a secret.
+  auth:
+    # -- The issuer, exactly as tokens name it in `iss`; its keys are found through its discovery document
+    # (`<issuer>/.well-known/openid-configuration`). `https`, or `http` to a loopback address. OPENBILLING_AUTH_ISSUER.
+    issuer: ""
+    # -- The audience a token's `aud` must hold. OPENBILLING_AUTH_AUDIENCE.
+    audience: ""
+    # -- The issuer's JWKS URL, when its discovery document is not to be used. OPENBILLING_AUTH_JWKS_URL.
+    jwksUrl: ""
+    # -- The claim that holds the roles, a dotted path (`realm_access.roles` for Keycloak); empty is `roles`.
+    # OPENBILLING_AUTH_ROLES_CLAIM.
+    rolesClaim: ""
+    # -- How the issuer's role values map to openbilling's two roles: `value=operator,value=producer`; empty is
+    # each value as itself. OPENBILLING_AUTH_ROLE_MAP.
+    roleMap: ""
 
 controllers:
   main:
@@ -38,9 +55,16 @@ controllers:
           - serve
         env:
           # The binary's own default is 127.0.0.1:8080, this machine only; a pod must listen on its address for the
-          # Service and the probes to reach it. Until a token verifier ships every /v1 call answers 401
-          # (ADR 0003); enable the NetworkPolicy below to choose who may connect.
+          # Service and the probes to reach it. Without `openbilling.auth` every /v1 call answers 401 (ADR 0003);
+          # enable the NetworkPolicy below to choose who may connect.
           OPENBILLING_LISTEN: "0.0.0.0:8080"
+          # The token verifier, from `openbilling.auth`. An empty value is unset to the binary, so the defaults
+          # render these empty and the service keeps refusing every /v1 call.
+          OPENBILLING_AUTH_ISSUER: "{{ .Values.openbilling.auth.issuer }}"
+          OPENBILLING_AUTH_AUDIENCE: "{{ .Values.openbilling.auth.audience }}"
+          OPENBILLING_AUTH_JWKS_URL: "{{ .Values.openbilling.auth.jwksUrl }}"
+          OPENBILLING_AUTH_ROLES_CLAIM: "{{ .Values.openbilling.auth.rolesClaim }}"
+          OPENBILLING_AUTH_ROLE_MAP: "{{ .Values.openbilling.auth.roleMap }}"
           OPENBILLING_DATABASE_URL:
             valueFrom:
               secretKeyRef:
@@ -143,6 +167,7 @@ networkpolicies:
         - ports:
             - port: 5432
               protocol: TCP
+        # HTTPS: the payment provider, and the token issuer's discovery document and keys.
         - ports:
             - port: 443
               protocol: TCP

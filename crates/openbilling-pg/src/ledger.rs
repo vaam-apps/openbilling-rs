@@ -542,6 +542,7 @@ impl LedgerStore for PgLedger {
         .map_err(ledger_error)?;
         let refused = match refused.as_deref() {
             None => None,
+            Some("debt_limit") => Some(NotAllowed::DebtLimit),
             Some("balance") => Some(NotAllowed::Balance),
             Some("member_cap") => Some(NotAllowed::MemberCap),
             Some(_) => return Err(corrupt()),

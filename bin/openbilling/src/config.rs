@@ -11,9 +11,10 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use openbilling_core::CurrencyCode;
+use openbilling_jwt::{JwtConfig, RoleMap};
 use openbilling_vpay::{Credential, CurrencyUnit, VpayConfig, WebhookSecret, webhook};
 
-/// The default address: this machine only, until callers are authenticated by a real issuer (ADR 0003).
+/// The default address: this machine only. With an issuer configured, set `OPENBILLING_LISTEN` to serve beyond it.
 pub const DEFAULT_LISTEN: &str = "127.0.0.1:8080";
 
 /// A database URL, never printed.
@@ -37,6 +38,8 @@ pub struct Settings {
     pub database_url: DatabaseUrl,
     pub listen: SocketAddr,
     pub vpay: Option<VpayConfig>,
+    /// The issuer whose tokens the API accepts; `None`: every `/v1` call is refused (`RefuseAll`).
+    pub auth: Option<JwtConfig>,
 }
 
 fn read_file(path: &str, what: &str) -> Result<String> {
@@ -75,8 +78,45 @@ impl Settings {
             database_url: DatabaseUrl(database_url),
             listen,
             vpay,
+            auth: auth(&get)?,
         })
     }
+}
+
+/// The token verifier's settings: an issuer and an audience together, or neither.
+fn auth(get: &impl Fn(&str) -> Option<String>) -> Result<Option<JwtConfig>> {
+    let (issuer, audience) = match (
+        get("OPENBILLING_AUTH_ISSUER"),
+        get("OPENBILLING_AUTH_AUDIENCE"),
+    ) {
+        (Some(issuer), Some(audience)) => (issuer, audience),
+        (None, None) => {
+            for name in [
+                "OPENBILLING_AUTH_JWKS_URL",
+                "OPENBILLING_AUTH_ROLES_CLAIM",
+                "OPENBILLING_AUTH_ROLE_MAP",
+            ] {
+                if get(name).is_some() {
+                    bail!("{name} needs OPENBILLING_AUTH_ISSUER and OPENBILLING_AUTH_AUDIENCE");
+                }
+            }
+            return Ok(None);
+        }
+        _ => {
+            bail!("set OPENBILLING_AUTH_ISSUER and OPENBILLING_AUTH_AUDIENCE together, or neither")
+        }
+    };
+    let mut config = JwtConfig::new(issuer.trim(), audience.trim());
+    config.jwks_url = get("OPENBILLING_AUTH_JWKS_URL").map(|url| url.trim().to_owned());
+    if let Some(claim) = get("OPENBILLING_AUTH_ROLES_CLAIM") {
+        claim.trim().clone_into(&mut config.roles_claim);
+    }
+    if let Some(map) = get("OPENBILLING_AUTH_ROLE_MAP") {
+        config.roles = RoleMap::parse(&map).context(
+            "OPENBILLING_AUTH_ROLE_MAP is not a list of value=operator or value=producer",
+        )?;
+    }
+    Ok(Some(config))
 }
 
 fn vpay(base_url: String, get: &impl Fn(&str) -> Option<String>) -> Result<VpayConfig> {
@@ -150,6 +190,7 @@ mod tests {
         assert_eq!(ok.database_url.expose(), url);
         assert_eq!(ok.listen.to_string(), DEFAULT_LISTEN);
         assert!(ok.vpay.is_none());
+        assert!(ok.auth.is_none());
         assert!(!format!("{ok:?}").contains("hunter2"));
         assert!(settings(&[]).is_err());
         let both = settings(&[
@@ -161,6 +202,55 @@ mod tests {
         let missing =
             settings(&[("OPENBILLING_DATABASE_URL_FILE", "/nowhere/at/all")]).unwrap_err();
         assert!(format!("{missing:#}").contains("OPENBILLING_DATABASE_URL_FILE"));
+    }
+
+    #[test]
+    fn the_issuer_and_the_audience_come_together_or_not_at_all() {
+        let db = ("OPENBILLING_DATABASE_URL", "postgres://db/x");
+        let issuer = ("OPENBILLING_AUTH_ISSUER", "https://idp.example/realms/a");
+        let audience = ("OPENBILLING_AUTH_AUDIENCE", "billing");
+        let auth = settings(&[db, issuer, audience]).unwrap().auth.unwrap();
+        assert_eq!(auth.issuer, "https://idp.example/realms/a");
+        assert_eq!(auth.audience, "billing");
+        assert_eq!(auth.roles_claim, "roles");
+        assert!(auth.jwks_url.is_none());
+        assert!(settings(&[db, issuer]).is_err());
+        // The chart renders the five variables empty when unset: empty is unset, so RefuseAll stays.
+        let empty = settings(&[
+            db,
+            ("OPENBILLING_AUTH_ISSUER", ""),
+            ("OPENBILLING_AUTH_AUDIENCE", " "),
+            ("OPENBILLING_AUTH_JWKS_URL", ""),
+            ("OPENBILLING_AUTH_ROLES_CLAIM", ""),
+            ("OPENBILLING_AUTH_ROLE_MAP", ""),
+        ])
+        .unwrap();
+        assert!(empty.auth.is_none());
+        assert!(settings(&[db, audience]).is_err());
+        assert!(settings(&[db, ("OPENBILLING_AUTH_ROLE_MAP", "a=operator")]).is_err());
+        let full = settings(&[
+            db,
+            issuer,
+            audience,
+            ("OPENBILLING_AUTH_JWKS_URL", "https://idp.example/keys"),
+            ("OPENBILLING_AUTH_ROLES_CLAIM", "realm_access.roles"),
+            (
+                "OPENBILLING_AUTH_ROLE_MAP",
+                "billing-admin=operator,meter=producer",
+            ),
+        ])
+        .unwrap()
+        .auth
+        .unwrap();
+        assert_eq!(full.jwks_url.as_deref(), Some("https://idp.example/keys"));
+        assert_eq!(full.roles_claim, "realm_access.roles");
+        let bad_map = settings(&[
+            db,
+            issuer,
+            audience,
+            ("OPENBILLING_AUTH_ROLE_MAP", "x=owner"),
+        ]);
+        assert!(bad_map.is_err());
     }
 
     #[test]

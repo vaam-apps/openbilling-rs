@@ -1,0 +1,38 @@
+[package]
+name = "openbilling-jwt"
+description = "A JWT bearer verifier for openbilling-rs's API: an issuer's JWKS, on ring."
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+base64.workspace = true
+jsonwebtoken.workspace = true
+openbilling-core.workspace = true
+openbilling-http.workspace = true
+reqwest.workspace = true
+ring.workspace = true
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync", "time"] }
+url.workspace = true
+# The test issuer, for tests only (`test-issuer`).
+axum = { workspace = true, optional = true }
+
+[features]
+# A test issuer: an OpenID provider's discovery document and JWKS on a loopback port, and tokens it signs.
+# `openbilling_jwt::test_issuer`. No shipping binary enables it.
+test-issuer = ["dep:axum", "tokio/net", "tokio/rt"]
+
+[dev-dependencies]
+openbilling-jwt = { path = ".", features = ["test-issuer"] }
+tokio = { workspace = true, features = ["macros", "net", "rt", "rt-multi-thread", "sync", "time"] }
+
+[lints]
+workspace = true

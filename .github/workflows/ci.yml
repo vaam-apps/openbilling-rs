@@ -78,7 +78,12 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - run: cargo test --workspace --locked
+      - run: cargo test --workspace --locked --exclude openbilling
+      # The service binary's tests apart, so the end-to-end suite (`e2e/`, the `openbilling` package's `e2e`
+      # target) is a step of its own in the log: the real `openbilling serve` as a process against this job's
+      # PostgreSQL 19, driven only through its HTTP API and webhook. Like every step, it gates the merge.
+      - name: The service binary's tests and the end-to-end suite
+        run: cargo test -p openbilling --locked
 
   api-contract:
     name: API contract (CrateStack)

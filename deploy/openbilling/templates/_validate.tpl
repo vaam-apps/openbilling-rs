@@ -10,6 +10,27 @@ The refusals values cannot say. Each names the value to change. Run before the c
     {{- fail "openbilling.database.key: name the key of that Secret that holds the URL" -}}
   {{- end -}}
 
+  {{- /* The token verifier: the issuer and the audience together, or neither (as the binary refuses at start). */ -}}
+  {{- $auth := dig "auth" dict (.Values.openbilling | default dict) -}}
+  {{- $issuer := trim (toString (dig "issuer" "" $auth)) -}}
+  {{- $audience := trim (toString (dig "audience" "" $auth)) -}}
+  {{- if and $issuer (not $audience) -}}
+    {{- fail "openbilling.auth.audience: set it with openbilling.auth.issuer, or set neither" -}}
+  {{- end -}}
+  {{- if and $audience (not $issuer) -}}
+    {{- fail "openbilling.auth.issuer: set it with openbilling.auth.audience, or set neither" -}}
+  {{- end -}}
+  {{- if not $issuer -}}
+    {{- range $name := list "jwksUrl" "rolesClaim" "roleMap" -}}
+      {{- if trim (toString (dig $name "" $auth)) -}}
+        {{- fail (printf "openbilling.auth.%s: needs openbilling.auth.issuer and openbilling.auth.audience" $name) -}}
+      {{- end -}}
+    {{- end -}}
+  {{- end -}}
+  {{- if and $issuer (not (regexMatch "^https://|^http://(127\\.[0-9.]+|localhost|\\[::1\\])([:/]|$)" $issuer)) -}}
+    {{- fail "openbilling.auth.issuer: https, or http to a loopback address" -}}
+  {{- end -}}
+
   {{- /* Production runs fixed versions only (ADR 0005). */ -}}
   {{- $image := dig "main" "containers" "main" "image" dict (.Values.controllers | default dict) -}}
   {{- $tag := tpl (toString (dig "tag" "" $image)) . -}}

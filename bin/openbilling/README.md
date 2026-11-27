@@ -17,9 +17,11 @@ No command, or an unknown one, is a usage error: exit 2. A refusal of `serve` (a
 does not answer) is exit 1, printed as `error: …`.
 
 **Configuration** is the environment, listed in `--help`: `OPENBILLING_DATABASE_URL` or
-`OPENBILLING_DATABASE_URL_FILE` (never printed), `OPENBILLING_LISTEN` (default `127.0.0.1:8080`: this machine
-only, since callers are not yet authenticated by a real issuer, and `serve` says so on start), and the vpay adapter's
-`OPENBILLING_VPAY_*` (all of them, or none: without them top-ups and webhooks answer `503`).
+`OPENBILLING_DATABASE_URL_FILE` (never printed), `OPENBILLING_LISTEN` (default `127.0.0.1:8080`, this machine
+only), the token verifier's `OPENBILLING_AUTH_ISSUER` and `OPENBILLING_AUTH_AUDIENCE` (both or neither; neither:
+every `/v1` call is a `401`, and `serve` says so on start; an empty value is unset) with the optional `OPENBILLING_AUTH_JWKS_URL`,
+`OPENBILLING_AUTH_ROLES_CLAIM` and `OPENBILLING_AUTH_ROLE_MAP` ([`openbilling-jwt`](../../crates/openbilling-jwt/README.md)),
+and the vpay adapter's `OPENBILLING_VPAY_*` (all of them, or none: without them top-ups and webhooks answer `503`).
 
 **Colour.** The help is coloured by clap's `Styles` (headers bold, literals cyan, placeholders dimmed), and the
 status lines and refusals by `anstream` and `anstyle`. Both write plain text when the stream is not a terminal,
@@ -28,7 +30,9 @@ honour `NO_COLOR`, and colour a pipe under `CLICOLOR_FORCE=1`; `tests/cli.rs` ho
 ## Tests
 
 `cargo test -p openbilling`: the command line (clap's own check, `serve`, usage errors, exit codes), the
-configuration from a lookup (the database URL needed once and never shown, vpay whole or not at all), and the
+configuration from a lookup (the database URL needed once and never shown, the issuer and the audience together or
+not at all, vpay whole or not at all), and the
 built binary run as a process (`tests/cli.rs`: `--version`, `--help`, colour, usage errors, `serve` without a
 database, and `serve` stopping with exit 0 on `SIGTERM`, which needs `OPENBILLING_TEST_DATABASE_URL` and makes its own
-database).
+database), and the end-to-end suite, this package's `e2e` target ([`e2e/`](../../e2e/README.md)): `serve` against a
+fresh PostgreSQL 19 database, driven through its API. It needs `OPENBILLING_TEST_DATABASE_URL` and skips without it.

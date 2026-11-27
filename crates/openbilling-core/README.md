@@ -24,7 +24,7 @@ in and out of them; its constructors only hold what a type is (an id's alphabet,
 | `RawEvent`, `Quantity`, `Dimensions` | A raw usage event: a quantity (a whole number, zero or more) of a meter, with its dimensions, rated at intake (ADR 0004) |
 | `Rated`, `Loaded`, `PriceVersionId`, `PriceVersionView` | What the price book answers: an amount and the version that priced it; a loaded version, its time and content hash, and whether it was a replay |
 | `Opened`, `Credited`, `IntakeReport`, `DrainReport`, `Balance`, `Allowed`, `LotView`, `OutcomeView` | What it answers. A decision and an outcome name the price book version of a raw event |
-| `EventOutcome`, `RefusalReason` | What a drain decided: `applied`, or `refused` with `limit`, `no_price`, `unknown_account` or `id_reused` |
+| `EventOutcome`, `RefusalReason` | What a drain decided: `applied`, or `refused` with `no_price` (reserved), `unknown_account`, `id_reused` or `overflow`. No `limit`: usage is booked as debt past the limit (ADR 0001, amended 2026-11-27, E1) |
 | `LedgerStore` | The storage port: a trait whose methods return `Send` futures. `openbilling-pg` implements it; `openbilling-testkit` holds its conformance suite |
 | `PriceBook` | The price book's port, an extension of `LedgerStore`: `load_price_list` (YAML), `price_versions`, `rate`, `intake_raw` |
 | `LedgerError`, `Refusal`, `Rule`, `ListPosition` | The port's error: a refusal by a named rule (which, for a batch, names the offending events, and for a price list its line, column and key) or a fault of the store with its class |
