@@ -1,8 +1,9 @@
 # 0006. A static musl binary on distroless/static
 
-Status: **Proposed** (2026-11-27). The owner's decision quoted under *Context* stands. Nothing here has run in CI yet:
-the image was not built where this was written (no usable build environment), so the first evidence is the pull
-request's two `image` jobs, amd64 and arm64, which also run `serve` from the image against PostgreSQL.
+Status: **Proposed** (2026-11-27). The owner's decision quoted under *Context* stands. *Amended 2026-11-27
+(ANR-1329):* it has built in CI: the pull request's two `image` jobs (amd64 and arm64, which also run `serve` from the
+image against PostgreSQL) passed and the change merged as #20, and v0.4.0, the first release to carry it, was tagged
+that day; its image did not resolve yet when this was written. It stays Proposed until the owner accepts it.
 
 ## Summary
 

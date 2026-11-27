@@ -1,8 +1,9 @@
 # 0005. Releases: release-please, fixed versions in production, a signed image and a chart on bjw-s common v5
 
 Status: **Proposed** (2026-11-27). The owner's decisions quoted under *Context* stand; the judgement calls under
-*Still open* are for the owner to confirm. Nothing here has run yet: the workflows run for the first time on the
-first push to `main` after this lands.
+*Still open* are for the owner to confirm. *Amended 2026-11-27 (ANR-1329):* it has run. release-please opened the
+release pull requests and v0.1.1, v0.2.0, v0.3.0 and v0.4.0 are published; the 0.3.0 image and chart pulled
+anonymously (*verified 2026-11-27*). It stays Proposed until the owner accepts it.
 
 ## Summary
 
@@ -149,11 +150,11 @@ stateDiagram-v2
 - A deployment names a version and gets an image that cannot move under it: the chart's default is the release's
   own digest. `edge` and `sha-<7>` exist for development and a chart refuses `edge` without a digest.
 - Commit messages are now release notes: a `feat` or `fix` lands in the changelog under its section.
-- The first release depends on the owner: the App installed and its two secrets set. Until then
-  `release-please.yml` fails at its first step and no tag is ever made; `release.yml` still publishes `edge` and
-  `sha-<7>` on every push to `main`.
-- GHCR makes a new package private: the image and the chart must be made public (or a pull secret given to the
-  cluster) before a deployment can pull them.
+- The first release depended on the owner: the App installed and its two secrets set. *Done:* the releases exist
+  (2026-11-27). Without them `release-please.yml` fails at its first step and no tag is made; `release.yml` still
+  publishes `edge` and `sha-<7>` on every push to `main`.
+- GHCR makes a new package private: the image and the chart had to be made public (or a pull secret given to the
+  cluster). *Done:* both pulled anonymously on 2026-11-27 (0.3.0).
 - The signatures' identity is `release.yml` at the tag's ref: renaming the file changes what `cosign verify` must
   name.
 - A ServiceMonitor can be switched on, but openbilling serves no `/metrics` yet: switched on today, it scrapes a 404.
@@ -174,9 +175,9 @@ stateDiagram-v2
 
 | Question | Recommendation |
 |---|---|
-| The first version: 0.1.1 or 0.2.0 from the commits, or exactly 0.1.0? | Let the commits decide; a `Release-As: 0.1.0` footer forces 0.1.0 if wanted |
+| The first version: 0.1.1 or 0.2.0 from the commits, or exactly 0.1.0? | *Answered by history (2026-11-27): the first version was 0.1.1.* Let the commits decide; a `Release-As: 0.1.0` footer forces 0.1.0 if wanted |
 | Should a migration ever run apart from `serve` (a Job before a rollout)? | Not until a migration is slow enough to fail the startup probe (5 minutes); then add `openbilling migrate` and a hook Job |
-| Should the image and chart be public packages? | Yes: the repository is public, and the deployment then needs no pull secret |
+| Should the image and chart be public packages? | *Answered by history (2026-11-27): they are public;* an anonymous pull of the 0.3.0 image and chart answered 200. The deployment needs no pull secret |
 | The listen address: `0.0.0.0:8080` in the chart while every `/v1` call is refused | Keep it, with the NetworkPolicy on in a deployment; revisit when the token verifier ships |
 | The ServiceMonitor before `/metrics` exists | Keep it off and documented; the metrics endpoint is its own slice |
 | Newer majors of the pinned actions exist (for example `docker/build-push-action` v7) | Keep vpay's pins so the two repositories move together; dependabot proposes the updates |

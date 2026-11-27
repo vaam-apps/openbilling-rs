@@ -1,7 +1,9 @@
 # 0003. Credits come from a payment provider through a port; the external API is CrateStack
 
 Status: **Proposed** (2026-11-27). The owner's decisions quoted under *Context* stand; the rest is for the owner to
-confirm.
+confirm. *Amended 2026-11-27 (ANR-1329):* the decision is built (the port, the vpay adapter, the CrateStack API,
+`serve`, the token verifier) and has shipped in releases v0.1.1 to v0.4.0, yet it stays Proposed until the owner
+accepts it.
 
 *Amended 2026-11-27 (ANR-1142, a token verifier):* the verifier point 16 waited for is built, as
 `crates/openbilling-jwt`, behind the same `TokenVerifier` port. Point 16 carries a marker. What it is:

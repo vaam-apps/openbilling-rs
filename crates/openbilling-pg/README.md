@@ -54,8 +54,8 @@ Errors carry a class (`openbilling_core::Classify`): a network failure, a pool t
 partition; a refusal has its rule's class; the rest is `internal`. An error's message never holds the URL, which can
 carry a password.
 
-**Not built:** detaching and dropping old partitions, the worker loop, an external read API for the price book (it
-will be CrateStack's, over these tables).
+**Not built:** detaching and dropping old partitions. The worker loop is `openbilling serve` (`bin/openbilling`), which drains on
+`LISTEN/NOTIFY` and prepares partitions; the external read API is CrateStack's, in `openbilling-http`.
 
 ## sqlx version
 
