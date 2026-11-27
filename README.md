@@ -43,17 +43,17 @@ Legend: ✅ built and tested in CI · ⚠️ built, but partial or not yet prove
 | Credits | Refunds and chargebacks, capped at the payment | ✅ | Enforced by a trigger, also under concurrency |
 | Budget | `allowed`: may this owner spend, with per-member monthly caps | ✅ | |
 | Reads | Balance, lots, event outcomes, usage per day | ✅ | SQL functions today; an outcome is a plain query since slice 3; through the API as CrateStack models and `query` blocks (below) |
-| Reads | Monthly statements | ⚠️ | A CrateStack `query` block: usage per day, credits, reversals, allowances, a total per kind. Its database test runs only in CI |
+| Reads | Monthly statements | ✅ | A CrateStack `query` block: usage per day, credits, reversals, allowances, a total per kind. Run in CI on PostgreSQL 19 |
 | Payments | A payment-provider port with vpay as the first adapter | ⚠️ | Signed webhooks become once-only credits; top-ups through the provider; each payment read back before it is credited ([ADR 0003](docs/adr/0003-credits-from-a-payment-provider.md)). The port's suite runs against a vpay stand-in; never against a real vpay; the vpay token is minted outside |
-| API | External API through CrateStack: on-demand queries, custom selects, policies | ⚠️ | Models over the ledger's tables, `query` blocks behind read procedures, mutation procedures that call the SQL functions, an `Idempotency-Key` on every write; the contract lock and `docs/api/ops.json` checked in CI. The database half of its tests runs only in CI |
+| API | External API through CrateStack: on-demand queries, custom selects, policies | ✅ | Models over the ledger's tables, `query` blocks behind read procedures, mutation procedures that call the SQL functions, an `Idempotency-Key` on every write; the contract lock and `docs/api/ops.json` checked in CI. Its flow tests run in CI on PostgreSQL 19; no outside caller can use it until a token verifier ships (next row) |
 | API | Authentication of API callers, fail-closed | ⚠️ | A bearer `AuthProvider` over a `TokenVerifier` port: no token is a `401`. Only `RefuseAll` ships, so every call is refused until a JWT verifier against an issuer is built; the service binds to `127.0.0.1` |
 | Testing | A conformance suite for every `LedgerStore` | ✅ | |
 | Testing | A conformance suite for every `PriceBook` | ✅ | 9 cases, run in CI on PostgreSQL 19 |
 | Testing | End-to-end scenarios against the real service and PostgreSQL | 📋 | Metered usage, prepaid balance, organisation caps, once-only, concurrency, price versions, statements, payment round-trip |
-| Command line | `openbilling serve`, `--help`, `--version`, with clap and colour | ⚠️ | Colour off when not a terminal, `NO_COLOR` and `CLICOLOR_FORCE` honoured (tested); `serve` not yet run against a PostgreSQL 19 |
+| Command line | `openbilling serve`, `--help`, `--version`, with clap and colour | ⚠️ | Colour off when not a terminal, `NO_COLOR` and `CLICOLOR_FORCE` honoured (tested); the help and the colour are tested, `serve` has not yet run against a PostgreSQL 19 |
 | Release | A signed container image and an OCI Helm chart (bjw-s app-template v5) | 📋 | |
 | CI | fmt, clippy, tests on PostgreSQL 19, cargo deny, MSRV | ✅ | |
-| CI | The CrateStack contract: `cratestack check`, `contract check`, `ops.json` current, no operation open to an anonymous caller | ⚠️ | New; CI has not run it yet |
+| CI | The CrateStack contract: `cratestack check`, `contract check`, `ops.json` current, no operation open to an anonymous caller | ✅ | Run by the `API contract` job |
 
 ## Build and test
 
