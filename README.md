@@ -27,11 +27,11 @@ Legend: ✅ built and tested in CI · ⚠️ built, but partial or not yet prove
 | Intake | Partitioned queue by occurrence day, made ahead of time | ✅ | `ob_prepare_partitions` |
 | Intake | Dropping old partitions after the window | 📋 | |
 | Intake | Pre-priced events (each carries its amount) | ✅ | |
-| Intake | Raw events rated at intake | ⚠️ | Built; its tests have not run in CI yet. A meter, a quantity and dimensions; the event and its outcome keep their price version ([ADR 0004](docs/adr/0004-a-versioned-price-book-in-sql.md)) |
+| Intake | Raw events rated at intake | ✅ | A meter, a quantity and dimensions; the event and its outcome keep their price version ([ADR 0004](docs/adr/0004-a-versioned-price-book-in-sql.md)) |
 | Queue | Drain with `FOR UPDATE SKIP LOCKED`, once-only per event | ✅ | Concurrency tested on the conformance suite |
 | Queue | Workers woken by `LISTEN/NOTIFY`, the table as the truth | ✅ | |
 | Queue | A worker loop in the service binary | 📋 | The drain is a function; nothing runs it on a schedule yet |
-| Rating | A versioned price book, loaded from YAML, rated in SQL | ⚠️ | Built; its tests have not run in CI yet. Loaded once per content, never changed or back-dated; each event priced by the version in force when it happened, half to even once per event; unpriced meters and dimensions refused ([ADR 0004](docs/adr/0004-a-versioned-price-book-in-sql.md)) |
+| Rating | A versioned price book, loaded from YAML, rated in SQL | ✅ | Loaded once per content, never changed or back-dated; each event priced by the version in force when it happened, half to even once per event; unpriced meters and dimensions refused ([ADR 0004](docs/adr/0004-a-versioned-price-book-in-sql.md)) |
 | Accounts | An owner holds several accounts (one per currency and label) | ✅ | [ADR 0002](docs/adr/0002-an-owner-holds-several-accounts.md) |
 | Ledger | Double-entry, append-only, amounts in integer micro-units | ✅ | Every transaction balances, enforced by triggers |
 | Ledger | Configurable draw order across accounts and lots | ✅ | |
@@ -46,7 +46,7 @@ Legend: ✅ built and tested in CI · ⚠️ built, but partial or not yet prove
 | API | External API through CrateStack: on-demand queries, custom selects, policies | 🚧 | Writes are mutation procedures that call the SQL functions |
 | API | Authentication of API callers, fail-closed | 🚧 | |
 | Testing | A conformance suite for every `LedgerStore` | ✅ | |
-| Testing | A conformance suite for every `PriceBook` | ⚠️ | 9 cases; not run in CI yet |
+| Testing | A conformance suite for every `PriceBook` | ✅ | 9 cases, run in CI on PostgreSQL 19 |
 | Testing | End-to-end scenarios against the real service and PostgreSQL | 📋 | Metered usage, prepaid balance, organisation caps, once-only, concurrency, price versions, statements, payment round-trip |
 | Release | A signed container image and an OCI Helm chart (bjw-s app-template v5) | 📋 | |
 | CI | fmt, clippy, tests on PostgreSQL 19, cargo deny, MSRV | ✅ | |
