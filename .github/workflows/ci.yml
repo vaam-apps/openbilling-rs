@@ -53,7 +53,9 @@ jobs:
     timeout-minutes: 30
     services:
       postgres:
-        image: postgres:19.0
+        # PostgreSQL 19 is the minimum (ADR 0001, amended 2026-11-27). Tag and digest: the digest is the multi-arch
+        # index of `19.0`, read from Docker Hub on 2026-11-27. Move both together; dependabot does not see this line.
+        image: postgres:19.0@sha256:4ea94de574c17f0372722806c949757050fbb1cd7648410fe45d6bba275cc00e
         env:
           # A throwaway database for this job only, reachable from the runner alone: no password to keep.
           POSTGRES_HOST_AUTH_METHOD: trust

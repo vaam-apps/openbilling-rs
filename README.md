@@ -21,7 +21,8 @@ builds and is tested; it holds the core types and a store that connects. Nothing
 
 ## Build and test
 
-You need Rust 1.94 or later and, for the database tests, a PostgreSQL. 1.94 is the MSRV because sqlx 0.9 declares
+You need Rust 1.94 or later and, for the database tests, PostgreSQL 19 or later (the minimum; older versions are
+not supported). 1.94 is the MSRV because sqlx 0.9 declares
 `rust-version = "1.94.0"` (edition 2024 alone would allow 1.85); CI's MSRV job holds it.
 
 ```sh
@@ -42,7 +43,7 @@ database.
 | Path | What |
 |---|---|
 | `crates/openbilling-core` | Pure types and rules: ids, amounts, event outcomes, errors with a class. No I/O |
-| `crates/openbilling-pg` | The PostgreSQL store on sqlx. Connects and pings for now |
+| `crates/openbilling-pg` | The PostgreSQL store on sqlx. Needs PostgreSQL 19 or later. Connects and pings for now |
 | `crates/openbilling-testkit` | The storage conformance suite, as macros. Empty until the storage trait exists |
 | `bin/openbilling` | The service binary. Answers `--help` and `--version` for now |
 | `docs/adr/` | The decisions |

@@ -4,6 +4,9 @@
 //! PostgreSQL the queue, the once-only record and the ledger. This crate will hold its tables, its migrations and the
 //! hand-written SQL the ADR calls for (intake, the drain, the partition job). For now it opens a pool and checks
 //! that the database answers; the tables come with the next slice.
+//!
+//! PostgreSQL 19 is the minimum (ADR 0001, amended 2026-11-27). The store uses its features and refuses to start
+//! against an older server.
 
 use std::time::Duration;
 
@@ -14,6 +17,9 @@ use sqlx::postgres::PgPoolOptions;
 /// How long [`PgStore::connect`] and every query wait for a free connection.
 const ACQUIRE_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// The oldest server the store accepts, as `server_version_num`: PostgreSQL 19.0.
+pub const MIN_SERVER_VERSION_NUM: i32 = 190_000;
+
 /// A pool of connections to one PostgreSQL database.
 #[derive(Clone, Debug)]
 pub struct PgStore {
@@ -21,19 +27,39 @@ pub struct PgStore {
 }
 
 impl PgStore {
-    /// Connects to the database at `url` (`postgres://…`) and opens one connection to prove it answers.
+    /// Connects to the database at `url` (`postgres://…`), opens one connection to prove it answers, and checks that
+    /// the server is PostgreSQL 19 or later.
     ///
     /// # Errors
     ///
-    /// [`Error::Connect`] when the URL is malformed or the database cannot be reached. The error's message never holds
-    /// the URL, which can carry a password.
+    /// - [`Error::Connect`] when the URL is malformed or the database cannot be reached. The error's message never
+    ///   holds the URL, which can carry a password.
+    /// - [`Error::UnsupportedServer`] when the server is older than PostgreSQL 19. The pool is closed.
     pub async fn connect(url: &str) -> Result<Self, Error> {
         let pool = PgPoolOptions::new()
             .acquire_timeout(ACQUIRE_TIMEOUT)
             .connect(url)
             .await
             .map_err(Error::Connect)?;
-        Ok(Self { pool })
+        let store = Self { pool };
+        let version = store.server_version_num().await?;
+        if version < MIN_SERVER_VERSION_NUM {
+            store.close().await;
+            return Err(Error::UnsupportedServer { version });
+        }
+        Ok(store)
+    }
+
+    /// The server's `server_version_num`, for example `190000` for PostgreSQL 19.0.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Query`] when the database does not answer.
+    pub async fn server_version_num(&self) -> Result<i32, Error> {
+        sqlx::query_scalar("SELECT current_setting('server_version_num')::integer")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(Error::Query)
     }
 
     /// Runs `SELECT 1` on a connection of the pool.
@@ -74,13 +100,19 @@ pub enum Error {
     /// The database answered something no PostgreSQL answers.
     #[error("PostgreSQL gave an unexpected answer")]
     UnexpectedAnswer,
+    /// The server is older than PostgreSQL 19, the minimum.
+    #[error("PostgreSQL {version} is not supported: openbilling-rs needs PostgreSQL 19 or later")]
+    UnsupportedServer {
+        /// The server's `server_version_num`.
+        version: i32,
+    },
 }
 
 impl Classify for Error {
     fn class(&self) -> ErrorClass {
         match self {
             Self::Connect(source) | Self::Query(source) => class_of(source),
-            Self::UnexpectedAnswer => ErrorClass::Internal,
+            Self::UnexpectedAnswer | Self::UnsupportedServer { .. } => ErrorClass::Internal,
         }
     }
 }
@@ -153,6 +185,16 @@ mod tests {
             "postgres://user:hunter2@db/x".into(),
         ));
         assert_eq!(error.to_string(), "could not connect to PostgreSQL");
+    }
+
+    #[test]
+    fn an_old_server_is_the_deployments_to_fix() {
+        let error = Error::UnsupportedServer { version: 180_001 };
+        assert_eq!(error.class(), ErrorClass::Internal);
+        assert_eq!(
+            error.to_string(),
+            "PostgreSQL 180001 is not supported: openbilling-rs needs PostgreSQL 19 or later"
+        );
     }
 
     #[tokio::test]

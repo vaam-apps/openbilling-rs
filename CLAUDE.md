@@ -15,7 +15,7 @@ yet.
 | Path | What |
 |---|---|
 | `crates/openbilling-core` | Pure types and rules, no I/O, no async: `EventId`, `AccountId`, `Amount` (`i64` minor units), `EventOutcome` and `RefusalReason`, `Error` with `ErrorClass` through `Classify` |
-| `crates/openbilling-pg` | The PostgreSQL store on sqlx `=0.9.0` (held to CrateStack 0.20.6's pin). No `migrations/` yet: the tables come in slice 2. `tests/connect.rs` needs `OPENBILLING_TEST_DATABASE_URL` |
+| `crates/openbilling-pg` | The PostgreSQL store on sqlx `=0.9.0` (held to CrateStack 0.20.6's pin); refuses a server older than PostgreSQL 19. No `migrations/` yet: the tables come in slice 2. `tests/connect.rs` needs `OPENBILLING_TEST_DATABASE_URL` |
 | `crates/openbilling-testkit` | The storage conformance suite, as macros. Empty until the storage trait exists |
 | `bin/openbilling` | The service binary (`anyhow`). Answers `--help` and `--version` for now |
 | `docs/adr/` | The decisions, with an index in `docs/adr/README.md` |
@@ -40,6 +40,8 @@ yet.
    an error never holds a secret or the value it refused. `thiserror` in libraries, `anyhow` in binaries.
 10. **Tests that need a database skip when `OPENBILLING_TEST_DATABASE_URL` is unset** and fail instead under
     `OPENBILLING_TEST_REQUIRE_DB=1` (CI sets it).
+11. **PostgreSQL 19 is the minimum.** Use its features rather than workarounds for older versions (ADR 0001, amended
+    2026-11-27); the store refuses an older server at connect.
 
 ## Skills
 
@@ -69,7 +71,7 @@ cargo deny check                       # deny.toml: advisories, licences, bans, 
 cargo +1.94 check --workspace --all-targets --locked   # MSRV: rust-version of Cargo.toml
 ```
 
-A database for the tests:
+A database for the tests (PostgreSQL 19; `tests/connect.rs` fails against an older one):
 
 ```sh
 docker run --rm -d --name openbilling-pg -p 127.0.0.1:5432:5432 -e POSTGRES_HOST_AUTH_METHOD=trust postgres:19.0

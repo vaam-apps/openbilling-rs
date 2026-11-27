@@ -6,7 +6,7 @@
 // Tests may unwrap and expect. clippy.toml allows it in `#[test]` bodies; this covers the helpers too.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use openbilling_pg::PgStore;
+use openbilling_pg::{MIN_SERVER_VERSION_NUM, PgStore};
 
 const URL_VAR: &str = "OPENBILLING_TEST_DATABASE_URL";
 const REQUIRE_VAR: &str = "OPENBILLING_TEST_REQUIRE_DB";
@@ -24,10 +24,14 @@ fn database_url() -> Option<String> {
     }
 }
 
+/// `connect` refuses a server older than PostgreSQL 19, so this test fails against one: the test database must be 19
+/// or later, as CI's is.
 #[tokio::test]
-async fn connects_pings_and_closes() {
+async fn connects_to_postgresql_19_pings_and_closes() {
     let Some(url) = database_url() else { return };
     let store = PgStore::connect(&url).await.expect("connect");
+    let version = store.server_version_num().await.expect("server version");
+    assert!(version >= MIN_SERVER_VERSION_NUM, "{version}");
     store.ping().await.expect("ping");
     store.close().await;
 }

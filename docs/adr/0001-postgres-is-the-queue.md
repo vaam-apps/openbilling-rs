@@ -2,6 +2,23 @@
 
 Status: **Accepted** (2026-11-27), the owner's decision
 
+*Amended 2026-11-27:* PostgreSQL 19 is the minimum, by the owner's decision of that day. openbilling-rs uses its
+features and keeps no workaround for older versions; the store refuses an older server when it connects. What changes
+(the points below carry a marker where they are affected):
+
+| # | Feature | What it changes | Source |
+|---|---|---|---|
+| A1 | `INSERT … ON CONFLICT … DO SELECT … RETURNING` (new in 19) | Intake is **one statement**: `INSERT … ON CONFLICT (event_id, occurred_on) DO SELECT RETURNING …` inserts the event or returns the row already there. It replaces `DO NOTHING` followed by a read (points 1, 2), and the two-statement fallback for older versions is dropped (point 5). `DO SELECT` needs a conflict target and a `RETURNING` clause; without a `FOR UPDATE/SHARE` clause it locks no row, so point 4 still holds | *Verified 2026-11-27*, PostgreSQL 19 documentation, `INSERT` (*ON CONFLICT Clause*), and release notes E.1.3.2 |
+| A2 | `RETURNING OLD` / `NEW` (new in 18) | The same statement tells the answers apart, with no read: for an inserted row the `OLD` values are null; on the `DO SELECT` path they are the stored row (and `NEW` equals them). So `RETURNING` can give "inserted" (`old.event_id IS NULL`) and "same payload" (`old.payload_hash` compared with the hash sent) without returning the stored hash. An event outside the window is not proposed for insertion (point 8), so no row comes back. The exact statement, and how it names the bound an event failed, is written and fixed by tests with the code | *Verified 2026-11-27*, PostgreSQL 19 documentation, `INSERT` (*output_alias*, *output_expression*); PostgreSQL 18 release notes |
+| A3 | `uuidv7()` (new in 18) | Ids the service makes (ledger transactions and entries, price book versions) default to `uuidv7()`: time-ordered (a Unix timestamp in milliseconds, a sub-millisecond part and random bits), so new keys land at the end of their index. Caller-given ids (events, credits) do not change. Such an id carries its creation time, which `uuid_extract_timestamp()` reads: it is not a secret | *Verified 2026-11-27*, PostgreSQL 19 documentation, 9.15 *UUID Functions*; PostgreSQL 18 release notes |
+| A4 | Temporal `WITHOUT OVERLAPS` keys (new in 18) | **Considered, not adopted** for price book versions. A version has only a `valid_from`, never changes once published (point 18), and its end is known only when the next one is published. A range column would have to be changed when the next version comes, or be left open and overlap it. A temporal key also needs the `btree_gist` extension for its non-range parts. The version in effect at a time stays the one with the greatest `valid_from` not after it, under a plain `UNIQUE (price book, valid_from)`. Revisit if versions ever get an end of their own | *Verified 2026-11-27*, PostgreSQL 19 documentation, 5.7 *Temporal Tables* |
+| A5 | `NOTIFY` wakes only listening backends (new in 19) | Lowers the cost of the wake-up of points 16 and 17; nothing else changes. The commit-time lock named under *Consequences* stays *unverified*: the 19 `NOTIFY` page does not mention it | *Verified 2026-11-27*, PostgreSQL 19 release notes E.1.3.1.2 and documentation, `NOTIFY` |
+
+Nothing else found in 18 or 19 removes a workaround here. A unique key on a partitioned table must still include every
+partition key column (point 7), and `DETACH PARTITION … CONCURRENTLY` still takes `SHARE UPDATE EXCLUSIVE` on the
+parent (point 10) (*verified 2026-11-27*, PostgreSQL 19 documentation, 5.13 *Table Partitioning*). The sequence diagram
+below is updated to A1.
+
 ## Summary
 
 A usage event is written once, by one insert, into a table partitioned by day. That table is the queue and the
@@ -35,8 +52,9 @@ PostgreSQL is already the only infrastructure (rule 1 of the agent guide). This 
 1. **Intake is one insert.** An event carries a caller-given `event_id`, an account, a meter, an integer quantity and
    its occurrence time (`occurred_at`, UTC). Intake writes it into `usage_event` with
    `INSERT … ON CONFLICT (event_id, occurred_on) DO NOTHING`. Nothing else is written, and no other table is read.
+   *Amended 2026-11-27 (A1): `DO SELECT … RETURNING`, one statement.*
 2. **A replay is a no-op, and says so.** When the insert adds no row, intake reads the stored row's `payload_hash` by
-   its key:
+   its key (*amended 2026-11-27 (A2): the same statement returns it, no read*):
    - the same hash is a replay, answered exactly as the first acceptance was;
    - a different hash is a **conflict**, answered as a conflict with the event id only. The answer never echoes the
      stored payload, its hash or any field of it.
@@ -49,7 +67,8 @@ PostgreSQL is already the only infrastructure (rule 1 of the agent guide). This 
    the row `FOR UPDATE` therefore never blocks a replay. A concurrency test proves this before the first release.
 5. **On PostgreSQL 19 or later**, `ON CONFLICT … DO SELECT RETURNING payload_hash`, without a `FOR` clause, does the
    insert-or-read in one statement (*verified 2026-11-27*, PostgreSQL 19 documentation, `INSERT`). On older versions it
-   is two statements. Both give the same answers.
+   is two statements. Both give the same answers. *Amended 2026-11-27 (A1): 19 is the minimum, so it is always the one
+   statement; there is no two-statement form.*
 
 ### The queue is the dedupe table
 
@@ -114,7 +133,8 @@ PostgreSQL is already the only infrastructure (rule 1 of the agent guide). This 
 
 ### Rating
 
-18. **A versioned price book.** A version has an id, a `valid_from` time and its prices. Once published, a version
+18. **A versioned price book.** A version has an id (*amended 2026-11-27 (A3): `uuidv7()`*), a `valid_from` time and
+    its prices. Once published, a version
     never changes. An event is rated by the version in effect at its `occurred_at`, and that version id is stored on
     its outcome, so a statement can be derived again from the outcomes alone.
 19. **No back-dating.** A new version takes effect at or after the time it is published. Otherwise an event still in
@@ -182,17 +202,14 @@ sequenceDiagram
     participant DB as PostgreSQL
     participant W as Worker
     P->>I: send event (event_id, occurred_at, account, quantity)
-    I->>DB: INSERT ... ON CONFLICT (event_id, occurred_on) DO NOTHING
-    alt a row was inserted
+    I->>DB: INSERT ... ON CONFLICT (event_id, occurred_on) DO SELECT RETURNING old ...
+    alt a row was inserted (old is null)
         I-->>P: accepted
-    else the key exists
-        I->>DB: read payload_hash by key
-        alt same hash
-            I-->>P: accepted (replay)
-        else different hash
-            I-->>P: conflict (nothing echoed)
-        end
-    else outside the window
+    else the key exists, same hash
+        I-->>P: accepted (replay)
+    else the key exists, different hash
+        I-->>P: conflict (nothing echoed)
+    else outside the window (no row returned)
         I-->>P: refused (too_old or too_far_ahead)
     end
     I-)DB: NOTIFY (debounced, own transaction)
@@ -279,7 +296,7 @@ returns a batch's rows to `Received`, because the transaction that would have mo
 |---|---|
 | Is an event id unique per deployment or per producer? | Per producer: key `(producer, event_id, occurred_on)`, so a conflict never tells one producer about another's ids |
 | Does one very busy account need more than one balance update per batch? | Measure first. If it does, split its balance into a few sub-rows with a share of the limit each, or a per-day aggregate rolled up; both make the limit check harder. Undecided |
-| Minimum PostgreSQL version | The oldest version upstream still supports at the first release. Use `DO SELECT` where available (19), two statements elsewhere |
+| ~~Minimum PostgreSQL version~~ | ~~The oldest version upstream still supports at the first release. Use `DO SELECT` where available (19), two statements elsewhere~~ **Decided 2026-11-27: PostgreSQL 19** (the amendment at the top) |
 | A price below one minor unit per unit | Prices as an integer amount per an integer quantity; round once per event, half-to-even, with the rounding mode stored on the version |
 | How long are outcomes and the ledger kept, and how are they stored? | Kept for good; partition them by month for archival, never drop them in the service |
 | Can a refused debit be retried after a credit? | No. A refusal is final for its event; an operator who wants it billed sends a new event with a new id |
