@@ -6,6 +6,10 @@ updates:
       interval: weekly
     commit-message:
       prefix: build(deps)
+    ignore:
+      # sqlx moves with CrateStack, whose crates require it exactly (`=0.9.0` for CrateStack 0.20.6): a bump alone
+      # cannot resolve. Move both by hand (Cargo.toml).
+      - dependency-name: sqlx
   - package-ecosystem: github-actions
     directory: /
     schedule:
