@@ -10,6 +10,7 @@ use crate::amount::Amount;
 use crate::config::{CreditSource, LedgerConfig, LotKind, ReversalKind};
 use crate::id::{AccountId, AccountLabel, CreditId, CurrencyCode, EventId, MemberId, OwnerId};
 use crate::outcome::EventOutcome;
+use crate::price::PriceVersionId;
 use crate::refusal::LedgerError;
 use crate::time::{Timestamp, UtcDay, UtcMonth};
 use crate::usage::{IntakeReport, UsageEvent};
@@ -110,6 +111,8 @@ pub struct Decided {
     pub outcome: EventOutcome,
     /// Its amount.
     pub amount: Amount,
+    /// The price book version that rated it, for a raw event; `None` for a priced one (ADR 0004).
+    pub price_version: Option<PriceVersionId>,
 }
 
 /// What one drain did.
@@ -238,6 +241,8 @@ pub struct OutcomeView {
     pub outcome: EventOutcome,
     /// Its amount.
     pub amount: Amount,
+    /// The price book version that rated it, for a raw event; `None` for a priced one (ADR 0004).
+    pub price_version: Option<PriceVersionId>,
 }
 
 /// The ledger's storage: accounts, credits, the usage queue and its drain, and the reads over them.
@@ -385,6 +390,7 @@ mod tests {
             occurred_on: day,
             outcome,
             amount: amount(micros),
+            price_version: None,
         };
         let report = DrainReport {
             decided: vec![

@@ -11,6 +11,8 @@ publish.workspace = true
 
 [dependencies]
 openbilling-core.workspace = true
+serde.workspace = true
+serde-saphyr.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["time"] }

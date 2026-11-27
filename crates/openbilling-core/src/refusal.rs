@@ -49,11 +49,34 @@ pub enum Rule {
     InvalidConfig,
     /// An amount with the wrong sign for its source or kind, or an expiry on a credit that takes credit away.
     InvalidAmount,
+    /// A raw event with a negative quantity.
+    NegativeQuantity,
+    /// A raw event whose meter has no price in its currency in the version in force at its occurrence time, or
+    /// that occurred before any version (ADR 0004). Never priced at a guess.
+    UnpricedMeter,
+    /// A raw event whose meter is priced, but not for its dimensions: a key the meter is not priced by, a key it is
+    /// priced by left out, or a value with no price (ADR 0004).
+    UnpricedDimension,
+    /// A price list that does not parse as YAML, or not as a price list: a syntax error, a missing or unknown key, a
+    /// value of the wrong type. The one rule Rust decides: nothing reached the database.
+    MalformedPriceList,
+    /// A price list with a value outside its form: a name, a time, a price below zero, a `per` below one, no meter or
+    /// no price, too many of either.
+    InvalidPriceList,
+    /// A price list that declares a meter, or a meter's dimension, twice, or prices one meter, currency and
+    /// dimensions twice.
+    PriceListDuplicate,
+    /// A price list with a price for a meter it does not declare, or with dimensions that are not its meter's.
+    PriceListMismatch,
+    /// A version that would take effect before now, or at or before an event already rated (ADR 0001, point 19).
+    BackDated,
+    /// Another version already takes effect at the same instant.
+    VersionConflict,
 }
 
 impl Rule {
     /// Every rule, in declaration order.
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 26] = [
         Self::TooManyEvents,
         Self::NegativeAmount,
         Self::DifferingDuplicate,
@@ -71,6 +94,15 @@ impl Rule {
         Self::IncompleteConfig,
         Self::InvalidConfig,
         Self::InvalidAmount,
+        Self::NegativeQuantity,
+        Self::UnpricedMeter,
+        Self::UnpricedDimension,
+        Self::MalformedPriceList,
+        Self::InvalidPriceList,
+        Self::PriceListDuplicate,
+        Self::PriceListMismatch,
+        Self::BackDated,
+        Self::VersionConflict,
     ];
 
     /// The rule's stable name, for logs and metrics.
@@ -94,6 +126,15 @@ impl Rule {
             Self::IncompleteConfig => "incomplete_config",
             Self::InvalidConfig => "invalid_config",
             Self::InvalidAmount => "invalid_amount",
+            Self::NegativeQuantity => "negative_quantity",
+            Self::UnpricedMeter => "unpriced_meter",
+            Self::UnpricedDimension => "unpriced_dimension",
+            Self::MalformedPriceList => "malformed_price_list",
+            Self::InvalidPriceList => "invalid_price_list",
+            Self::PriceListDuplicate => "price_list_duplicate",
+            Self::PriceListMismatch => "price_list_mismatch",
+            Self::BackDated => "back_dated",
+            Self::VersionConflict => "version_conflict",
         }
     }
 
@@ -122,6 +163,19 @@ impl Rule {
             }
             Self::InvalidConfig => "the configuration is invalid",
             Self::InvalidAmount => "the amount or expiry does not fit its source or kind",
+            Self::NegativeQuantity => "a negative quantity",
+            Self::UnpricedMeter => "the meter has no price in the currency at that time",
+            Self::UnpricedDimension => "the meter has no price for these dimensions",
+            Self::MalformedPriceList => "it is not a price list",
+            Self::InvalidPriceList => "a value outside its form",
+            Self::PriceListDuplicate => "a meter, a dimension or a price given twice",
+            Self::PriceListMismatch => {
+                "a price for a meter not declared, or for dimensions that are not its meter's"
+            }
+            Self::BackDated => {
+                "the version would take effect before now or before an event already rated"
+            }
+            Self::VersionConflict => "another version takes effect at the same time",
         }
     }
 }
@@ -132,7 +186,8 @@ impl Classify for Rule {
             Self::PayloadConflict
             | Self::AccountConflict
             | Self::CreditConflict
-            | Self::ReversalCap => ErrorClass::Conflict,
+            | Self::ReversalCap
+            | Self::VersionConflict => ErrorClass::Conflict,
             Self::TooManyEvents
             | Self::NegativeAmount
             | Self::DifferingDuplicate
@@ -145,19 +200,102 @@ impl Classify for Rule {
             | Self::UnknownPayment
             | Self::IncompleteConfig
             | Self::InvalidConfig
-            | Self::InvalidAmount => ErrorClass::Invalid,
+            | Self::InvalidAmount
+            | Self::NegativeQuantity
+            | Self::UnpricedMeter
+            | Self::UnpricedDimension
+            | Self::MalformedPriceList
+            | Self::InvalidPriceList
+            | Self::PriceListDuplicate
+            | Self::PriceListMismatch
+            | Self::BackDated => ErrorClass::Invalid,
         }
+    }
+}
+
+/// Where in a price list a refusal points: a line and a column (1-based), and, when the database checked it, the key
+/// of the value, for example `prices[2].currency`.
+///
+/// The key is built from the list's structure (field names and positions), never from its content, so a position
+/// holds no value of the list (agent guide, rule 9).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ListPosition {
+    line: u32,
+    column: u32,
+    key: Option<String>,
+}
+
+impl ListPosition {
+    /// The longest key, in bytes.
+    pub const MAX_KEY_LEN: usize = 128;
+
+    /// A position at `line` and `column`, with no key: where the parser stopped.
+    #[must_use]
+    pub const fn at(line: u32, column: u32) -> Self {
+        Self {
+            line,
+            column,
+            key: None,
+        }
+    }
+
+    /// A position at `line` and `column`, with `key`. `None` when the key is empty, longer than
+    /// [`ListPosition::MAX_KEY_LEN`], or holds a byte other than `a`–`z`, `0`–`9`, `_`, `.`, `[` and `]`.
+    #[must_use]
+    pub fn with_key(line: u32, column: u32, key: &str) -> Option<Self> {
+        let structural = !key.is_empty()
+            && key.len() <= Self::MAX_KEY_LEN
+            && key.bytes().all(|b| {
+                b.is_ascii_lowercase()
+                    || b.is_ascii_digit()
+                    || matches!(b, b'_' | b'.' | b'[' | b']')
+            });
+        structural.then(|| Self {
+            line,
+            column,
+            key: Some(key.to_owned()),
+        })
+    }
+
+    /// The line, from 1; 0 when unknown.
+    #[must_use]
+    pub const fn line(&self) -> u32 {
+        self.line
+    }
+
+    /// The column, from 1; 0 when unknown.
+    #[must_use]
+    pub const fn column(&self) -> u32 {
+        self.column
+    }
+
+    /// The key, when the database checked the value.
+    #[must_use]
+    pub fn key(&self) -> Option<&str> {
+        self.key.as_deref()
+    }
+}
+
+impl fmt::Display for ListPosition {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "line {}, column {}", self.line, self.column)?;
+        if let Some(key) = &self.key {
+            write!(f, " ({key})")?;
+        }
+        Ok(())
     }
 }
 
 /// A request refused by a rule. Nothing was written.
 ///
 /// A refusal of a batch of events names the events that broke the rule, and only those (the card: every refusal
-/// names the offending event). Every other refusal names nothing: an error never holds the value it refused.
+/// names the offending event). A refusal of a price list names its position in the list. Every other refusal names
+/// nothing: an error never holds the value it refused.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Refusal {
     rule: Rule,
     events: Vec<EventId>,
+    position: Option<ListPosition>,
 }
 
 impl Refusal {
@@ -167,13 +305,34 @@ impl Refusal {
         Self {
             rule,
             events: Vec::new(),
+            position: None,
         }
     }
 
     /// A refusal of the events `events`.
     #[must_use]
     pub fn of_events(rule: Rule, events: Vec<EventId>) -> Self {
-        Self { rule, events }
+        Self {
+            rule,
+            events,
+            position: None,
+        }
+    }
+
+    /// A refusal of a price list at `position`.
+    #[must_use]
+    pub const fn at(rule: Rule, position: ListPosition) -> Self {
+        Self {
+            rule,
+            events: Vec::new(),
+            position: Some(position),
+        }
+    }
+
+    /// Where in a price list, for a refusal of one.
+    #[must_use]
+    pub const fn position(&self) -> Option<&ListPosition> {
+        self.position.as_ref()
     }
 
     /// The rule.
@@ -191,6 +350,13 @@ impl Refusal {
 
 impl fmt::Display for Refusal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(position) = &self.position {
+            return write!(
+                f,
+                "the price list is refused at {position}: {}",
+                self.rule.describe()
+            );
+        }
         if self.events.is_empty() {
             return write!(f, "refused: {}", self.rule.describe());
         }
@@ -293,6 +459,34 @@ mod tests {
         let text = many.to_string();
         assert!(text.contains("e9 and 2 more"), "{text}");
         assert!(!text.contains("e10"), "{text}");
+    }
+
+    #[test]
+    fn a_refusal_of_a_price_list_names_its_line_and_key() {
+        let at = ListPosition::with_key(12, 5, "prices[2].currency").expect("a key");
+        let refusal = Refusal::at(Rule::UnknownCurrency, at.clone());
+        assert_eq!(
+            refusal.to_string(),
+            "the price list is refused at line 12, column 5 (prices[2].currency): a currency the operator has not named"
+        );
+        assert_eq!(refusal.position(), Some(&at));
+        let parse = ListPosition::at(3, 1);
+        assert_eq!(parse.to_string(), "line 3, column 1");
+        assert_eq!(parse.key(), None);
+        for bad in ["", "prices[2].Currency", "a b", "x\"y"] {
+            assert_eq!(ListPosition::with_key(1, 1, bad), None, "{bad}");
+        }
+        assert_eq!(ListPosition::with_key(1, 1, &"k".repeat(129)), None);
+    }
+
+    #[test]
+    fn rule_names_are_unique() {
+        let mut names: Vec<_> = Rule::ALL.iter().map(|r| r.as_str()).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), Rule::ALL.len());
+        assert_eq!(Rule::VersionConflict.class(), ErrorClass::Conflict);
+        assert_eq!(Rule::UnpricedMeter.class(), ErrorClass::Invalid);
     }
 
     #[test]

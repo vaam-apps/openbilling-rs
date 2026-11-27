@@ -60,6 +60,12 @@ pub enum IdKind {
     Currency,
     /// An [`AccountLabel`](crate::AccountLabel).
     Label,
+    /// A [`MeterId`](crate::MeterId).
+    Meter,
+    /// A [`DimensionKey`](crate::DimensionKey).
+    DimensionKey,
+    /// A [`DimensionValue`](crate::DimensionValue).
+    DimensionValue,
 }
 
 impl fmt::Display for IdKind {
@@ -72,6 +78,9 @@ impl fmt::Display for IdKind {
             Self::Credit => "credit",
             Self::Currency => "currency",
             Self::Label => "label",
+            Self::Meter => "meter",
+            Self::DimensionKey => "dimension key",
+            Self::DimensionValue => "dimension value",
         })
     }
 }
@@ -118,6 +127,12 @@ pub enum Error {
     /// A window of zero days.
     #[error("the intake window is invalid")]
     InvalidWindow,
+    /// A negative quantity of a meter's unit.
+    #[error("quantity is out of range")]
+    QuantityOutOfRange,
+    /// A price book version id that is not the text of a UUID.
+    #[error("price book version id is invalid")]
+    InvalidVersionId,
 }
 
 impl Classify for Error {
@@ -126,7 +141,9 @@ impl Classify for Error {
             Self::InvalidId { .. }
             | Self::AmountOutOfRange
             | Self::TimestampOutOfRange
-            | Self::InvalidWindow => ErrorClass::Invalid,
+            | Self::InvalidWindow
+            | Self::QuantityOutOfRange
+            | Self::InvalidVersionId => ErrorClass::Invalid,
         }
     }
 }

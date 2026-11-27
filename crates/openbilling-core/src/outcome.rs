@@ -6,7 +6,7 @@ use std::fmt;
 ///
 /// An event refused at intake (`too_old`, `too_far_ahead`, invalid) gets no row, so it has no outcome: those are
 /// answers to the producer, not outcomes. The outcome record (ADR 0001, point 14) is `ob_event_outcome`; its ledger
-/// transaction names the event. The price book version comes with rating, in the next slice.
+/// transaction names the event. A raw event's outcome also names the price book version that rated it (ADR 0004).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum EventOutcome {
     /// Rated, and its ledger entries written.
@@ -46,7 +46,9 @@ impl fmt::Display for EventOutcome {
 pub enum RefusalReason {
     /// The debit would pass the account's limit (ADR 0001, point 23).
     Limit,
-    /// No price in the price book version in effect at the event's occurrence time.
+    /// No price in the price book version in effect at the event's occurrence time. Reserved: rating happens at
+    /// intake, which refuses an unpriced event (`unpriced_meter`, `unpriced_dimension`), so no drain decides it
+    /// (ADR 0004).
     NoPrice,
     /// The event names an account the service does not know.
     UnknownAccount,

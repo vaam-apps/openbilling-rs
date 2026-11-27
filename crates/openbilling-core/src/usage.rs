@@ -1,7 +1,8 @@
 //! Usage events and what intake answers for them (ADR 0001, points 1 to 3).
 //!
-//! In this slice an event is **pre-priced**: it carries its amount. Rating events against a price book comes with
-//! the next slice, and adds a meter and a quantity to the payload.
+//! A [`UsageEvent`] is **pre-priced**: it carries its amount, for a producer that rates elsewhere. A raw event, a
+//! quantity of a meter rated by the price book at intake, is a [`RawEvent`](crate::RawEvent) (ADR 0004); both go
+//! through the same intake and drain.
 //!
 //! The rules a batch meets (at most 1000 events, no negative amount, a repeated id only as an identical copy, sums
 //! that fit, a configured currency, the window, no conflict with a stored payload) and the payload hash are

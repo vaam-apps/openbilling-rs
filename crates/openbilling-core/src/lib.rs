@@ -12,6 +12,8 @@
 //! - [`UsageEvent`], [`Credit`], [`Reversal`] and what the ledger answers for them;
 //! - [`EventOutcome`] and [`RefusalReason`], what a drain decided about an event;
 //! - the storage port, [`LedgerStore`], with [`LedgerError`] and its [`Refusal`]s;
+//! - the price book (ADR 0004): [`RawEvent`], [`Quantity`], [`Dimensions`], [`MeterId`], [`Rated`], [`Loaded`],
+//!   and its port, [`PriceBook`];
 //! - [`Error`], [`ErrorClass`] and [`Classify`], errors that tell a caller what to do.
 //!
 //! The ledger's rules are not here. They are PostgreSQL's, written once in `openbilling-pg`'s migrations (agent
@@ -22,6 +24,7 @@ mod config;
 mod error;
 mod id;
 mod outcome;
+mod price;
 mod refusal;
 mod store;
 mod time;
@@ -31,11 +34,15 @@ pub use amount::Amount;
 pub use config::{CreditSource, LedgerConfig, LotKind, LotOrder, ReversalKind, Window, WithinKind};
 pub use error::{Classify, Error, ErrorClass, IdKind, IdProblem};
 pub use id::{
-    AccountId, AccountLabel, CreditId, CurrencyCode, EventId, MAX_CURRENCY_LEN, MAX_ID_LEN,
-    MAX_LABEL_LEN, MAX_OWNER_LEN, MemberId, OwnerId,
+    AccountId, AccountLabel, CreditId, CurrencyCode, DimensionKey, DimensionValue, EventId,
+    MAX_CURRENCY_LEN, MAX_ID_LEN, MAX_LABEL_LEN, MAX_NAME_LEN, MAX_OWNER_LEN, MemberId, MeterId,
+    OwnerId,
 };
 pub use outcome::{EventOutcome, RefusalReason};
-pub use refusal::{LedgerError, NAMED_IN_MESSAGE, Refusal, Rule};
+pub use price::{
+    Dimensions, Loaded, PriceBook, PriceVersionId, PriceVersionView, Quantity, Rated, RawEvent,
+};
+pub use refusal::{LedgerError, ListPosition, NAMED_IN_MESSAGE, Refusal, Rule};
 pub use store::{
     AccountBalance, Allowed, Balance, Credit, CreditTarget, Credited, Decided, DrainReport,
     LedgerStore, LotView, NewAccount, NotAllowed, Opened, OutcomeView, Reversal,

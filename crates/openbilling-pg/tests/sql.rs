@@ -9,14 +9,16 @@ mod support;
 
 use std::time::Duration;
 
+use openbilling_core::PriceBook;
 use openbilling_core::{
     Classify, CreditSource, ErrorClass, EventOutcome, LedgerError, LedgerStore, ReversalKind, Rule,
 };
 use openbilling_pg::{LedgerSettings, PgLedger, Woken, migrator};
 use openbilling_testkit::fixtures::{
-    account, credit_id, credit_to, drain_all, eur, event, micros, now, open, owner, pay, setup,
-    take,
+    MINUTE, account, credit_id, credit_to, drain_all, eur, event, micros, now, open, owner, pay,
+    plus, setup, take,
 };
+use openbilling_testkit::price_cases::{example_list, raw};
 use sqlx::{AssertSqlSafe, PgPool};
 
 async fn ledger_and_pool() -> Option<(PgLedger, PgPool)> {
@@ -49,7 +51,7 @@ async fn migrations_apply_once_and_every_function_answers() {
     migrator().run(&pool).await.expect("a second run");
     assert_eq!(
         scalar(&pool, "SELECT count(*) FROM _sqlx_migrations").await,
-        4
+        6
     );
 
     let functions: Vec<String> = sqlx::query_scalar(
@@ -73,6 +75,7 @@ async fn migrations_apply_once_and_every_function_answers() {
         "ob_credit",
         "ob_daily_usage",
         "ob_day",
+        "ob_dimensions",
         "ob_draw",
         "ob_drain",
         "ob_event_outcome_guard",
@@ -80,18 +83,30 @@ async fn migrations_apply_once_and_every_function_answers() {
         "ob_in_alphabet",
         "ob_intake",
         "ob_intake_rows",
+        "ob_is_dimensions",
         "ob_is_id",
+        "ob_is_name",
+        "ob_load_price_list",
         "ob_lot_only_remaining_moves",
         "ob_lots_of",
         "ob_micros",
         "ob_open_account",
-        "ob_outcome_of",
         "ob_payload_canonical",
         "ob_payload_hash",
         "ob_prepare_partitions",
+        "ob_price_back_dated",
+        "ob_price_child_of_unsealed",
+        "ob_price_content_hash",
+        "ob_price_of",
+        "ob_price_version_hash",
+        "ob_price_version_seal",
+        "ob_rate",
+        "ob_raw_payload_canonical",
+        "ob_raw_payload_hash",
         "ob_refuse_change",
         "ob_repay_from_lot",
         "ob_reverse",
+        "ob_round_half_even",
         "ob_set_debt_limit",
         "ob_set_member_cap",
         "ob_ts",
@@ -153,6 +168,21 @@ async fn migrations_apply_once_and_every_function_answers() {
         .await
         .unwrap();
     ledger.daily_usage(&owner("o1"), &eur()).await.unwrap();
+    // The price book: load (with the hash, the seal and the back-dating check), rate (with `ob_price_of`), raw intake.
+    let loaded = ledger
+        .load_price_list(&example_list(plus(t, MINUTE), 150))
+        .await
+        .unwrap();
+    let e = raw(
+        "r1",
+        "tokens.input",
+        1_000_000,
+        &[("model", "example-small")],
+        plus(t, 2 * MINUTE),
+    );
+    assert_eq!(ledger.rate(&e).await.unwrap().version, loaded.version);
+    assert_eq!(ledger.intake_raw(&[e]).await.unwrap().accepted(), 1);
+    assert_eq!(ledger.price_versions().await.unwrap().len(), 1);
     // The helpers.
     let round: i64 = sqlx::query_scalar("SELECT ob_micros(ob_ts(1795737600000042))")
         .fetch_one(&pool)
@@ -490,4 +520,173 @@ async fn the_sql_refusals_reach_the_caller_with_their_class() {
     assert_eq!(named.class(), ErrorClass::Conflict);
     let report = drain_all(&ledger, 10).await;
     assert_eq!(report.decided[0].outcome, EventOutcome::Applied);
+}
+
+/// The raw payload's canonical form and hash (ADR 0004), against the vector computed outside PostgreSQL (Python's
+/// `json.dumps(..., separators=(",", ":"), sort_keys=True)` and `hashlib.sha256`).
+#[tokio::test]
+async fn the_raw_payload_hash_is_the_test_vector() {
+    let Some((_, pool)) = ledger_and_pool().await else {
+        return;
+    };
+    let (canonical, hash): (String, String) = sqlx::query_as(
+        "SELECT ob_raw_payload_canonical($1, 'EUR', 'm1', 'tokens.input', 1500, $2::jsonb, ob_ts(1795737600000042)), \
+                encode(ob_raw_payload_hash($1, 'EUR', 'm1', 'tokens.input', 1500, $2::jsonb, \
+                                           ob_ts(1795737600000042)), 'hex')",
+    )
+    .bind("o\"1\\")
+    .bind(r#"{"tier": "b", "model": "example-small"}"#)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        canonical,
+        r#"{"currency":"EUR","dimensions":{"model":"example-small","tier":"b"},"member":"m1","meter":"tokens.input","occurred_at":"2026-11-27T00:00:00.000042Z","owner":"o\"1\\","quantity":1500}"#
+    );
+    assert_eq!(
+        hash,
+        "9dabd16959da9c93d5deb884e95affe1429d9a6175e54627c4ab57d85968cc3d"
+    );
+}
+
+/// Half to even, at the boundary and with numerators past the range of an `i64`.
+#[tokio::test]
+async fn the_rounding_is_half_to_even() {
+    let Some((_, pool)) = ledger_and_pool().await else {
+        return;
+    };
+    let rounded: Vec<String> = sqlx::query_scalar(
+        "SELECT ob_round_half_even(n, d)::text FROM (VALUES (0, 1), (1, 2), (3, 2), (5, 2), (7, 2), (4999, 10000), \
+         (5000, 10000), (5001, 10000), (15000, 10000), (85070591730234615847396907784232501249, 1000000), \
+         (85070591730234615847396907784232500000, 1000000), (17, 1)) AS t(n, d)",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        rounded,
+        [
+            "0",
+            "0",
+            "2",
+            "2",
+            "4",
+            "0",
+            "0",
+            "1",
+            "2",
+            "85070591730234615847396907784233",
+            "85070591730234615847396907784232",
+            "17"
+        ]
+    );
+}
+
+/// A version cannot be modified, whoever writes: its rows are append-only, nothing is added to a sealed version, a
+/// version row must carry its rows' hash, and a version written directly is still never back-dated.
+#[tokio::test]
+async fn a_version_cannot_be_modified() {
+    let Some((ledger, pool)) = ledger_and_pool().await else {
+        return;
+    };
+    setup(&ledger).await;
+    let t = now(&ledger).await;
+    ledger
+        .load_price_list(&example_list(plus(t, MINUTE), 150))
+        .await
+        .unwrap();
+    for statement in [
+        "UPDATE ob_price SET price_micros = 1",
+        "DELETE FROM ob_price",
+        "TRUNCATE ob_price",
+        "UPDATE ob_price_meter SET unit = NULL",
+        "DELETE FROM ob_price_dimension",
+        "UPDATE ob_price_version SET effective_from = effective_from - interval '1 day'",
+        "DELETE FROM ob_price_version",
+        "TRUNCATE ob_price_version CASCADE",
+        "INSERT INTO ob_price_meter (version_id, meter) SELECT version_id, 'sneak' FROM ob_price_version",
+    ] {
+        let error = sqlx::query(AssertSqlSafe(statement))
+            .execute(&pool)
+            .await
+            .expect_err(statement);
+        assert_eq!(sqlstate(&error), "OB901", "{statement}");
+    }
+    let error = sqlx::query(
+        "INSERT INTO ob_price_version (effective_from, content_hash) \
+         VALUES (now() + interval '1 day', sha256('not its rows'))",
+    )
+    .execute(&pool)
+    .await
+    .expect_err("a hash that is not its rows'");
+    assert_eq!(sqlstate(&error), "OB903");
+    let error = sqlx::query(
+        "INSERT INTO ob_price_version (effective_from, content_hash) \
+         VALUES (now() - interval '1 day', ob_price_content_hash(now() - interval '1 day', '[]', '[]'))",
+    )
+    .execute(&pool)
+    .await
+    .expect_err("back-dated");
+    assert_eq!(sqlstate(&error), "OB205");
+    assert_eq!(ledger.price_versions().await.unwrap().len(), 1);
+}
+
+/// A version is written while no intake rates: a load waits for an intake that holds the price book's ROW SHARE
+/// lock, and goes on when it ends.
+#[tokio::test]
+async fn a_load_waits_for_an_intake_that_is_rating() {
+    let Some((ledger, pool)) = ledger_and_pool().await else {
+        return;
+    };
+    setup(&ledger).await;
+    let t = now(&ledger).await;
+    let mut rating = pool.begin().await.unwrap();
+    sqlx::query("LOCK TABLE ob_price_version IN ROW SHARE MODE")
+        .execute(&mut *rating)
+        .await
+        .unwrap();
+    let loader = ledger.clone();
+    let list = example_list(plus(t, MINUTE), 150);
+    let load = tokio::spawn(async move { loader.load_price_list(&list).await });
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(!load.is_finished(), "the load waits for the lock");
+    rating.rollback().await.unwrap();
+    let loaded = tokio::time::timeout(Duration::from_secs(5), load)
+        .await
+        .expect("the load goes on")
+        .unwrap()
+        .unwrap();
+    assert!(!loaded.replayed);
+}
+
+/// The price book's refusals reach the caller with their rule, class and position, through the real SQL.
+#[tokio::test]
+async fn the_price_book_refusals_reach_the_caller_with_their_class() {
+    let Some((ledger, _)) = ledger_and_pool().await else {
+        return;
+    };
+    setup(&ledger).await;
+    let t = now(&ledger).await;
+    let list = example_list(plus(t, MINUTE), 150);
+    ledger.load_price_list(&list).await.unwrap();
+    let conflict = ledger
+        .load_price_list(&example_list(plus(t, MINUTE), 151))
+        .await
+        .expect_err("another list at the same time");
+    assert_eq!(
+        (conflict.rule(), conflict.class()),
+        (Some(Rule::VersionConflict), ErrorClass::Conflict)
+    );
+    let refusal = conflict.refusal().expect("a refusal");
+    let at = refusal.position().expect("a position");
+    assert_eq!((at.line(), at.key()), (2, Some("effective_from")));
+    assert!(refusal.to_string().contains("line 2"), "{refusal}");
+    let unpriced = ledger
+        .rate(&raw("x", "images.generated", 1, &[], plus(t, 2 * MINUTE)))
+        .await
+        .expect_err("unpriced");
+    assert_eq!(
+        (unpriced.rule(), unpriced.class()),
+        (Some(Rule::UnpricedMeter), ErrorClass::Invalid)
+    );
 }
