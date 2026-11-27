@@ -1,0 +1,238 @@
+name: release-check
+
+# Checks what a release PUBLISHED, from outside: pulls the image and the chart anonymously, verifies their cosign
+# signatures against the identity release.yml signs with, looks for the index's SBOM and provenance, installs the
+# published chart in kind against a PostgreSQL 19 and asks the service's /readyz (ANR-1330, ADR 0005).
+#
+# It gates nothing: `workflow_dispatch` (any published version, default 0.4.0) and, after a release's own
+# workflow ends, `workflow_run`. It reads the registry anonymously on purpose: that is what a deployment does, and a
+# private package would fail here.
+#
+# What is trusted, and what is not: tags are only looked up (to a digest). The trust is in `cosign verify`, which
+# accepts a digest only if release.yml, at the tag `v<version>`, signed it through GitHub's OIDC issuer; the chart is
+# pulled, and its digest must be the one verified. Signatures are cosign v2's tag-based ones (`sha256-<digest>.sig`);
+# the same cosign release as release.yml's (cosign-installer v3.10.1's default, v2.6.1).
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "The published version to check, without the v (for example 0.4.0)"
+        required: true
+        default: "0.4.0"
+        type: string
+  workflow_run:
+    workflows: [release]
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-check-${{ github.event.workflow_run.head_branch || inputs.version }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/vaam-apps/openbilling-rs
+  CHART: ghcr.io/vaam-apps/charts/openbilling
+  # kind v0.33.0, linux-amd64: the sha256 its release's `kind-linux-amd64.sha256sum` asset lists (verified 2026-11-27).
+  KIND_VERSION: v0.33.0
+  KIND_SHA256: aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d
+  # The node image kind v0.33.0 was built for, by digest (its release notes, verified 2026-11-27).
+  KIND_NODE_IMAGE: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
+  # The same PostgreSQL 19.0 CI's Test job runs against (ci.yml `services.postgres.image`).
+  POSTGRES_IMAGE: postgres:19.0@sha256:4ea94de574c17f0372722806c949757050fbb1cd7648410fe45d6bba275cc00e
+  COSIGN_OIDC_ISSUER: https://token.actions.githubusercontent.com
+  COSIGN_IDENTITY_PREFIX: https://github.com/vaam-apps/openbilling-rs/.github/workflows/release.yml@refs/tags/v
+
+jobs:
+  check:
+    name: Install ${{ github.event.workflow_run.head_branch || format('v{0}', inputs.version) }} in kind and verify its signatures
+    # A workflow_run only for a release's tag, and only when that run succeeded: `head_branch` is the tag.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && startsWith(github.event.workflow_run.head_branch, 'v'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - id: ver
+        name: Which version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          RUN_REF: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          set -euo pipefail
+          version="${INPUT_VERSION:-${RUN_REF#v}}"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::'${version}' is not X.Y.Z"; exit 1; }
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5.1.0
+        with:
+          version: v4.3.2
+      - uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
+        with:
+          cosign-release: v2.6.1
+
+      # Anonymous: no `docker login`, no `helm registry login`. A tag becomes a digest here and only here.
+      - id: digests
+        name: Resolve the image and the chart anonymously
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          accept='application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.docker.distribution.manifest.list.v2+json'
+          resolve() { # repository (path under ghcr.io) tag -> digest
+            local repo="$1" tag="$2" token digest
+            token="$(curl -fsS "https://ghcr.io/token?scope=repository:${repo}:pull" | jq -er .token)"
+            digest="$(curl -fsSI -H "Authorization: Bearer ${token}" -H "Accept: ${accept}" \
+              "https://ghcr.io/v2/${repo}/manifests/${tag}" | tr -d '\r' | sed -n 's/^[Dd]ocker-[Cc]ontent-[Dd]igest: *//p' | head -1)"
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::${repo}:${tag} did not resolve anonymously to a digest ('${digest}')"; exit 1; }
+            echo "$digest"
+          }
+          image="$(resolve vaam-apps/openbilling-rs "$VERSION")"
+          minor="$(resolve vaam-apps/openbilling-rs "${VERSION%.*}")"
+          chart="$(resolve vaam-apps/charts/openbilling "$VERSION")"
+          # The tag X.Y is the newest patch of X.Y: it is this one only while this is the newest. Informative.
+          [[ "$image" == "$minor" ]] || echo "::notice::${IMAGE}:${VERSION%.*} is ${minor}, not this release's ${image} (a newer patch exists)"
+          echo "image=${image}" >> "$GITHUB_OUTPUT"
+          echo "chart=${chart}" >> "$GITHUB_OUTPUT"
+          {
+            echo "### v${VERSION}"
+            echo "- image \`${IMAGE}@${image}\`"
+            echo "- chart \`oci://${CHART}@${chart}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # cosign v2 reads the tag `sha256-<digest>.sig` next to the digest. The identity is exact: release.yml at this
+      # release's tag, so a signature made by another workflow or another ref does not pass.
+      - name: cosign verify the image and the chart
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          IMAGE_DIGEST: ${{ steps.digests.outputs.image }}
+          CHART_DIGEST: ${{ steps.digests.outputs.chart }}
+        run: |
+          set -euo pipefail
+          cosign version
+          for ref in "${IMAGE}@${IMAGE_DIGEST}" "${CHART}@${CHART_DIGEST}"; do
+            echo "::group::cosign verify ${ref}"
+            cosign verify "$ref" \
+              --certificate-identity "${COSIGN_IDENTITY_PREFIX}${VERSION}" \
+              --certificate-oidc-issuer "$COSIGN_OIDC_ISSUER" | jq -c '.[] | {identity: .optional.Subject, issuer: .optional.Issuer, digest: .critical.image["docker-manifest-digest"]}'
+            echo "::endgroup::"
+          done
+
+      # buildx writes the SBOM and the provenance as attestation manifests inside the image index (not as referrers).
+      - name: The image index holds amd64, arm64, an SBOM and provenance
+        env:
+          IMAGE_DIGEST: ${{ steps.digests.outputs.image }}
+        run: |
+          set -euo pipefail
+          token="$(curl -fsS "https://ghcr.io/token?scope=repository:vaam-apps/openbilling-rs:pull" | jq -er .token)"
+          idx="$(curl -fsS -H "Authorization: Bearer ${token}" -H 'Accept: application/vnd.oci.image.index.v1+json' \
+            "https://ghcr.io/v2/vaam-apps/openbilling-rs/manifests/${IMAGE_DIGEST}")"
+          echo "$idx" | jq -c '.manifests[] | {platform: (.platform.os + "/" + .platform.architecture), ref: .annotations["vnd.docker.reference.type"]}'
+          for arch in amd64 arm64; do
+            echo "$idx" | jq -e --arg a "$arch" '[.manifests[] | select(.platform.os=="linux" and .platform.architecture==$a)] | length >= 1' > /dev/null \
+              || { echo "::error::no linux/${arch} image in the index"; exit 1; }
+          done
+          att="$(echo "$idx" | jq -r '[.manifests[] | select(.annotations["vnd.docker.reference.type"]=="attestation-manifest") | .digest] | .[]')"
+          [[ -n "$att" ]] || { echo "::error::the index holds no attestation manifest"; exit 1; }
+          sbom=0; prov=0
+          for d in $att; do
+            m="$(curl -fsS -H "Authorization: Bearer ${token}" -H 'Accept: application/vnd.oci.image.manifest.v1+json' \
+              "https://ghcr.io/v2/vaam-apps/openbilling-rs/manifests/${d}")"
+            echo "$m" | jq -e '[.layers[].annotations["in-toto.io/predicate-type"]] | any(. != null and test("spdx|cyclonedx"; "i"))' > /dev/null && sbom=$((sbom+1)) || true
+            echo "$m" | jq -e '[.layers[].annotations["in-toto.io/predicate-type"]] | any(. != null and test("slsa.dev/provenance"))' > /dev/null && prov=$((prov+1)) || true
+          done
+          echo "attestation manifests with an SBOM: ${sbom}; with provenance: ${prov}"
+          [[ "$sbom" -ge 1 && "$prov" -ge 1 ]] || { echo "::error::SBOM ${sbom}, provenance ${prov}: both are required"; exit 1; }
+
+      - name: Install kind
+        run: |
+          set -euo pipefail
+          curl -fsSLo "${RUNNER_TEMP}/kind" "https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-amd64"
+          echo "${KIND_SHA256}  ${RUNNER_TEMP}/kind" | sha256sum -c -
+          install -m 0755 "${RUNNER_TEMP}/kind" "${RUNNER_TEMP}/kind-bin"
+          mkdir -p "${RUNNER_TEMP}/bin" && mv "${RUNNER_TEMP}/kind-bin" "${RUNNER_TEMP}/bin/kind"
+          echo "${RUNNER_TEMP}/bin" >> "$GITHUB_PATH"
+      - name: Create the cluster
+        run: |
+          set -euo pipefail
+          kind create cluster --name ob --image "$KIND_NODE_IMAGE" --wait 120s
+          kubectl get nodes -o wide
+
+      - name: PostgreSQL 19 and the database Secret
+        run: |
+          set -euo pipefail
+          kubectl create namespace billing
+          kubectl -n billing create secret generic openbilling-database \
+            --from-literal=uri='postgres://postgres:check@postgres.billing.svc:5432/postgres'
+          kubectl -n billing apply -f - <<EOF
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata: {name: postgres}
+          spec:
+            replicas: 1
+            selector: {matchLabels: {app: postgres}}
+            template:
+              metadata: {labels: {app: postgres}}
+              spec:
+                containers:
+                  - name: postgres
+                    image: ${POSTGRES_IMAGE}
+                    env:
+                      - {name: POSTGRES_PASSWORD, value: check}
+                    ports: [{containerPort: 5432}]
+                    readinessProbe:
+                      exec: {command: [pg_isready, -U, postgres]}
+                      periodSeconds: 2
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata: {name: postgres}
+          spec:
+            selector: {app: postgres}
+            ports: [{port: 5432}]
+          EOF
+          kubectl -n billing rollout status deployment/postgres --timeout=180s
+
+      # `helm pull` of the tag, then the digest it reports must be the one cosign verified; the install is of that file.
+      - name: Install the published chart
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          CHART_DIGEST: ${{ steps.digests.outputs.chart }}
+          IMAGE_DIGEST: ${{ steps.digests.outputs.image }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/pulled"
+          helm pull "oci://${CHART}" --version "$VERSION" --destination "${RUNNER_TEMP}/pulled" 2>&1 | tee "${RUNNER_TEMP}/pull.log"
+          pulled="$(sed -n 's/^Digest: \(sha256:[0-9a-f]\{64\}\)$/\1/p' "${RUNNER_TEMP}/pull.log" | head -1)"
+          [[ "$pulled" == "$CHART_DIGEST" ]] || { echo "::error::helm pulled ${pulled:-no digest}, cosign verified ${CHART_DIGEST}"; exit 1; }
+          helm install billing "${RUNNER_TEMP}/pulled/openbilling-${VERSION}.tgz" --namespace billing --wait --timeout 5m
+          helm -n billing list
+          img="$(kubectl -n billing get deploy -l app.kubernetes.io/instance=billing -o jsonpath='{.items[0].spec.template.spec.containers[0].image}')"
+          echo "the chart runs ${img}"
+          [[ "$img" == "${IMAGE}:${VERSION}@${IMAGE_DIGEST}" ]] || { echo "::error::the chart runs '${img}', not the verified ${IMAGE}:${VERSION}@${IMAGE_DIGEST}"; exit 1; }
+
+      - name: /readyz, /healthz and a refused /v1 call
+        run: |
+          set -euo pipefail
+          svc="$(kubectl -n billing get svc -l app.kubernetes.io/instance=billing -o jsonpath='{.items[0].metadata.name}')"
+          kubectl -n billing port-forward "svc/${svc}" 18080:8080 > "${RUNNER_TEMP}/pf.log" 2>&1 &
+          pf=$!
+          trap 'kill $pf 2>/dev/null || true' EXIT
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:18080/healthz > /dev/null 2>&1 && break; sleep 1; done
+          code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
+          [[ "$(code http://127.0.0.1:18080/healthz)" == 200 ]] || { echo "::error::/healthz is not 200"; exit 1; }
+          [[ "$(code http://127.0.0.1:18080/readyz)" == 200 ]] || { echo "::error::/readyz is not 200"; exit 1; }
+          # No issuer is configured: every /v1 call is refused, never open.
+          v1="$(code 'http://127.0.0.1:18080/v1/usage_outcomes?limit=1')"
+          echo "GET /v1/usage_outcomes?limit=1 without a token: ${v1}"
+          [[ "$v1" == 401 ]] || { echo "::error::an unauthenticated /v1 call answered ${v1}, not 401"; exit 1; }
+
+      - name: Diagnostics
+        if: failure()
+        run: |
+          kubectl get all -A || true
+          kubectl -n billing describe pods || true
+          kubectl -n billing logs -l app.kubernetes.io/instance=billing --tail=100 --all-containers || true
+          cat "${RUNNER_TEMP}/pf.log" 2>/dev/null || true
