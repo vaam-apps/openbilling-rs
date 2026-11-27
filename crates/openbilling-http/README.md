@@ -12,8 +12,8 @@ and the probes.
 | `GET /v1/accounts`, `/v1/accounts/{id}` | the owner, `operator` | The `Account` model over `ob_account`: filters, `fields`, `sort`, paging (`@@paged`: `items`, `totalCount`, `pageInfo`) |
 | `GET /v1/lots`, `/v1/lots/{id}` | the owner (through the account), `operator` | The `Lot` model over `ob_lot` |
 | `GET /v1/usage_outcomes`, `/v1/usage_outcomes/{id}` | the owner, `operator` | The `UsageOutcome` model over `ob_event_outcome` |
-| `POST /v1/$procs/getBalance` | the owner, `operator` | Each account's drawable credit now, the owner's total, debt and net (`query balanceRows`, over the ledger's read `ob_balance_of`) |
-| `POST /v1/$procs/getAllowed` | the owner, `operator`, `producer` | May a member spend now (`query allowedRow`, over `ob_allowed`) |
+| `POST /v1/$procs/getBalance` | the owner, `operator` | Each account's drawable credit now, the owner's total, debt and net, its debt limit and whether its debt is past it (`pastLimit`, the view `ob_past_debt_limit`) (`query balanceRows`, over the ledger's read `ob_balance_of`) |
+| `POST /v1/$procs/getAllowed` | the owner, `operator`, `producer` | May a member spend now: refused `debt_limit`, `balance` or `member_cap` (`query allowedRow`, over `ob_allowed`) |
 | `POST /v1/$procs/listCredits` | the owner, `operator` | Every credit on the owner's accounts in a currency (`query creditRows`, plain SQL) |
 | `POST /v1/$procs/getStatement` | the owner, `operator` | A UTC month: usage per day, credits, reversals, allowances, signed, and a total per kind (`query statementLines`, plain SQL) |
 | `POST /v1/$procs/getUsageSeries` | the owner, `operator` | Applied usage per UTC day between two instants (`query usageDays`, plain SQL) |

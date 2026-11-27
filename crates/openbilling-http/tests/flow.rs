@@ -174,6 +174,8 @@ async fn credit_usage_and_the_reads_through_the_api() {
     assert_eq!(rows[0]["accountId"], "b1");
     assert_eq!(rows[0]["availableMicros"], "30000000");
     assert_eq!(rows[0]["netMicros"], "30000000");
+    assert_eq!(rows[0]["debtLimitMicros"], Value::Null);
+    assert_eq!(rows[0]["pastLimit"], false);
     let operator = procedure(
         &app,
         "getBalance",

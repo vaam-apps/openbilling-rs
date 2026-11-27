@@ -177,6 +177,8 @@ impl Balance {
 /// Why [`Allowed`] says no.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum NotAllowed {
+    /// The owner owes something in the currency and its debt is at or past its debt limit.
+    DebtLimit,
     /// The owner's balance in the currency is zero or below.
     Balance,
     /// The member has spent their cap this month.
@@ -188,6 +190,7 @@ impl NotAllowed {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::DebtLimit => "debt_limit",
             Self::Balance => "balance",
             Self::MemberCap => "member_cap",
         }
@@ -195,8 +198,8 @@ impl NotAllowed {
 }
 
 /// May the member spend for the owner in this currency now? A read for whoever serves the usage; the ledger itself
-/// never refuses a debit for it. The store decides: a balance at zero or below is refused, then a member at or past
-/// their cap.
+/// never refuses a debit for it. The store decides: an owner at or past its debt limit (and owing something) is
+/// refused, then a balance at zero or below, then a member at or past their cap.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Allowed {
     /// Why not, or `None` when allowed.
@@ -266,7 +269,9 @@ pub trait LedgerStore: Send + Sync {
     ) -> impl Future<Output = Result<Opened, LedgerError>> + Send;
 
     /// Sets, or with `None` removes, how much debt an owner may run up in a currency. With none, debt is unlimited.
-    /// A debit that would pass the limit is refused (`limit`).
+    /// The limit never refuses a debit: usage that already happened is booked as debt even past it (the owner's
+    /// decision of 2026-11-27, "Always book as debt"). It refuses new calls through [`LedgerStore::allowed`]
+    /// ([`NotAllowed::DebtLimit`]).
     fn set_debt_limit(
         &self,
         owner: &OwnerId,
@@ -368,6 +373,7 @@ mod tests {
         assert!(answer.allowed());
         answer.refused = Some(NotAllowed::MemberCap);
         assert!(!answer.allowed());
+        assert_eq!(NotAllowed::DebtLimit.as_str(), "debt_limit");
         assert_eq!(NotAllowed::Balance.as_str(), "balance");
         assert_eq!(NotAllowed::MemberCap.as_str(), "member_cap");
     }
@@ -395,7 +401,11 @@ mod tests {
         let report = DrainReport {
             decided: vec![
                 decided("a", EventOutcome::Applied, 5),
-                decided("b", EventOutcome::Refused(crate::RefusalReason::Limit), 7),
+                decided(
+                    "b",
+                    EventOutcome::Refused(crate::RefusalReason::Overflow),
+                    7,
+                ),
                 decided("c", EventOutcome::Applied, 1),
             ],
         };

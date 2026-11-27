@@ -128,7 +128,7 @@
       ],
       "requires_principal": true,
       "unanalysed": [],
-      "contract_digest": "638cd03a325311e9905cbac6cd44ac30094b9ecfe4825130d88ec99c384cc1e0"
+      "contract_digest": "37be8392b8a2578c288d7753d2ef611e664e403588691c45996589e1e9a99bc1"
     },
     {
       "key": "POST /$procs/getStatement",

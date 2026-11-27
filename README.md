@@ -39,11 +39,11 @@ Legend: ✅ built and tested in CI · ⚠️ built, but partial or not yet prove
 | Accounts | An owner holds several accounts (one per currency and label) | ✅ | [ADR 0002](docs/adr/0002-an-owner-holds-several-accounts.md) |
 | Ledger | Double-entry, append-only, amounts in integer micro-units | ✅ | Every transaction balances, enforced by triggers |
 | Ledger | Configurable draw order across accounts and lots | ✅ | |
-| Ledger | Debt, a debt limit, and repayment from new credit | ✅ | |
+| Ledger | Debt, a debt limit, and repayment from new credit | ✅ | Usage is always booked, as debt past the limit (the owner's decision of 2026-11-27, "Always book as debt"); the limit refuses new calls through `allowed` (`debt_limit`) and flags the owner (`pastLimit` on the balance read) |
 | Ledger | Monthly allowance, granted once per account and month | ✅ | |
 | Credits | Sources: payment, promotion, adjustment, each once-only by id | ✅ | |
 | Credits | Refunds and chargebacks, capped at the payment | ✅ | Enforced by a trigger, also under concurrency |
-| Budget | `allowed`: may this owner spend, with per-member monthly caps | ✅ | |
+| Budget | `allowed`: may this owner spend, with per-member monthly caps | ✅ | Refused for the debt limit, then a balance at zero or below, then the member's cap |
 | Reads | Balance, lots, event outcomes, usage per day | ✅ | SQL functions today; an outcome is a plain query since slice 3; through the API as CrateStack models and `query` blocks (below) |
 | Reads | Monthly statements | ✅ | A CrateStack `query` block: usage per day, credits, reversals, allowances, a total per kind. Run in CI on PostgreSQL 19 |
 | Payments | A payment-provider port with vpay as the first adapter | ⚠️ | Signed webhooks become once-only credits; top-ups through the provider; each payment read back before it is credited ([ADR 0003](docs/adr/0003-credits-from-a-payment-provider.md)). The port's suite runs against a vpay stand-in; never against a real vpay; the vpay token is minted outside |

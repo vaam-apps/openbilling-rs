@@ -10,7 +10,8 @@ and a double-entry ledger. **Status: the ledger (slice 2) and the price book (sl
 [ADR 0004](docs/adr/0004-a-versioned-price-book-in-sql.md) are the design. Built: owners with several accounts
 (one currency and label each), credits by source (payment, promotion, adjustment), refunds and chargebacks capped at
 the payment, the monthly allowance, the partitioned usage queue with once-only intake, the drain into the ledger with
-the configured draw order, debt and debt limits, member caps, and the reads; a versioned price book loaded from YAML
+the configured draw order, debt and debt limits (usage is always booked as debt; the limit refuses new calls
+through `allowed` and flags the owner: the owner's decision of 2026-11-27), member caps, and the reads; a versioned price book loaded from YAML
 (once per content, never changed or back-dated), raw events rated at intake by the version in force at their time
 (half to even, once per event; unpriced meters and dimensions refused) and kept with their version. Every rule is SQL
 in `crates/openbilling-pg/migrations/`; `PgLedger` calls it through the `LedgerStore` and `PriceBook` ports, and

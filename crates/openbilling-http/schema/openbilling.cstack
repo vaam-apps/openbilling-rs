@@ -107,17 +107,23 @@ type BalanceRow {
   ownerAvailableMicros BigInt
   debtMicros          BigInt
   netMicros           BigInt
+  debtLimitMicros     BigInt?
+  pastLimit           Boolean
 }
 
 // An owner's accounts in a currency, in draw order, now: what each one's drawable lots hold, and the owner's
-// total, debt and net. The rule is the ledger's read `ob_balance_of`.
+// total, debt and net. The rule is the ledger's read `ob_balance_of`. The owner's debt limit, if any, and
+// whether its debt is past it (the view `ob_past_debt_limit`): usage is booked as debt even past the limit (the
+// owner's decision of 2026-11-27, "Always book as debt"), so the limit flags the owner and refuses new calls.
 query balanceRows(owner: String, currency: String): BalanceRow[]
   @@sql("""
     SELECT b.o_account_id AS "accountId", b.o_label AS "label", $2::text AS "currency",
            b.o_available AS "availableMicros",
            ob_clamp(sum(b.o_available) OVER ()) AS "ownerAvailableMicros",
            b.o_debt AS "debtMicros",
-           ob_clamp(sum(b.o_available) OVER () - b.o_debt) AS "netMicros"
+           ob_clamp(sum(b.o_available) OVER () - b.o_debt) AS "netMicros",
+           (SELECT bl.debt_limit FROM ob_balance bl WHERE bl.owner = $1 AND bl.currency = $2) AS "debtLimitMicros",
+           EXISTS (SELECT 1 FROM ob_past_debt_limit p WHERE p.owner = $1 AND p.currency = $2) AS "pastLimit"
     FROM ob_balance_of($1, $2, ob_micros(now())) b
   """)
   @allow(owner == auth().sub || hasRole("operator"))
@@ -129,7 +135,8 @@ type AllowedRow {
   memberRemainingMicros BigInt?
 }
 
-// May the member spend for the owner in the currency now? The rule is the ledger's read `ob_allowed`.
+// May the member spend for the owner in the currency now? The rule is the ledger's read `ob_allowed`: `refused`
+// is `debt_limit` (the owner owes something and its debt is at or past its limit), `balance` or `member_cap`.
 query allowedRow(owner: String, currency: String, member: String): AllowedRow
   @@sql("""
     SELECT a.o_refused IS NULL AS "allowed", a.o_refused AS "refused", a.o_balance AS "balanceMicros",

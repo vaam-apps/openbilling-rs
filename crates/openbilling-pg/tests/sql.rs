@@ -51,7 +51,12 @@ async fn migrations_apply_once_and_every_function_answers() {
     migrator().run(&pool).await.expect("a second run");
     assert_eq!(
         scalar(&pool, "SELECT count(*) FROM _sqlx_migrations").await,
-        6
+        7
+    );
+    // The flag of owners past their debt limit is a view, read as a plain query (ADR 0001, amended, E3).
+    assert_eq!(
+        scalar(&pool, "SELECT count(*) FROM ob_past_debt_limit").await,
+        0
     );
 
     let functions: Vec<String> = sqlx::query_scalar(

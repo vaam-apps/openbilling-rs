@@ -42,6 +42,18 @@ What it changes here:
 | C3 | **No back-dating is made exact**: a version takes effect after the clock *and* after every event already rated, since an event may occur up to the skew ahead of the clock. A load and a rating intake exclude each other by a table lock | 19 |
 | C4 | **Rounding**: once per event, to the micro-unit, half to even, of `quantity × price ÷ per` in `numeric` (the recommendation of *Still open*, built) | 20 |
 
+*Amended 2026-11-27 (always book as debt):* the owner's decision of that day, in their words: **"Always book as
+debt"**. Usage that already happened is always booked, even past the owner's debt limit; the limit only refuses new
+calls, through the `allowed` check, and an owner past it is flagged. Built by the migration
+`20261127000007_always_book_debt.sql`. What changes:
+
+| # | Change | Points |
+|---|---|---|
+| E1 | **The drain refuses no event for the limit.** Its step 4 draws each event across the owner's accounts and books what they lack as debt, against revenue, whatever the limit. The reason `limit` is gone, from the SQL's checks and from `RefusalReason` (no API type names it: the outcome's `reason` is text). A debit whose debt would pass the largest amount is still refused, now as `overflow`, a rule of its own | 23 |
+| E2 | **The limit refuses new calls.** `ob_allowed` answers `debt_limit` when the owner owes something and its debt is at or past its limit, before `balance` and `member_cap`. With no limit, debt is unlimited and this never refuses. A limit of zero refuses as soon as anything is owed (the owner's rule read as "debt ≥ limit, with some debt": an owner who owes nothing is not refused for a limit of zero) | 23 |
+| E3 | **An owner past the limit is flagged**: the view `ob_past_debt_limit` (owner, currency, debt, limit, for a debt above the limit), and on the API's balance read the columns `debtLimitMicros` and `pastLimit` | 23 |
+| E4 | *Bad, or to be managed* below: "Usage refused for a limit is not billed" no longer holds; every applied event is billed, and debt past the limit is the operator's to collect | Consequences |
+
 ## Summary
 
 A usage event is written once, by one insert, into a table partitioned by day. That table is the queue and the
@@ -178,7 +190,9 @@ PostgreSQL is already the only infrastructure (rule 1 of the agent guide). This 
     *Amended 2026-11-27 (B2, B5): one row per owner and currency, updated once per event.*
 23. **Limits are checked there** (*amended 2026-11-27 (B6): a debt limit*). The worker checks each debit, in the batch's order, against the locked balance and
     its limit. A debit past the limit is **refused, not lost**: its outcome is `refused`, reason `limit`, with the
-    amount it would have been. A refusal is final for that event.
+    amount it would have been. A refusal is final for that event. *Amended 2026-11-27 (E1 to E3), "Always book as
+    debt": no debit is refused for the limit; what finds no credit is debt, whatever the limit, and the limit
+    refuses new calls through `allowed`. A debit whose debt would pass the largest amount is refused `overflow`.*
 24. **Counter-accounts carry no live balance row.** Every debit has a balancing credit, for instance to a revenue
     account per currency. If that account had a balance row, every event of every account would lock it. Its balance
     is the sum of its entries, read on demand or rolled up by a job.
@@ -304,7 +318,8 @@ returns a batch's rows to `Received`, because the transaction that would have mo
   busy account needs more is open (below).
 - **Apply order is only roughly intake order.** Several workers and `SKIP LOCKED` mean which of two debits meets a
   limit first is not strictly the order they arrived in.
-- **Usage refused for a limit is not billed.** The record keeps it; what to do with it is the operator's choice.
+- ~~**Usage refused for a limit is not billed.** The record keeps it; what to do with it is the operator's choice.~~
+  *Amended 2026-11-27 (E4): no usage is refused for a limit; debt past it is billed and flagged.*
 - **Hand-written SQL beside a schema-first framework.** The event table, the drain and the partition job are outside
   what CrateStack generates and checks. They need their own tests against a real PostgreSQL.
 
@@ -327,6 +342,6 @@ returns a batch's rows to `Received`, because the transaction that would have mo
 | ~~Minimum PostgreSQL version~~ | ~~The oldest version upstream still supports at the first release. Use `DO SELECT` where available (19), two statements elsewhere~~ **Decided 2026-11-27: PostgreSQL 19** (the amendment at the top) |
 | ~~A price below one minor unit per unit~~ | ~~Prices as an integer amount per an integer quantity; round once per event, half-to-even, with the rounding mode stored on the version~~ **Built 2026-11-27** ([ADR 0004](0004-a-versioned-price-book-in-sql.md)): micro-units per an integer `per`, half to even once per event. The mode is one for every version, not stored on each |
 | How long are outcomes and the ledger kept, and how are they stored? | Kept for good; partition them by month for archival, never drop them in the service |
-| Can a refused debit be retried after a credit? | No. A refusal is final for its event; an operator who wants it billed sends a new event with a new id |
+| Can a refused debit be retried after a credit? | No. A refusal is final for its event; an operator who wants it billed sends a new event with a new id. (Since E1 no debit is refused for the limit, so this concerns `unknown_account`, `id_reused` and `overflow` only) |
 | Window and skew defaults | 7 days and 5 minutes, both configurable; the window never shorter than the producers' retry horizon |
 | Per-producer intake rate limits | Yes, at intake, but in a later record together with identity |
