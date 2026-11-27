@@ -19,7 +19,8 @@ docker compose -f e2e/compose.yaml down
 ```
 
 Without `OPENBILLING_TEST_DATABASE_URL` every scenario skips; under `OPENBILLING_TEST_REQUIRE_DB=1` it fails instead
-(agent guide, rule 10). CI's Test job runs it with `cargo test --workspace`, against the job's PostgreSQL 19 service.
+(agent guide, rule 10). CI's Test job runs `cargo test --workspace --exclude openbilling` and then `cargo test -p openbilling` as a step of its
+own, against the job's PostgreSQL 19 service.
 
 ## The scenarios
 

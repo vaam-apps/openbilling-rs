@@ -14,7 +14,7 @@ name: release
 #   a push to main                      ->  `sha-<7>`, `edge` (development only; no chart)
 # There is never a `latest`: production runs fixed versions only, and the chart refuses `latest`.
 #
-# Nothing here has run yet: the first evidence is the first push to main after this lands.
+# It has run since v0.1.1 (releases v0.1.1 to v0.4.0).
 
 on:
   push:

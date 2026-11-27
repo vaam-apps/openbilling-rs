@@ -1,7 +1,8 @@
 # 0005. Releases: release-please, fixed versions in production, a signed image and a chart on bjw-s common v5
 
 Status: **Proposed** (2026-11-27). The owner's decisions quoted under *Context* stand; the judgement calls under
-*Still open* are for the owner to confirm. *Amended 2026-11-27 (ANR-1329):* it has run. release-please opened the
+*Still open* are for the owner to confirm. Nothing here has run yet: the workflows run for the first time on the
+first push to `main` after this lands. *Amended 2026-11-27 (ANR-1329):* it has run. release-please opened the
 release pull requests and v0.1.1, v0.2.0, v0.3.0 and v0.4.0 are published; the 0.3.0 image and chart pulled
 anonymously (*verified 2026-11-27*). It stays Proposed until the owner accepts it.
 
@@ -150,11 +151,11 @@ stateDiagram-v2
 - A deployment names a version and gets an image that cannot move under it: the chart's default is the release's
   own digest. `edge` and `sha-<7>` exist for development and a chart refuses `edge` without a digest.
 - Commit messages are now release notes: a `feat` or `fix` lands in the changelog under its section.
-- The first release depended on the owner: the App installed and its two secrets set. *Done:* the releases exist
-  (2026-11-27). Without them `release-please.yml` fails at its first step and no tag is made; `release.yml` still
-  publishes `edge` and `sha-<7>` on every push to `main`.
-- GHCR makes a new package private: the image and the chart had to be made public (or a pull secret given to the
-  cluster). *Done:* both pulled anonymously on 2026-11-27 (0.3.0).
+- The first release depends on the owner: the App installed and its two secrets set. Until then
+  `release-please.yml` fails at its first step and no tag is ever made; `release.yml` still publishes `edge` and
+  `sha-<7>` on every push to `main`. *Amended 2026-11-27: done; the releases exist.*
+- GHCR makes a new package private: the image and the chart must be made public (or a pull secret given to the
+  cluster) before a deployment can pull them. *Amended 2026-11-27: done; both pulled anonymously (0.3.0).*
 - The signatures' identity is `release.yml` at the tag's ref: renaming the file changes what `cosign verify` must
   name.
 - A ServiceMonitor can be switched on, but openbilling serves no `/metrics` yet: switched on today, it scrapes a 404.
