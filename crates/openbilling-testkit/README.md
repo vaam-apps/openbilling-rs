@@ -67,9 +67,27 @@ minutes.
 `fixtures` holds the helpers the cases share, and `price_cases` the price book's (`example_list`, `raw`); a store's
 own tests may use them too.
 
+## The payment provider suite
+
+`payments` is the conformance suite of `PaymentProvider` ([ADR 0003](../../docs/adr/0003-credits-from-a-payment-provider.md)):
+`payment_conformance!(factory)`, where `factory` is an `async fn() -> F` making a fresh `ProviderFixture`: the adapter
+under test and a stand-in for its provider that can settle, cancel and refund a payment and sign webhooks as the
+provider does. `openbilling-vpay`'s stand-in is the first.
+
+| Case | Holds |
+|---|---|
+| `a_payment_is_created_once_per_key_and_read_back_pending` | One payment per key; read back pending with its amount, currency and target |
+| `a_paid_payment_reads_succeeded_and_a_canceled_one_canceled` | The provider's word decides the status |
+| `unknown_objects_and_inexact_amounts_are_refused` | `not_found` for a payment or a refund it does not know; `inexact_amount` before anything is asked |
+| `a_foreign_payment_has_no_target` | A payment openbilling did not ask for credits nothing |
+| `a_refund_is_read_back_with_its_payment_and_status` | All four refund statuses |
+| `a_signed_webhook_names_its_object_and_nothing_else` | A payment, a refund, or nothing |
+| `a_forged_stale_or_tampered_webhook_is_refused` | Forged, tampered, unsigned, outside the tolerance either way; the body read only after the signature |
+
 ## Tests
 
 The suites run where an implementation runs them: `openbilling-pg`'s `tests/ledger.rs` and `tests/price_book.rs`,
-which need a PostgreSQL 19. The
+which need a PostgreSQL 19, and `openbilling-vpay`'s `tests/conformance.rs` for the payment suite, which needs
+nothing. The
 crate has no tests of its own; there is no second implementation of the rules to run it against (agent guide,
 rule 12).

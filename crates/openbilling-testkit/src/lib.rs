@@ -15,6 +15,9 @@
 //! ([ADR 0004](https://github.com/vaam-apps/openbilling-rs/blob/main/docs/adr/0004-a-versioned-price-book-in-sql.md)):
 //! loading, versions, rating, rounding, refusals and raw intake.
 //!
+//! [`payment_conformance!`] does the same for a payment provider adapter ([`payments`], ADR 0003), against a
+//! stand-in for the provider that the adapter reaches over the network.
+//!
 //! The consumer needs `tokio` as a dev-dependency with the `macros` and `rt-multi-thread` features: each case is a
 //! `#[tokio::test]` on the multi-threaded runtime.
 
@@ -23,6 +26,7 @@
 
 pub mod cases;
 pub mod fixtures;
+pub mod payments;
 pub mod price_cases;
 
 /// Runs every conformance case against the store `$factory` makes: `async fn() -> Option<S>`, a fresh empty store

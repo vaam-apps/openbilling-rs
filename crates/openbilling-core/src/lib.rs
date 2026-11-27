@@ -12,6 +12,8 @@
 //! - [`UsageEvent`], [`Credit`], [`Reversal`] and what the ledger answers for them;
 //! - [`EventOutcome`] and [`RefusalReason`], what a drain decided about an event;
 //! - the storage port, [`LedgerStore`], with [`LedgerError`] and its [`Refusal`]s;
+//! - the payment provider port, [`PaymentProvider`] (ADR 0003), with [`PaymentError`], and [`settle_payment`] and
+//!   [`settle_refund`], which book what a provider, read back, says succeeded;
 //! - the price book (ADR 0004): [`RawEvent`], [`Quantity`], [`Dimensions`], [`MeterId`], [`Rated`], [`Loaded`],
 //!   and its port, [`PriceBook`];
 //! - [`Error`], [`ErrorClass`] and [`Classify`], errors that tell a caller what to do.
@@ -24,8 +26,10 @@ mod config;
 mod error;
 mod id;
 mod outcome;
+mod payment;
 mod price;
 mod refusal;
+mod settle;
 mod store;
 mod time;
 mod usage;
@@ -39,10 +43,16 @@ pub use id::{
     OwnerId,
 };
 pub use outcome::{EventOutcome, RefusalReason};
+pub use payment::{
+    Checkout, CreatedPayment, IdempotencyKey, MAX_IDEMPOTENCY_KEY_LEN, PaymentError,
+    PaymentProvider, PaymentRefusal, PaymentRequest, PaymentStatus, PaymentTarget, PaymentView,
+    RefundStatus, RefundView, ReturnUrls, WebhookHeaders, WebhookHint,
+};
 pub use price::{
     Dimensions, Loaded, PriceBook, PriceVersionId, PriceVersionView, Quantity, Rated, RawEvent,
 };
 pub use refusal::{LedgerError, ListPosition, NAMED_IN_MESSAGE, Refusal, Rule};
+pub use settle::{SettleError, Settled, settle_hint, settle_payment, settle_refund};
 pub use store::{
     AccountBalance, Allowed, Balance, Credit, CreditTarget, Credited, Decided, DrainReport,
     LedgerStore, LotView, NewAccount, NotAllowed, Opened, OutcomeView, Reversal,

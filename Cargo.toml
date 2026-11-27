@@ -4,6 +4,7 @@ members = [
     "crates/openbilling-core",
     "crates/openbilling-pg",
     "crates/openbilling-testkit",
+    "crates/openbilling-vpay",
     "bin/openbilling",
 ]
 
@@ -19,12 +20,28 @@ publish = false
 [workspace.dependencies]
 openbilling-core = { path = "crates/openbilling-core" }
 openbilling-testkit = { path = "crates/openbilling-testkit" }
+openbilling-pg = { path = "crates/openbilling-pg" }
+openbilling-vpay = { path = "crates/openbilling-vpay" }
 
 anyhow = "1.0.105"
+axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "tokio", "query"] }
+hex = "0.4.3"
+# hmac 0.13 and sha2 0.11: the digest 0.11 line, which the lockfile already holds.
+hmac = "0.13.0"
+# reqwest 0.13 with rustls and no provider of its own, so rustls uses the one the workspace already holds (ring,
+# through sqlx): no aws-lc-rs.
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider"] }
+# rustls on ring: the provider the reqwest above uses, installed process-wide by `openbilling-vpay`.
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std"] }
 serde = { version = "1.0.229", default-features = false, features = ["std", "derive"] }
 # The YAML price list (ADR 0004): pure Rust, no panic on input, a budget on what a document may cost, duplicate keys
 # refused, and `Spanned` values that carry their line and column. Deserializing only.
 serde-saphyr = { version = "2.2.0", default-features = false, features = ["deserialize"] }
+serde_json = "1.0.154"
+sha2 = "0.11.2"
+subtle = "2.6.1"
+tower = { version = "0.5.3", default-features = false, features = ["util"] }
+url = "2.5.9"
 thiserror = "2.0.21"
 tokio = { version = "1.54.1", default-features = false }
 # `=0.9.0`, not 0.9.1: CrateStack 0.20.6, the stack ADR 0001 names, pins sqlx `=0.9.0`, and Cargo cannot hold two

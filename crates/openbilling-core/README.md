@@ -28,6 +28,9 @@ in and out of them; its constructors only hold what a type is (an id's alphabet,
 | `LedgerStore` | The storage port: a trait whose methods return `Send` futures. `openbilling-pg` implements it; `openbilling-testkit` holds its conformance suite |
 | `PriceBook` | The price book's port, an extension of `LedgerStore`: `load_price_list` (YAML), `price_versions`, `rate`, `intake_raw` |
 | `LedgerError`, `Refusal`, `Rule`, `ListPosition` | The port's error: a refusal by a named rule (which, for a batch, names the offending events, and for a price list its line, column and key) or a fault of the store with its class |
+| `PaymentProvider` | The payment provider port ([ADR 0003](../../docs/adr/0003-credits-from-a-payment-provider.md)): create a payment, read a payment, read a refund, verify a webhook. `openbilling-vpay` implements it; `openbilling-testkit` holds its conformance suite |
+| `PaymentRequest`, `PaymentTarget`, `ReturnUrls`, `IdempotencyKey`, `CreatedPayment`, `Checkout`, `PaymentView`, `RefundView`, `PaymentStatus`, `RefundStatus`, `WebhookHeaders`, `WebhookHint`, `PaymentError`, `PaymentRefusal` | What goes in and out of it. A webhook names an object to read back, never a status; a checkout URL is hidden from `Debug` |
+| `settle_payment`, `settle_refund`, `settle_hint`, `Settled`, `SettleError` | Composition of the two ports, and nothing else: a payment read back as succeeded becomes a `payment` credit keyed by its provider id; a refund read back as succeeded a reversal, after its payment is settled. The once-only keys and the cap are the ledger's |
 | `Error`, `ErrorClass`, `Classify` | Errors with a class (`invalid`, `conflict`, `unavailable`, `internal`). Callers decide from the class, never from the variant. An error never holds the value it refused |
 
 ## Why `Amount` is an `i64` of micro-units
@@ -47,4 +50,6 @@ between them.
 
 `cargo test -p openbilling-core`: unit tests next to each module (ids and their alphabets, the price book's names,
 amounts, quantities, dimensions, version ids, the calendar, the default lot order and window, refusal messages,
-positions and classes, the answer types). No database, no environment variable.
+positions and classes, the answer types, idempotency keys, payment refusals and their classes, webhook headers, a
+hidden checkout URL). No database, no environment variable. `settle_*` is tested where both ports have an
+implementation: `openbilling-vpay`'s `tests/settle.rs` and `openbilling-http`'s `tests/flow.rs`.
