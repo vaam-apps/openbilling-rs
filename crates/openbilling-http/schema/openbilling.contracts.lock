@@ -1375,6 +1375,424 @@
       "transport": "rest",
       "verb": "list"
     },
+    "4dba030c4e4b77a04b9975f6a22b5d6a33cbb09f198ee7ab3bc2eb538ac994ca": {
+      "closure": {
+        "enums": [
+          {
+            "name": "OutcomeState",
+            "variants": [
+              "pending",
+              "applied",
+              "refused"
+            ]
+          }
+        ],
+        "models": [
+          {
+            "attributes": [
+              "@@paged"
+            ],
+            "fields": [
+              {
+                "attributes": [],
+                "name": "amount",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "BigInt"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "currency",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "decidedAt",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "DateTime"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "dimensions",
+                "ty": {
+                  "arity": "optional",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "Json"
+                }
+              },
+              {
+                "attributes": [
+                  "@id"
+                ],
+                "name": "eventId",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "member",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "meter",
+                "ty": {
+                  "arity": "optional",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "occurredAt",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "DateTime"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "owner",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "priceVersion",
+                "ty": {
+                  "arity": "optional",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "Uuid"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "quantity",
+                "ty": {
+                  "arity": "optional",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "BigInt"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "reason",
+                "ty": {
+                  "arity": "optional",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "state",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "OutcomeState"
+                }
+              }
+            ],
+            "name": "UsageOutcome"
+          }
+        ],
+        "types": [],
+        "views": []
+      },
+      "events": null,
+      "key": "GET /usage_outcomes/{id}",
+      "kind": "unary",
+      "model": "UsageOutcome",
+      "procedure": null,
+      "transport": "rest",
+      "verb": "get"
+    },
+    "5a5ca7895853d230d1f5e7c3dd069cbda6c4109786253167d9954235dcfbea1a": {
+      "closure": {
+        "enums": [],
+        "models": [],
+        "types": [
+          {
+            "fields": [
+              {
+                "attributes": [],
+                "name": "key",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "value",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              }
+            ],
+            "name": "DimensionInput"
+          },
+          {
+            "fields": [
+              {
+                "attributes": [],
+                "name": "answer",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "eventId",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              }
+            ],
+            "name": "EventAnswer"
+          },
+          {
+            "fields": [
+              {
+                "attributes": [],
+                "name": "accepted",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "Int"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "answers",
+                "ty": {
+                  "arity": "list",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "EventAnswer"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "replayed",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "Int"
+                }
+              }
+            ],
+            "name": "IntakeResult"
+          },
+          {
+            "fields": [
+              {
+                "attributes": [],
+                "name": "events",
+                "ty": {
+                  "arity": "list",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "RawUsageEventInput"
+                }
+              }
+            ],
+            "name": "RawUsageBatch"
+          },
+          {
+            "fields": [
+              {
+                "attributes": [],
+                "name": "currency",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "dimensions",
+                "ty": {
+                  "arity": "list",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "DimensionInput"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "eventId",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "member",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "meter",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "occurredAt",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "DateTime"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "owner",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "quantity",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "BigInt"
+                }
+              }
+            ],
+            "name": "RawUsageEventInput"
+          }
+        ],
+        "views": []
+      },
+      "events": null,
+      "key": "POST /$procs/recordRawUsage",
+      "kind": "unary",
+      "model": null,
+      "procedure": {
+        "args": [
+          {
+            "name": "args",
+            "ty": {
+              "arity": "required",
+              "generic_args": [],
+              "ident_args": [],
+              "int_args": [],
+              "name": "RawUsageBatch"
+            }
+          }
+        ],
+        "attributes": [],
+        "kind": "mutation",
+        "name": "recordRawUsage",
+        "return_type": {
+          "arity": "required",
+          "generic_args": [],
+          "ident_args": [],
+          "int_args": [],
+          "name": "IntakeResult"
+        }
+      },
+      "transport": "rest",
+      "verb": "mutation"
+    },
     "5c4ddfaf28017049b8972a6fc1c42f1214b40d7a47935c43469f2a6a3ed51601": {
       "closure": {
         "enums": [],
@@ -1670,6 +2088,392 @@
       },
       "transport": "rest",
       "verb": "query"
+    },
+    "6d53a5ba7a668d1fccb3a09d6620274f5c2a9677024d43bf19994570bd2af590": {
+      "closure": {
+        "enums": [],
+        "models": [],
+        "types": [
+          {
+            "fields": [
+              {
+                "attributes": [],
+                "name": "done",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "Boolean"
+                }
+              }
+            ],
+            "name": "Done"
+          },
+          {
+            "fields": [
+              {
+                "attributes": [],
+                "name": "capMicros",
+                "ty": {
+                  "arity": "optional",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "BigInt"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "currency",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "member",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "owner",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              }
+            ],
+            "name": "MemberCapInput"
+          }
+        ],
+        "views": []
+      },
+      "events": null,
+      "key": "POST /$procs/setMemberCap",
+      "kind": "unary",
+      "model": null,
+      "procedure": {
+        "args": [
+          {
+            "name": "args",
+            "ty": {
+              "arity": "required",
+              "generic_args": [],
+              "ident_args": [],
+              "int_args": [],
+              "name": "MemberCapInput"
+            }
+          }
+        ],
+        "attributes": [],
+        "kind": "mutation",
+        "name": "setMemberCap",
+        "return_type": {
+          "arity": "required",
+          "generic_args": [],
+          "ident_args": [],
+          "int_args": [],
+          "name": "Done"
+        }
+      },
+      "transport": "rest",
+      "verb": "mutation"
+    },
+    "7a2017ea53a65b710b03da9bcc56827bafe33c63b1992737a12df35469a9519d": {
+      "closure": {
+        "enums": [],
+        "models": [],
+        "types": [
+          {
+            "fields": [
+              {
+                "attributes": [],
+                "name": "yaml",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              }
+            ],
+            "name": "PriceListInput"
+          },
+          {
+            "fields": [
+              {
+                "attributes": [],
+                "name": "contentHash",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "effectiveFrom",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "DateTime"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "replayed",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "Boolean"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "version",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              }
+            ],
+            "name": "PriceListLoaded"
+          }
+        ],
+        "views": []
+      },
+      "events": null,
+      "key": "POST /$procs/loadPriceList",
+      "kind": "unary",
+      "model": null,
+      "procedure": {
+        "args": [
+          {
+            "name": "args",
+            "ty": {
+              "arity": "required",
+              "generic_args": [],
+              "ident_args": [],
+              "int_args": [],
+              "name": "PriceListInput"
+            }
+          }
+        ],
+        "attributes": [],
+        "kind": "mutation",
+        "name": "loadPriceList",
+        "return_type": {
+          "arity": "required",
+          "generic_args": [],
+          "ident_args": [],
+          "int_args": [],
+          "name": "PriceListLoaded"
+        }
+      },
+      "transport": "rest",
+      "verb": "mutation"
+    },
+    "90e29abaa7467468fe25a70d9734cb70809e86b28846b1a0f3145e75f87e90e1": {
+      "closure": {
+        "enums": [
+          {
+            "name": "OutcomeState",
+            "variants": [
+              "pending",
+              "applied",
+              "refused"
+            ]
+          }
+        ],
+        "models": [
+          {
+            "attributes": [
+              "@@paged"
+            ],
+            "fields": [
+              {
+                "attributes": [],
+                "name": "amount",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "BigInt"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "currency",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "decidedAt",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "DateTime"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "dimensions",
+                "ty": {
+                  "arity": "optional",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "Json"
+                }
+              },
+              {
+                "attributes": [
+                  "@id"
+                ],
+                "name": "eventId",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "member",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "meter",
+                "ty": {
+                  "arity": "optional",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "occurredAt",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "DateTime"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "owner",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "priceVersion",
+                "ty": {
+                  "arity": "optional",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "Uuid"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "quantity",
+                "ty": {
+                  "arity": "optional",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "BigInt"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "reason",
+                "ty": {
+                  "arity": "optional",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "state",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "OutcomeState"
+                }
+              }
+            ],
+            "name": "UsageOutcome"
+          }
+        ],
+        "types": [],
+        "views": []
+      },
+      "events": null,
+      "key": "GET /usage_outcomes",
+      "kind": "unary",
+      "model": "UsageOutcome",
+      "procedure": null,
+      "transport": "rest",
+      "verb": "list"
     },
     "a13abe1675434d57d4e63232e493a29876334b50fe985e90ecb069e6c7a6973a": {
       "closure": {
@@ -2794,6 +3598,99 @@
       "transport": "rest",
       "verb": "mutation"
     },
+    "ce52473d48e835ecb95b6b87230311fbd886f49461f5f09d270c799998901666": {
+      "closure": {
+        "enums": [],
+        "models": [],
+        "types": [
+          {
+            "fields": [
+              {
+                "attributes": [],
+                "name": "currency",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "limitMicros",
+                "ty": {
+                  "arity": "optional",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "BigInt"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "owner",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              }
+            ],
+            "name": "DebtLimitInput"
+          },
+          {
+            "fields": [
+              {
+                "attributes": [],
+                "name": "done",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "Boolean"
+                }
+              }
+            ],
+            "name": "Done"
+          }
+        ],
+        "views": []
+      },
+      "events": null,
+      "key": "POST /$procs/setDebtLimit",
+      "kind": "unary",
+      "model": null,
+      "procedure": {
+        "args": [
+          {
+            "name": "args",
+            "ty": {
+              "arity": "required",
+              "generic_args": [],
+              "ident_args": [],
+              "int_args": [],
+              "name": "DebtLimitInput"
+            }
+          }
+        ],
+        "attributes": [],
+        "kind": "mutation",
+        "name": "setDebtLimit",
+        "return_type": {
+          "arity": "required",
+          "generic_args": [],
+          "ident_args": [],
+          "int_args": [],
+          "name": "Done"
+        }
+      },
+      "transport": "rest",
+      "verb": "mutation"
+    },
     "fa494cbc5451e82fb9f9f63272b84c31d8dd39c1b342e4726b1dd89816db42f7": {
       "closure": {
         "enums": [],
@@ -3080,6 +3977,34 @@
         "POST /$procs/reconcilePayment": "fa494cbc5451e82fb9f9f63272b84c31d8dd39c1b342e4726b1dd89816db42f7",
         "POST /$procs/reconcileRefund": "a13abe1675434d57d4e63232e493a29876334b50fe985e90ecb069e6c7a6973a",
         "POST /$procs/recordUsage": "02bb5d84c66a32f30cc472a50b6a942cbde5b12c074fc71986d3441caf996e40",
+        "POST /$procs/startTopUp": "0634f0385fa6084c534183a32bdeb4aec64890c145244254044435797c920de2"
+      }
+    },
+    {
+      "client_contract": "953b1617650f49fe82d692a704c8286a1230f2a37841dee23636f70f7ed86dbf",
+      "locked_at": "2026-11-27",
+      "ops": {
+        "GET /accounts": "bb579d8189bd2146d352887cc8f40549df5e2970aaae71067bbbd37cc505b8ee",
+        "GET /accounts/{id}": "b5acca7c50a203dada5284b8a5c9a83eaa405af998bc521d64be1d98ed0bbbfa",
+        "GET /lots": "25771176cccabd5bea211c41d5df76c07744d85ed30cbb36e9cd86058c8d776a",
+        "GET /lots/{id}": "0a3d073e6279db0fc3da8c6ad1c58fd333632851d36b35612c608c80574f5caa",
+        "GET /usage_outcomes": "90e29abaa7467468fe25a70d9734cb70809e86b28846b1a0f3145e75f87e90e1",
+        "GET /usage_outcomes/{id}": "4dba030c4e4b77a04b9975f6a22b5d6a33cbb09f198ee7ab3bc2eb538ac994ca",
+        "POST /$procs/configure": "391cf9b37331050cb6f1218512a6a33cca3055da4db6a5ead0a16340bb679d26",
+        "POST /$procs/getAllowed": "30ae36f7d09bb29dbb9974878295acb8c47bf7e904841b05393cade51e6de73f",
+        "POST /$procs/getBalance": "37be8392b8a2578c288d7753d2ef611e664e403588691c45996589e1e9a99bc1",
+        "POST /$procs/getStatement": "ab7ddfa4409db771a92107e0be2c9d317f926e28f9a659e01558fec27ec81622",
+        "POST /$procs/getUsageSeries": "bcd0a49de7d74d82a607f3ff6ec06dc398da18a6938d584ce3cd447a99867f94",
+        "POST /$procs/grantCredit": "cb9b5018195c451c2a1be264ac2b870dbbb938dd2eeba62ca74c7d11d8feb49f",
+        "POST /$procs/listCredits": "5c4ddfaf28017049b8972a6fc1c42f1214b40d7a47935c43469f2a6a3ed51601",
+        "POST /$procs/loadPriceList": "7a2017ea53a65b710b03da9bcc56827bafe33c63b1992737a12df35469a9519d",
+        "POST /$procs/openAccount": "bf3c0d6c6464bd734b701cce21bebe3b75cc974be6f3822d03faf479f60dd862",
+        "POST /$procs/reconcilePayment": "fa494cbc5451e82fb9f9f63272b84c31d8dd39c1b342e4726b1dd89816db42f7",
+        "POST /$procs/reconcileRefund": "a13abe1675434d57d4e63232e493a29876334b50fe985e90ecb069e6c7a6973a",
+        "POST /$procs/recordRawUsage": "5a5ca7895853d230d1f5e7c3dd069cbda6c4109786253167d9954235dcfbea1a",
+        "POST /$procs/recordUsage": "02bb5d84c66a32f30cc472a50b6a942cbde5b12c074fc71986d3441caf996e40",
+        "POST /$procs/setDebtLimit": "ce52473d48e835ecb95b6b87230311fbd886f49461f5f09d270c799998901666",
+        "POST /$procs/setMemberCap": "6d53a5ba7a668d1fccb3a09d6620274f5c2a9677024d43bf19994570bd2af590",
         "POST /$procs/startTopUp": "0634f0385fa6084c534183a32bdeb4aec64890c145244254044435797c920de2"
       }
     }

@@ -102,7 +102,8 @@ this record says about it was read in vpay's source at `8b56831` and in its skil
     database views that only its migrations create, so they are not used.
 14. **Writes are mutation procedures** whose Rust bodies call the ledger's functions through `PgLedger`:
     `configure`, `openAccount`, `grantCredit` (promotion or adjustment), `recordUsage`, `startTopUp`,
-    `reconcilePayment`, `reconcileRefund`.
+    `reconcilePayment`, `reconcileRefund`. *Amended 2026-11-27 (ANR-1142): and `recordRawUsage`, `setDebtLimit`,
+    `setMemberCap`, `loadPriceList`.*
 15. **Every model, query and procedure has a policy.** An owner reads their own accounts, lots, outcomes, balances and
     statements (`auth().sub`); the role `operator` reads and runs everything; the role `producer` sends usage and asks
     `allowed`. A denied model read is a `404` or an empty list; a denied procedure is a `403`.
@@ -226,7 +227,7 @@ by their provider ids.
 | A periodic reconciliation of pending top-ups | List pending payments and read each back, as vpay's reconciler does for rails |
 | Payment ids of two providers in one ledger | A provider prefix in the credit id when a second adapter comes |
 | Chargebacks from vpay | vpay has none; map them when a provider reports them |
-| Raw events through the API (ADR 0004) | A `recordRawUsage` mutation over `PriceBook::intake_raw`, and an operator's `loadPriceList`; `recordUsage` takes pre-priced events only |
+| ~~Raw events through the API (ADR 0004)~~ | ~~A `recordRawUsage` mutation over `PriceBook::intake_raw`, and an operator's `loadPriceList`; `recordUsage` takes pre-priced events only~~ **Built 2026-11-27** (ANR-1142): `recordRawUsage` and `loadPriceList` as recommended, with `setDebtLimit` and `setMemberCap`; `UsageOutcome` carries a raw event's rating, and a statement's usage lines are per day and meter |
 | Opening and closing balances on the statement | Need the expiry entries ADR 0002 leaves open |
 
 ## Agent notes

@@ -88,6 +88,11 @@ model UsageOutcome {
   reason     String?
   occurredAt DateTime
   decidedAt  DateTime
+  // A raw event's rating, kept on its outcome (ADR 0004); all four are null for a pre-priced event.
+  meter        String?
+  quantity     BigInt?
+  dimensions   Json?
+  priceVersion Uuid?
 
   @@map("ob_event_outcome")
   @@paged
@@ -175,7 +180,7 @@ type StatementLine {
 }
 
 // An owner's statement in a currency for one UTC month. Lines (`line` = "line"): `usage` per UTC day of
-// occurrence, negative; `payment`, `promotion`, `adjustment` per credit booked in the month, signed;
+// occurrence and meter, negative (`reference` is the meter of raw events, null for pre-priced ones); `payment`, `promotion`, `adjustment` per credit booked in the month, signed;
 // `refund`, `chargeback` per reversal booked in the month, negative; `allowance` per account granted the
 // month's allowance, on the first of the month. Then one total per kind (`line` = "total", no reference, no
 // day). Lines by day, kind and reference; totals by kind. Days are `YYYY-MM-DD`, UTC.
@@ -185,7 +190,7 @@ query statementLines(owner: String, currency: String, year: Int, month: Int): St
         SELECT make_date($3::integer, $4::integer, 1) AS first_day,
                (make_date($3::integer, $4::integer, 1) + interval '1 month')::date AS next_day
     ), lines AS (
-        SELECT 'usage'::text AS kind, NULL::text AS reference, o.occurred_on AS day, -o.amount::numeric AS amount
+        SELECT 'usage'::text AS kind, o.meter AS reference, o.occurred_on AS day, -o.amount::numeric AS amount
         FROM ob_event_outcome o CROSS JOIN bounds b
         WHERE o.state = 'applied' AND o.owner = $1 AND o.currency = $2
           AND o.occurred_on >= b.first_day AND o.occurred_on < b.next_day
@@ -361,6 +366,71 @@ type IntakeResult {
 // Takes pre-priced usage events in, all or nothing, once by each event's id and day (`ob_intake`).
 mutation procedure recordUsage(args: UsageBatch): IntakeResult
   @allow(hasRole("producer") || hasRole("operator"))
+
+type DimensionInput {
+  key   String @length(min: 1, max: 64)
+  value String @length(min: 1, max: 128)
+}
+
+type RawUsageEventInput {
+  eventId    String           @length(min: 1, max: 128)
+  owner      String           @length(min: 1, max: 255)
+  member     String           @length(min: 1, max: 128)
+  currency   String           @length(min: 1, max: 16)
+  meter      String           @length(min: 1, max: 64)
+  quantity   BigInt
+  dimensions DimensionInput[]
+  occurredAt DateTime
+}
+
+type RawUsageBatch {
+  events RawUsageEventInput[]
+}
+
+// Takes raw usage events in (a meter, a quantity and dimensions), all or nothing: each is rated by the price book
+// version in force at its occurrence time, then taken in once by its id and day (`ob_intake`, ADR 0004).
+mutation procedure recordRawUsage(args: RawUsageBatch): IntakeResult
+  @allow(hasRole("producer") || hasRole("operator"))
+
+// ---- The operator's settings: the debt limit, member caps, the price book ----
+
+type DebtLimitInput {
+  owner       String  @length(min: 1, max: 255)
+  currency    String  @length(min: 1, max: 16)
+  limitMicros BigInt?
+}
+
+// Sets, or with no `limitMicros` removes, an owner's debt limit in a currency (`ob_set_debt_limit`). Usage is
+// booked as debt even past it; it refuses new calls through `getAllowed` and flags the owner.
+mutation procedure setDebtLimit(args: DebtLimitInput): Done
+  @allow(hasRole("operator"))
+
+type MemberCapInput {
+  owner     String  @length(min: 1, max: 255)
+  currency  String  @length(min: 1, max: 16)
+  member    String  @length(min: 1, max: 128)
+  capMicros BigInt?
+}
+
+// Sets, or with no `capMicros` removes, a member's monthly cap for an owner in a currency (`ob_set_member_cap`).
+mutation procedure setMemberCap(args: MemberCapInput): Done
+  @allow(hasRole("operator"))
+
+type PriceListInput {
+  yaml String @length(min: 1, max: 1048576)
+}
+
+type PriceListLoaded {
+  version       String
+  effectiveFrom DateTime
+  contentHash   String
+  replayed      Boolean
+}
+
+// Loads a YAML price list as a new price book version, or answers the version already loaded with the same
+// content (`ob_load_price_list`, ADR 0004). A version takes effect after the clock and every event already rated.
+mutation procedure loadPriceList(args: PriceListInput): PriceListLoaded
+  @allow(hasRole("operator"))
 
 type TopUpInput {
   key          String @length(min: 1, max: 128)

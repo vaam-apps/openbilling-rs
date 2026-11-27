@@ -31,7 +31,7 @@ Legend: ✅ built and tested in CI · ⚠️ built, but partial or not yet prove
 | Intake | Partitioned queue by occurrence day, made ahead of time | ✅ | `ob_prepare_partitions` |
 | Intake | Dropping old partitions after the window | 📋 | |
 | Intake | Pre-priced events (each carries its amount) | ✅ | |
-| Intake | Raw events rated at intake | ✅ | A meter, a quantity and dimensions; the event and its outcome keep their price version ([ADR 0004](docs/adr/0004-a-versioned-price-book-in-sql.md)) |
+| Intake | Raw events rated at intake | ✅ | A meter, a quantity and dimensions; the event and its outcome keep their price version ([ADR 0004](docs/adr/0004-a-versioned-price-book-in-sql.md)). Through the API: `recordRawUsage`; the price list: `loadPriceList` |
 | Queue | Drain with `FOR UPDATE SKIP LOCKED`, once-only per event | ✅ | Concurrency tested on the conformance suite |
 | Queue | Workers woken by `LISTEN/NOTIFY`, the table as the truth | ✅ | |
 | Queue | A worker loop in the service binary | ⚠️ | `openbilling serve` drains on `LISTEN/NOTIFY` with a 5 s poll and prepares partitions hourly; not yet run against a PostgreSQL 19 |
@@ -45,7 +45,7 @@ Legend: ✅ built and tested in CI · ⚠️ built, but partial or not yet prove
 | Credits | Refunds and chargebacks, capped at the payment | ✅ | Enforced by a trigger, also under concurrency |
 | Budget | `allowed`: may this owner spend, with per-member monthly caps | ✅ | Refused for the debt limit, then a balance at zero or below, then the member's cap |
 | Reads | Balance, lots, event outcomes, usage per day | ✅ | SQL functions today; an outcome is a plain query since slice 3; through the API as CrateStack models and `query` blocks (below) |
-| Reads | Monthly statements | ✅ | A CrateStack `query` block: usage per day, credits, reversals, allowances, a total per kind. Run in CI on PostgreSQL 19 |
+| Reads | Monthly statements | ✅ | A CrateStack `query` block: usage per day and meter, credits, reversals, allowances, a total per kind. Run in CI on PostgreSQL 19 |
 | Payments | A payment-provider port with vpay as the first adapter | ⚠️ | Signed webhooks become once-only credits; top-ups through the provider; each payment read back before it is credited ([ADR 0003](docs/adr/0003-credits-from-a-payment-provider.md)). The port's suite runs against a vpay stand-in; never against a real vpay; the vpay token is minted outside |
 | API | External API through CrateStack: on-demand queries, custom selects, policies | ✅ | Models over the ledger's tables, `query` blocks behind read procedures, mutation procedures that call the SQL functions, an `Idempotency-Key` on every write; the contract lock and `docs/api/ops.json` checked in CI. Its flow tests run in CI on PostgreSQL 19 |
 | API | Authentication of API callers, fail-closed | ✅ | A bearer `AuthProvider` over a `TokenVerifier` port: no token, or one refused, is a `401`. `openbilling-jwt` verifies a JWT against one issuer's JWKS (`RS256`, `ES256`, `EdDSA` only; `iss` and `aud` exact; `exp` required; roles from a configured claim), signatures on ring; with no issuer configured every call is refused. Never tried against a real identity provider, only a test issuer |

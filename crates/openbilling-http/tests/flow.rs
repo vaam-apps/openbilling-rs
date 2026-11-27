@@ -530,3 +530,164 @@ async fn a_top_up_through_vpay_credits_once_and_a_refund_reverses_it() {
     assert_eq!(credits.body[0]["source"], "payment");
     assert_eq!(credits.body[0]["creditId"], payment.as_str());
 }
+
+fn at_offset(secs: i64) -> String {
+    let micros = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_micros();
+    let base = i64::try_from(micros).unwrap() + secs * 1_000_000;
+    openbilling_core::Timestamp::from_unix_micros(base)
+        .unwrap()
+        .to_rfc3339_micros()
+}
+
+#[tokio::test]
+async fn raw_usage_a_price_list_and_the_operators_settings_through_the_api() {
+    let Some((store, ledger)) = fresh().await else {
+        return;
+    };
+    let app = app(ledger.clone(), None, store.pool().clone());
+    setup(&app).await;
+
+    // Only the operator sets limits, caps and prices.
+    let limit = json!({"owner": "o1", "currency": "EUR", "limitMicros": "1000"});
+    let as_producer = procedure(
+        &app,
+        "setDebtLimit",
+        Some(PRODUCER),
+        Some("l0"),
+        limit.clone(),
+    )
+    .await;
+    assert_eq!(as_producer.status, StatusCode::FORBIDDEN);
+    ok(&procedure(&app, "setDebtLimit", Some(OPERATOR), Some("l1"), limit).await);
+    let cap = json!({"owner": "o1", "currency": "EUR", "member": "m1", "capMicros": "500"});
+    ok(&procedure(&app, "setMemberCap", Some(OPERATOR), Some("c1"), cap).await);
+    let unknown = json!({"owner": "nobody", "currency": "EUR", "limitMicros": null});
+    let refused = procedure(&app, "setDebtLimit", Some(OPERATOR), Some("l2"), unknown).await;
+    assert!(refused.text.contains("unknown_account"), "{}", refused.text);
+
+    let from = at_offset(60);
+    let yaml = format!(
+        "effective_from: \"{from}\"\nmeters:\n  - name: tokens.input\n    unit: token\n    dimensions: [model]\n\
+         prices:\n  - meter: tokens.input\n    currency: EUR\n    dimensions: {{ model: example-small }}\n    \
+         price_micros: 3\n    per: 2\n"
+    );
+    let loaded = procedure(
+        &app,
+        "loadPriceList",
+        Some(OPERATOR),
+        Some("p1"),
+        json!({"yaml": yaml}),
+    )
+    .await;
+    ok(&loaded);
+    assert_eq!(loaded.body["replayed"], false);
+    let version = loaded.body["version"].as_str().unwrap().to_owned();
+    let again = procedure(
+        &app,
+        "loadPriceList",
+        Some(OPERATOR),
+        Some("p2"),
+        json!({"yaml": yaml}),
+    )
+    .await;
+    assert_eq!(
+        (
+            again.body["version"].as_str(),
+            again.body["replayed"].as_bool()
+        ),
+        (Some(version.as_str()), Some(true))
+    );
+    let malformed = procedure(
+        &app,
+        "loadPriceList",
+        Some(OPERATOR),
+        Some("p3"),
+        json!({"yaml": "prices: ["}),
+    )
+    .await;
+    assert_eq!(
+        malformed.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        malformed.text
+    );
+    assert!(
+        malformed.text.contains("malformed_price_list"),
+        "{}",
+        malformed.text
+    );
+
+    let raw = |id: &str, at: &str, dims: Value| {
+        json!({"eventId": id, "owner": "o1", "member": "m1", "currency": "EUR", "meter": "tokens.input",
+               "quantity": "7", "dimensions": dims, "occurredAt": at})
+    };
+    let small = json!([{"key": "model", "value": "example-small"}]);
+    let before = procedure(
+        &app,
+        "recordRawUsage",
+        Some(PRODUCER),
+        Some("r0"),
+        json!({"events": [raw("r-early", &at_offset(0), small.clone())]}),
+    )
+    .await;
+    assert!(
+        before.text.contains("unpriced_meter") && before.text.contains("r-early"),
+        "{}",
+        before.text
+    );
+    let twice = json!([{"key": "model", "value": "example-small"}, {"key": "model", "value": "x"}]);
+    let dup = procedure(
+        &app,
+        "recordRawUsage",
+        Some(PRODUCER),
+        Some("r1"),
+        json!({"events": [raw("r-dup", &at_offset(90), twice)]}),
+    )
+    .await;
+    assert_eq!(dup.status, StatusCode::UNPROCESSABLE_ENTITY, "{}", dup.text);
+    let taken = procedure(
+        &app,
+        "recordRawUsage",
+        Some(PRODUCER),
+        Some("r2"),
+        json!({"events": [raw("r1", &at_offset(90), small)]}),
+    )
+    .await;
+    ok(&taken);
+    assert_eq!(taken.body["accepted"], 1);
+    while !ledger.drain(100).await.unwrap().decided.is_empty() {}
+
+    // 7 × 3 ÷ 2 = 10.5, half to even: 10. The outcome keeps the rating.
+    let outcome = call(
+        &app,
+        Method::GET,
+        "/v1/usage_outcomes/r1",
+        Some(OWNER_1),
+        None,
+        None,
+    )
+    .await;
+    ok(&outcome);
+    assert_eq!(outcome.body["amount"], "10");
+    assert_eq!(outcome.body["meter"], "tokens.input");
+    assert_eq!(outcome.body["quantity"], "7");
+    assert_eq!(outcome.body["priceVersion"], version.as_str());
+    assert_eq!(
+        outcome.body["dimensions"],
+        json!({"model": "example-small"})
+    );
+    let balance = procedure(
+        &app,
+        "getBalance",
+        Some(OWNER_1),
+        None,
+        json!({"owner": "o1", "currency": "EUR"}),
+    )
+    .await;
+    assert_eq!(balance.body[0]["debtLimitMicros"], "1000");
+    assert_eq!(balance.body[0]["debtMicros"], "10");
+    assert_eq!(balance.body[0]["pastLimit"], false);
+}
