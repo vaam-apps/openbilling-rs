@@ -11,7 +11,7 @@
 //!
 //! **Authentication.** vpay's `/v1` takes a signed COSE_Sign1 message, or, where the deployment's `auth.methods`
 //! permits `machine_tokens`, a bearer token of audience `vpay:v1` minted by its `/v1/oauth/token` (*verified*,
-//! the `vpay-merchant-api` skill and `backends/crates/vpay-api/src/resource_auth.rs`). This adapter sends a bearer
+//! the `vpay-merchant-api` skill of `vaam-apps/vpay-skills` at `19f15ba`, and `backends/crates/vpay-api/src/resource_auth.rs`). This adapter sends a bearer
 //! token read from a file on every call, so whatever mints and rotates it (`client_credentials` with an RS256
 //! `private_key_jwt`) runs beside the service. Minting it here, and signing requests, are not built.
 //!

@@ -208,6 +208,7 @@ by their provider ids.
 | A periodic reconciliation of pending top-ups | List pending payments and read each back, as vpay's reconciler does for rails |
 | Payment ids of two providers in one ledger | A provider prefix in the credit id when a second adapter comes |
 | Chargebacks from vpay | vpay has none; map them when a provider reports them |
+| Raw events through the API (ADR 0004) | A `recordRawUsage` mutation over `PriceBook::intake_raw`, and an operator's `loadPriceList`; `recordUsage` takes pre-priced events only |
 | Opening and closing balances on the statement | Need the expiry entries ADR 0002 leaves open |
 
 ## Agent notes
@@ -222,13 +223,13 @@ Each fact about vpay, *verified 2026-11-27* in vpay `8b56831` unless marked othe
 | A currency's exponent is the currency's (`Currency::exponent`) | `backends/crates/vpay-core/src/money.rs` |
 | A Checkout Session references an intent in `requires_payment_method`; `ui_mode` `hosted` needs `success_url` and `cancel_url` and answers a `url` holding the session's secret | `backends/crates/vpay-api/src/v1/checkout_sessions.rs`, `model.rs` |
 | Bodies are bracket-nested form encoding with literal brackets and `encodeURIComponent` escaping | `sdks/rust/src/form.rs`, `backends/crates/vpay-api/src/form.rs` |
-| Every `POST` under `/v1` needs an `Idempotency-Key` (at most 255 bytes of printable ASCII); the same key with another body is `400` `idempotency_error` | `vpay-merchant-api` skill, `references/idempotency.md` |
-| `/v1` takes a bearer token of audience `vpay:v1` where `auth.methods` permits `machine_tokens`; a token caller gets plain JSON | `vpay-merchant-api` skill; `backends/crates/vpay-api/src/resource_auth.rs` |
+| Every `POST` under `/v1` needs an `Idempotency-Key` (at most 255 bytes of printable ASCII); the same key with another body is `400` `idempotency_error` | `vpay-merchant-api` skill (vpay-skills `19f15ba`), `references/idempotency.md` |
+| `/v1` takes a bearer token of audience `vpay:v1` where `auth.methods` permits `machine_tokens`; a token caller gets plain JSON | `vpay-merchant-api` skill (vpay-skills `19f15ba`); `backends/crates/vpay-api/src/resource_auth.rs` |
 | The OP signs `private_key_jwt` with RS256 | `backends/crates/vpay-api/src/op/clients.rs` |
 | `Vpay-Signature` grammar, HMAC over the literal `t` text, one `v1` per secret, 300 s tolerance either way, constant-time compare | `backends/crates/vpay-worker/src/signing.rs`, `sdks/rust/src/webhooks.rs` |
 | Event types: `payment_intent.*`, `charge.refunded`, `charge.refund.updated` among fifteen | `backends/migrations/0039_events-customer-created-updated.sql` |
 | A refund is created `pending` and nothing settles it; `succeeded` is reached by nothing a merchant can cause | `vpay-merchant-api` and `vpay-webhooks` skills (vpay-skills `19f15ba`) |
-| Callbacks are hints: only the authenticated status query moves money | `vpay` skill |
+| Callbacks are hints: only the authenticated status query moves money | `vpay` skill (vpay-skills `19f15ba`) |
 | CrateStack 0.20.6: models `@@map` onto existing tables; `view`s are database views created by its migrations; `query` blocks run through `db.queries()` and have no route; no OpenAPI, a contract lock and `contract ops` | `.agents/skills/cratestack-*`, `cratestack-macros-0.20.6/src/view/descriptor.rs`, `src/query/accessor.rs` |
 
 The webhook test vector (`crates/openbilling-vpay/tests/vectors/vpay-signature.hex`) is the HMAC-SHA256 of

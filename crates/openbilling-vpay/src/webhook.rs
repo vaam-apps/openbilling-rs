@@ -12,7 +12,7 @@
 //! - candidates are compared in constant time, and the body is parsed only after one matched.
 //!
 //! The body is then read only for what to fetch again: the event's `type` and `data.object.id`. A callback is a
-//! hint (ADR 0003; vpay's own rule, the `vpay` skill, "Callbacks are hints").
+//! hint (ADR 0003; vpay's own rule, the `vpay` skill of `vaam-apps/vpay-skills` at `19f15ba`, "Callbacks are hints").
 
 use hmac::{Hmac, KeyInit, Mac};
 use openbilling_core::{CreditId, PaymentRefusal, Timestamp, WebhookHeaders, WebhookHint};
@@ -141,7 +141,7 @@ struct EventObject {
 
 /// What a verified body names. `payment_intent.*` names a payment, `charge.refunded` and `charge.refund.updated`
 /// a refund (*verified 2026-11-27*, vpay `8b56831`, migration `0039`'s `type_is_a_documented_event` and the
-/// `vpay-webhooks` skill's writer table); every other type moves no credit.
+/// `vpay-webhooks` skill's writer table, `vaam-apps/vpay-skills` `19f15ba`); every other type moves no credit.
 pub(crate) fn hint(body: &[u8]) -> Result<WebhookHint, PaymentRefusal> {
     let event: Event = serde_json::from_slice(body).map_err(|_| PaymentRefusal::WebhookBody)?;
     let id =

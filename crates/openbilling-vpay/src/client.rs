@@ -1,6 +1,6 @@
 //! The HTTP half: one request per call to vpay's `/v1`, and how vpay's answers map to the port's errors.
 //!
-//! *Verified 2026-11-27*, vpay `8b56831`, the `vpay-merchant-api` skill and its `references/errors.md`, and
+//! *Verified 2026-11-27*, vpay `8b56831`, the `vpay-merchant-api` skill of `vaam-apps/vpay-skills` (`19f15ba`) and its `references/errors.md`, and
 //! `backends/crates/vpay-api/src/v1/mod.rs`:
 //!
 //! - every `POST` under `/v1` needs an `Idempotency-Key` (at most 255 bytes of printable ASCII); a replay answers
