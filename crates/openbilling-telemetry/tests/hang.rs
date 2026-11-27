@@ -42,6 +42,11 @@ async fn a_collector_that_never_answers_costs_telemetry_and_never_the_caller() {
         "recording never waits for the collector"
     );
 
+    assert!(
+        guard.dropped() > 0,
+        "a queue that cannot drain drops and counts"
+    );
+
     let stopping = Instant::now();
     guard.shutdown(Duration::from_millis(500)).await;
     assert!(

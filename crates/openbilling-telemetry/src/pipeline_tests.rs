@@ -227,3 +227,145 @@ fn a_full_queue_drops_and_counts() {
         5
     );
 }
+
+#[test]
+fn a_full_log_queue_drops_and_counts() {
+    use crate::filter::{BoundedLogs, GuardedLogs};
+    use opentelemetry_sdk::logs::BatchLogProcessor;
+    let metrics = metrics();
+    let stats = Arc::new(Stats::default());
+    let tally = Tally::new(Arc::clone(&stats), metrics);
+    let exporter = InMemoryLogExporter::default();
+    let pending = Arc::new(AtomicUsize::new(4));
+    let guarded = GuardedLogs::new(exporter.clone(), Arc::clone(&pending), tally.clone());
+    let batch = BatchLogProcessor::builder(guarded).build();
+    let provider = SdkLoggerProvider::builder()
+        .with_log_processor(BoundedLogs::new(batch, pending, 4, tally))
+        .build();
+    let layer =
+        LogLayer::new(provider.logger("test")).with_filter(filter_fn(|meta: &Metadata<'_>| {
+            meta.is_event() && meta.target().starts_with("openbilling")
+        }));
+    tracing::subscriber::with_default(tracing_subscriber::registry().with(layer), || {
+        for _ in 0..5 {
+            info!(target: "openbilling_pg", "drain finished");
+        }
+    });
+    let _ = provider.force_flush();
+    assert!(exporter.get_emitted_logs().unwrap_or_default().is_empty());
+    assert_eq!(stats.dropped.load(std::sync::atomic::Ordering::Relaxed), 5);
+    assert_eq!(
+        metrics
+            .snapshot()
+            .counter(Counter::TelemetryDropped, Some(&[("signal", "logs")])),
+        5
+    );
+}
+
+/// Records what the subscriber answers when a callsite registers.
+struct Probe<S> {
+    inner: S,
+    seen: Arc<std::sync::Mutex<Vec<(String, tracing::Level, bool)>>>,
+}
+
+impl<S: tracing::Subscriber> tracing::Subscriber for Probe<S> {
+    fn register_callsite(&self, meta: &'static Metadata<'static>) -> tracing::subscriber::Interest {
+        let interest = self.inner.register_callsite(meta);
+        self.seen.lock().unwrap().push((
+            meta.target().to_owned(),
+            *meta.level(),
+            interest.is_never(),
+        ));
+        interest
+    }
+    fn enabled(&self, meta: &Metadata<'_>) -> bool {
+        self.inner.enabled(meta)
+    }
+    fn max_level_hint(&self) -> Option<tracing::metadata::LevelFilter> {
+        self.inner.max_level_hint()
+    }
+    fn new_span(&self, attrs: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        self.inner.new_span(attrs)
+    }
+    fn record(&self, span: &tracing::span::Id, values: &tracing::span::Record<'_>) {
+        self.inner.record(span, values);
+    }
+    fn record_follows_from(&self, span: &tracing::span::Id, follows: &tracing::span::Id) {
+        self.inner.record_follows_from(span, follows);
+    }
+    fn event(&self, event: &tracing::Event<'_>) {
+        self.inner.event(event);
+    }
+    fn enter(&self, span: &tracing::span::Id) {
+        self.inner.enter(span);
+    }
+    fn exit(&self, span: &tracing::span::Id) {
+        self.inner.exit(span);
+    }
+    fn clone_span(&self, id: &tracing::span::Id) -> tracing::span::Id {
+        self.inner.clone_span(id)
+    }
+    fn try_close(&self, id: tracing::span::Id) -> bool {
+        self.inner.try_close(id)
+    }
+}
+
+fn interests(providers: &crate::export::Providers) -> Vec<(String, tracing::Level, bool)> {
+    let seen = Arc::new(std::sync::Mutex::default());
+    let dispatch = tracing::Dispatch::new(Probe {
+        inner: crate::export::subscriber(providers, metrics()),
+        seen: Arc::clone(&seen),
+    });
+    tracing::dispatcher::with_default(&dispatch, || {
+        tracing::trace!(target: "hyper", "foreign trace");
+        tracing::info!(target: "sqlx::query", "foreign info");
+        tracing::debug!(target: "openbilling_pg", "our debug");
+        tracing::trace!(target: "cratestack_x", "our trace");
+        let _ = tracing::debug_span!(target: "openbilling_pg", "debug span");
+        tracing::info!(target: "openbilling_pg", "our info");
+    });
+    let seen = seen.lock().unwrap();
+    seen.iter().map(|(t, l, i)| (t.clone(), *l, *i)).collect()
+}
+
+fn assert_only_ours_at_info_are_dispatched(providers: &crate::export::Providers) {
+    let seen = interests(providers);
+    assert!(seen.len() >= 5, "{seen:?}");
+    for (target, level, never) in &seen {
+        let ours = (target.starts_with("openbilling") || target.starts_with("cratestack"))
+            && *level <= tracing::Level::INFO;
+        // With every signal off, even ours is dispatched to nobody: `never` too.
+        let any = providers.tracer.is_some() || providers.logger.is_some();
+        if !ours {
+            assert!(*never, "{target} {level} must be Interest::never: {seen:?}");
+        } else if any {
+            assert!(!*never, "{target} {level} must be looked at: {seen:?}");
+        }
+    }
+}
+
+#[test]
+fn foreign_and_verbose_callsites_are_never_dispatched_with_traces_on() {
+    let tracer = SdkTracerProvider::builder()
+        .with_simple_exporter(InMemorySpanExporter::default())
+        .build();
+    let logger = SdkLoggerProvider::builder()
+        .with_simple_exporter(InMemoryLogExporter::default())
+        .build();
+    let on = crate::export::Providers {
+        tracer: Some(tracer),
+        meter: None,
+        logger: Some(logger),
+    };
+    assert_only_ours_at_info_are_dispatched(&on);
+}
+
+#[test]
+fn foreign_and_verbose_callsites_are_never_dispatched_with_traces_off() {
+    let off = crate::export::Providers {
+        tracer: None,
+        meter: None,
+        logger: None,
+    };
+    assert_only_ours_at_info_are_dispatched(&off);
+}

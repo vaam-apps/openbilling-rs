@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generates deploy/dashboards/openbilling-queue.json (and the chart's copy). Standard library only.
 
-Run `python3 tools/dashboards/queue.py`; CI runs `tools/dashboards/generate.sh` and fails on any difference.
+Run `python3 tools/dashboards/queue_dashboard.py`; CI runs `tools/dashboards/generate.sh` and fails on any difference.
 Every metric is the Prometheus name of an instrument of the service (crates/openbilling-metrics); a test
 (crates/openbilling-telemetry/tests/dashboards.rs) holds each query to that list.
 """

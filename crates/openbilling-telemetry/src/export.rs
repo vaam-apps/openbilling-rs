@@ -21,7 +21,7 @@ use opentelemetry_sdk::Resource as SdkResource;
 use opentelemetry_sdk::logs::{
     BatchConfigBuilder as LogBatchConfig, BatchLogProcessor, SdkLoggerProvider,
 };
-use opentelemetry_sdk::metrics::{PeriodicReader, SdkMeterProvider};
+use opentelemetry_sdk::metrics::{PeriodicReader, SdkMeterProvider, Temporality};
 use opentelemetry_sdk::trace::{
     BatchConfigBuilder as SpanBatchConfig, BatchSpanProcessor, Sampler, SdkTracerProvider,
 };
@@ -124,10 +124,10 @@ fn resource(resource: &Resource) -> SdkResource {
 }
 
 /// What `build` made, to be installed on the thread that called `start`.
-struct Providers {
-    tracer: Option<SdkTracerProvider>,
-    meter: Option<SdkMeterProvider>,
-    logger: Option<SdkLoggerProvider>,
+pub(crate) struct Providers {
+    pub(crate) tracer: Option<SdkTracerProvider>,
+    pub(crate) meter: Option<SdkMeterProvider>,
+    pub(crate) logger: Option<SdkLoggerProvider>,
 }
 
 impl Providers {
@@ -239,6 +239,8 @@ fn build(
             let exporter = MetricExporter::builder()
                 .with_http()
                 .with_http_client(http)
+                // Explicit: the exporter would otherwise read OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE.
+                .with_temporality(Temporality::Cumulative)
                 .with_endpoint(url.as_str())
                 .with_protocol(Protocol::HttpJson)
                 .with_timeout(settings.timeout)
@@ -264,9 +266,9 @@ fn build(
     })
 }
 
-/// The running exporter. Dropping it ends the process's telemetry without a flush of what is queued beyond what the
-/// SDK does when its providers drop. Call [`Guard::shutdown`] on every way out to flush the queues and the metrics
-/// once more.
+/// The running exporter. Dropping it without [`Guard::shutdown`] blocks the dropping thread in the SDK's own shutdown
+/// (each provider flushes and waits, up to its default timeout), so a caller inside an async runtime should call
+/// [`Guard::shutdown`] on every way out: it flushes the queues and the metrics on a thread of its own, with a deadline.
 pub struct Guard {
     providers: Providers,
     stats: Arc<Stats>,
@@ -306,6 +308,51 @@ fn spans_and_logs<'a>(meta: &Metadata<'a>) -> bool {
     ours(meta.target()) && *meta.level() <= CAP
 }
 
+/// The `tracing` subscriber over these providers: the spans layer when traces are on, the log layer when logs are
+/// on, and the database timing. Each layer has its own filter, so a callsite of any other target, or below `INFO`,
+/// is `Interest::never` and never dispatched.
+pub(crate) fn subscriber(
+    providers: &Providers,
+    metrics: &'static Metrics,
+) -> impl tracing::Subscriber + Send + Sync {
+    // An absent layer is `None` *inside* its filter, never a `None` layer: a `None` layer has no filter and would
+    // leave every callsite of every crate interesting to the registry.
+    let spans_on = providers.tracer.is_some();
+    let spans = providers
+        .tracer
+        .as_ref()
+        .map(|provider| {
+            tracing_opentelemetry::layer()
+                .with_tracer(provider.tracer(SCOPE))
+                .with_location(false)
+                .with_threads(false)
+                .with_level(false)
+                .with_target(false)
+                .with_tracked_inactivity(false)
+        })
+        .with_filter(filter_fn(move |meta: &Metadata<'_>| {
+            spans_on && spans_and_logs(meta)
+        }));
+    let logs_on = providers.logger.is_some();
+    let logs = providers
+        .logger
+        .as_ref()
+        .map(|provider| LogLayer::new(provider.logger(SCOPE)))
+        .with_filter(filter_fn(move |meta: &Metadata<'_>| {
+            logs_on
+                && meta.is_event()
+                && meta.target().starts_with("openbilling")
+                && *meta.level() <= CAP
+        }));
+    let db = DbTimingLayer::new(metrics).with_filter(filter_fn(|meta: &Metadata<'_>| {
+        meta.is_span() && spans_and_logs(meta)
+    }));
+    tracing_subscriber::registry()
+        .with(spans)
+        .with(logs)
+        .with(db)
+}
+
 /// Starts exporting: builds the providers, installs the `tracing` subscriber of this process and the recorder of
 /// `metrics`. Call it once.
 ///
@@ -329,28 +376,7 @@ pub fn start(settings: &Settings, metrics: &'static Metrics) -> Result<Guard, St
         .join()
         .map_err(|_| StartError::Client)??;
 
-    let spans = providers.tracer.as_ref().map(|provider| {
-        tracing_opentelemetry::layer()
-            .with_tracer(provider.tracer(SCOPE))
-            .with_location(false)
-            .with_threads(false)
-            .with_level(false)
-            .with_target(false)
-            .with_tracked_inactivity(false)
-            .with_filter(filter_fn(spans_and_logs))
-    });
-    let logs = providers.logger.as_ref().map(|provider| {
-        LogLayer::new(provider.logger(SCOPE)).with_filter(filter_fn(|meta: &Metadata<'_>| {
-            meta.is_event() && meta.target().starts_with("openbilling") && *meta.level() <= CAP
-        }))
-    });
-    let db = DbTimingLayer::new(metrics).with_filter(filter_fn(|meta: &Metadata<'_>| {
-        meta.is_span() && spans_and_logs(meta)
-    }));
-    let subscriber = tracing_subscriber::registry()
-        .with(spans)
-        .with(logs)
-        .with(db);
+    let subscriber = subscriber(&providers, metrics);
     if tracing::subscriber::set_global_default(subscriber).is_err() {
         providers.shutdown(Duration::from_millis(100));
         return Err(StartError::Subscriber);

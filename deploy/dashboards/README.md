@@ -1,6 +1,6 @@
 # Dashboards
 
-Two Grafana dashboards for the operators of openbilling-rs, as code: the JSON in this folder is the dashboard, and **it is generated** by the Python scripts in [`tools/dashboards/`](../../tools/dashboards/) (`sh tools/dashboards/generate.sh`; standard library only). Edit the script, never the JSON: CI regenerates the files and fails on any difference. A panel is one call of `timeseries` or `stat` in `service.py` or `queue.py`.
+Two Grafana dashboards for the operators of openbilling-rs, as code: the JSON in this folder is the dashboard, and **it is generated** by the Python scripts in [`tools/dashboards/`](../../tools/dashboards/) (`sh tools/dashboards/generate.sh`; standard library only). Edit the script, never the JSON: CI regenerates the files and fails on any difference. A panel is one call of `timeseries` or `stat` in `service.py` or `queue_dashboard.py`.
 
 They read the metrics the service exports over OpenTelemetry ([`openbilling-telemetry`](../../crates/openbilling-telemetry/README.md),
 [ADR 0007](../../docs/adr/0007-opentelemetry-through-a-layer-over-cratestacks-spans.md)) once a collector has put

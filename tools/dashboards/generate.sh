@@ -3,6 +3,6 @@
 # `git diff --exit-code deploy/`: a dashboard is edited in tools/dashboards/, never in the JSON.
 set -eu
 cd "$(dirname "$0")"
-for script in service.py queue.py; do
+for script in service.py queue_dashboard.py; do
   python3 -B "$script"
 done
