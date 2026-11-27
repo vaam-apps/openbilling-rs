@@ -17,6 +17,7 @@ clap.workspace = true
 cratestack.workspace = true
 openbilling-core.workspace = true
 openbilling-http.workspace = true
+openbilling-jwt.workspace = true
 openbilling-pg.workspace = true
 openbilling-vpay.workspace = true
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "signal", "time"] }

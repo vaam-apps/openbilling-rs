@@ -14,9 +14,10 @@ YAML, rates raw usage events at intake by the version in force when they happene
 into a partitioned queue once, drains them into a double-entry ledger across an owner's accounts, and books payments,
 promotions, adjustments, refunds and chargebacks. Every rule is SQL; Rust holds the types, the ports and the tests.
 Credits from a payment provider (vpay first) and an external API in CrateStack are built
-([ADR 0003](docs/adr/0003-credits-from-a-payment-provider.md)), with callers refused until a real token verifier is
-wired. The database tests have not yet run against a PostgreSQL 19 outside CI. The release pipeline (a signed image
-and a Helm chart, [ADR 0005](docs/adr/0005-release-fixed-versions-image-and-chart.md)) is written and has not yet run.
+([ADR 0003](docs/adr/0003-credits-from-a-payment-provider.md)), with callers authenticated by a JWT verifier against
+an issuer's keys, and refused when none is configured. The database tests have not yet run against a PostgreSQL 19
+outside CI. The release pipeline (a signed image and a Helm chart,
+[ADR 0005](docs/adr/0005-release-fixed-versions-image-and-chart.md)) is written and has not yet run.
 
 ## Features
 
@@ -46,8 +47,8 @@ Legend: ✅ built and tested in CI · ⚠️ built, but partial or not yet prove
 | Reads | Balance, lots, event outcomes, usage per day | ✅ | SQL functions today; an outcome is a plain query since slice 3; through the API as CrateStack models and `query` blocks (below) |
 | Reads | Monthly statements | ✅ | A CrateStack `query` block: usage per day, credits, reversals, allowances, a total per kind. Run in CI on PostgreSQL 19 |
 | Payments | A payment-provider port with vpay as the first adapter | ⚠️ | Signed webhooks become once-only credits; top-ups through the provider; each payment read back before it is credited ([ADR 0003](docs/adr/0003-credits-from-a-payment-provider.md)). The port's suite runs against a vpay stand-in; never against a real vpay; the vpay token is minted outside |
-| API | External API through CrateStack: on-demand queries, custom selects, policies | ✅ | Models over the ledger's tables, `query` blocks behind read procedures, mutation procedures that call the SQL functions, an `Idempotency-Key` on every write; the contract lock and `docs/api/ops.json` checked in CI. Its flow tests run in CI on PostgreSQL 19; no outside caller can use it until a token verifier ships (next row) |
-| API | Authentication of API callers, fail-closed | ⚠️ | A bearer `AuthProvider` over a `TokenVerifier` port: no token is a `401`. Only `RefuseAll` ships, so every call is refused until a JWT verifier against an issuer is built; the service binds to `127.0.0.1` |
+| API | External API through CrateStack: on-demand queries, custom selects, policies | ✅ | Models over the ledger's tables, `query` blocks behind read procedures, mutation procedures that call the SQL functions, an `Idempotency-Key` on every write; the contract lock and `docs/api/ops.json` checked in CI. Its flow tests run in CI on PostgreSQL 19 |
+| API | Authentication of API callers, fail-closed | ✅ | A bearer `AuthProvider` over a `TokenVerifier` port: no token, or one refused, is a `401`. `openbilling-jwt` verifies a JWT against one issuer's JWKS (`RS256`, `ES256`, `EdDSA` only; `iss` and `aud` exact; `exp` required; roles from a configured claim), signatures on ring; with no issuer configured every call is refused. Never tried against a real identity provider, only a test issuer |
 | Testing | A conformance suite for every `LedgerStore` | ✅ | |
 | Testing | A conformance suite for every `PriceBook` | ✅ | 9 cases, run in CI on PostgreSQL 19 |
 | Testing | End-to-end scenarios against the real service and PostgreSQL | 📋 | Metered usage, prepaid balance, organisation caps, once-only, concurrency, price versions, statements, payment round-trip |
@@ -119,6 +120,7 @@ secret.
 | `crates/openbilling-testkit` | The conformance suites of `LedgerStore` and `PriceBook`, one macro each, and of `PaymentProvider`, and their fixtures |
 | `crates/openbilling-vpay` | The vpay adapter of `PaymentProvider`, and a stand-in for vpay's API for tests |
 | `crates/openbilling-http` | The external API: a CrateStack schema over the ledger's tables, its procedures, bearer authentication, and the payment provider's webhook |
+| `crates/openbilling-jwt` | The API's token verifier: a JWT against an issuer's keys, on ring |
 | `bin/openbilling` | The service binary: `openbilling serve` |
 | `docker/openbilling/` | The image: cargo-chef, distroless, non-root, a smoke stage |
 | `deploy/openbilling/` | The Helm chart, on the bjw-s common library 5.3.0, and its checks (`tests/`) |

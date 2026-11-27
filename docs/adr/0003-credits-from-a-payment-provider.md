@@ -3,6 +3,21 @@
 Status: **Proposed** (2026-11-27). The owner's decisions quoted under *Context* stand; the rest is for the owner to
 confirm.
 
+*Amended 2026-11-27 (ANR-1142, a token verifier):* the verifier point 16 waited for is built, as
+`crates/openbilling-jwt`, behind the same `TokenVerifier` port. Point 16 carries a marker. What it is:
+
+| # | What | Why |
+|---|---|---|
+| D1 | **A JWT bearer verifier against one issuer**, configured by `OPENBILLING_AUTH_ISSUER` and `OPENBILLING_AUTH_AUDIENCE` (both or neither). With neither, the service keeps `RefuseAll`; nothing is ever open by default | Fail closed, as point 16 says |
+| D2 | **What a token must be**: a compact JWS with no `crit`; `alg` `RS256`, `ES256` or `EdDSA` (Ed25519), never `none` or `HS*`, and the algorithm of the key its `kid` names; `iss` exactly the issuer; `aud` holding exactly the audience; `exp` required and not passed, `nbf` honoured, 60 s of leeway; `sub` an owner id | The usual resource-server checks; a public key can never be used as an HMAC secret |
+| D3 | **Keys from the issuer's JWKS**, found through its discovery document (which must name the issuer exactly) or a configured URL, `https` or loopback `http` only, no redirects; kept 5 minutes, fetched again early for an unknown `kid` at most every 30 s, served stale for an hour while the issuer is down, and `503` after that, never an acceptance | An issuer that rotates keys is followed; an unknown `kid` cannot make the service hammer the issuer |
+| D4 | **Roles from a configured claim** (a dotted path, `roles` by default), mapped by a configured table to `operator` and `producer`; an unnamed value gives no role. An owner needs no role: `sub` is the owner | Issuers name roles their own way (Keycloak's `realm_access.roles`, for one) |
+| D5 | **Signatures on ring.** jsonwebtoken 11 checks the claims, with a crypto provider of the crate's own on ring. Authkestra's resource server (`authkestra-resource` 0.15.3) was the first choice and is not used: it depends on jsonwebtoken's `rust_crypto` backend, which brings `rsa` 0.9 under RUSTSEC-2023-0071 (patched only in `rsa` 0.10; *verified 2026-11-27*, rustsec/advisory-db), which `cargo deny` refuses, and a second crypto library beside ring. jsonwebtoken's other backend is aws-lc-rs, which this workspace keeps out | One crypto library, the one rustls already uses here |
+| D6 | **The default address stays `127.0.0.1:8080`**; binding beyond it is the operator's `OPENBILLING_LISTEN` once an issuer is configured | The listener does not open itself because a setting appeared |
+
+Not built: DPoP or mTLS-bound tokens, several issuers at once, token introspection, a conformance suite for
+`TokenVerifier` (the verifier's own tests and the end-to-end suite hold it).
+
 ## Summary
 
 openbilling never touches card or wallet data. To take money it asks a **payment provider**, through a port, for a
@@ -94,6 +109,7 @@ this record says about it was read in vpay's source at `8b56831` and in its skil
 16. **Callers are authenticated, fail closed.** CrateStack's `AuthProvider` takes a bearer token and asks a
     `TokenVerifier` port; no token, or one it refuses, is a `401` before anything runs. The service ships with
     `RefuseAll`, so until a real verifier is wired every `/v1` call is a `401`. It binds to `127.0.0.1` by default.
+    *Amended 2026-11-27 (D1 to D6): the JWT verifier is built; `RefuseAll` stays the default when no issuer is set.*
 17. **Every write carries an `Idempotency-Key`**: a mutation without one is a `400`. CrateStack's idempotency layer
     answers a replay with the first answer for 24 hours. The operation's own once-only id is in its arguments too
     (the account id, the credit id, each event's id, the top-up key), so a replay after that window is still the
@@ -174,7 +190,8 @@ by their provider ids.
 
 **Bad, or to be managed**
 
-- **Nothing is served to callers until a token verifier is wired**: `RefuseAll` is the only one that ships.
+- **Nothing is served to callers until an issuer is configured**: without one the service keeps `RefuseAll`
+  (amended 2026-11-27: a JWT verifier ships, D1).
 - **A payment's target lives in vpay's metadata**, not in openbilling. A payment whose metadata is edited at vpay
   credits another account of the same owner, or none.
 - **vpay's refunds never reach `succeeded` today** (*verified*, below): no reversal will be booked from vpay until it
@@ -202,7 +219,8 @@ by their provider ids.
 
 | Question | Recommendation |
 |---|---|
-| A real token verifier: a JWT against an issuer's keys | Authkestra's resource server or CrateStack's multi-issuer JWKS verifier behind the `TokenVerifier` port; then bind beyond `127.0.0.1` |
+| ~~A real token verifier: a JWT against an issuer's keys~~ | ~~Authkestra's resource server or CrateStack's multi-issuer JWKS verifier behind the `TokenVerifier` port; then bind beyond `127.0.0.1`~~ **Built 2026-11-27** (D1 to D6): `openbilling-jwt`, on jsonwebtoken and ring |
+| Several issuers, DPoP-bound tokens | One issuer, plain bearer tokens, as built; add a trust map and DPoP when a deployment needs them |
 | Minting and rotating the vpay token | A `client_credentials` client with an RS256 `private_key_jwt` beside the service, or in the adapter |
 | Payments whose `metadata` was changed at vpay | Record the top-up's target in openbilling when it is created, and refuse a read-back that differs |
 | A periodic reconciliation of pending top-ups | List pending payments and read each back, as vpay's reconciler does for rails |

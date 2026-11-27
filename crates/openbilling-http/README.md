@@ -42,9 +42,10 @@ provider retries.
 ## Authentication
 
 `auth::BearerAuth<V: TokenVerifier>` is CrateStack's `AuthProvider`: no bearer token, or one `V` refuses, is a
-`401` before anything runs. A `Principal` is the token's `sub` (an owner) and `roles`. `auth::RefuseAll` refuses
-every token and is what the service ships with: **until a real verifier is wired (a JWT against an issuer's keys,
-ADR 0003 *Still open*), every `/v1` call is a `401`**. `auth::StaticTokens` is a fixed table for tests only.
+`401` before anything runs (a `503` when `V` cannot decide now). A `Principal` is the token's `sub` (an owner) and
+`roles`. The service's verifier is [`openbilling-jwt`](../openbilling-jwt/README.md)'s `JwtVerifier`, a JWT against
+one issuer's keys, when an issuer and an audience are configured; without them it is `auth::RefuseAll`, which
+refuses every token, so every `/v1` call is a `401`. `auth::StaticTokens` is a fixed table for tests only.
 
 ## The ledger's tables are not CrateStack's
 
