@@ -67,30 +67,47 @@ async fn partitions_forever(ledger: PgLedger) {
     }
 }
 
-/// Resolves on Ctrl-C (`SIGINT`) or, on Unix, `SIGTERM`. Kubernetes stops a pod with `SIGTERM`, and a process that
-/// is PID 1 in its container ignores a signal it has no handler for: without this, a pod would wait out its grace
-/// period and be killed, never draining its connections.
-async fn shutdown_signal() {
+/// The stop signals, registered before `serve` says it is listening: a signal that arrives after that line must
+/// find its handler installed, or the default action would end the process without a clean stop.
+struct StopSignals {
     #[cfg(unix)]
-    {
-        use tokio::signal::unix::{SignalKind, signal};
-        match signal(SignalKind::terminate()) {
-            Ok(mut terminate) => {
-                tokio::select! {
-                    _ = tokio::signal::ctrl_c() => {}
-                    _ = terminate.recv() => {}
+    terminate: Option<tokio::signal::unix::Signal>,
+}
+
+impl StopSignals {
+    fn register() -> Self {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{SignalKind, signal};
+            let terminate = match signal(SignalKind::terminate()) {
+                Ok(terminate) => Some(terminate),
+                Err(_) => {
+                    anstream::eprintln!(
+                        "{WARN}openbilling:{WARN:#} no SIGTERM handler; stopping on Ctrl-C only"
+                    );
+                    None
                 }
-            }
-            Err(_) => {
-                anstream::eprintln!(
-                    "{WARN}openbilling:{WARN:#} no SIGTERM handler; stopping on Ctrl-C only"
-                );
-                let _ = tokio::signal::ctrl_c().await;
-            }
+            };
+            Self { terminate }
+        }
+        #[cfg(not(unix))]
+        {
+            Self {}
         }
     }
-    #[cfg(not(unix))]
-    {
+
+    /// Resolves on Ctrl-C (`SIGINT`) or, on Unix, `SIGTERM`. Kubernetes stops a pod with `SIGTERM`, and a process
+    /// that is PID 1 in its container ignores a signal it has no handler for: without this, a pod would wait out its
+    /// grace period and be killed, never draining its connections.
+    async fn wait(self) {
+        #[cfg(unix)]
+        if let Some(mut terminate) = self.terminate {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = terminate.recv() => {}
+            }
+            return;
+        }
         let _ = tokio::signal::ctrl_c().await;
     }
 }
@@ -128,8 +145,9 @@ pub async fn serve(settings: Settings) -> Result<()> {
     });
     let app = router(services, store.pool().clone(), BearerAuth::new(RefuseAll));
 
-    tokio::spawn(drain_forever(ledger.clone()));
-    tokio::spawn(partitions_forever(ledger));
+    let stop = StopSignals::register();
+    let drain = tokio::spawn(drain_forever(ledger.clone()));
+    let partitions = tokio::spawn(partitions_forever(ledger));
 
     let listener = tokio::net::TcpListener::bind(settings.listen)
         .await
@@ -142,9 +160,15 @@ pub async fn serve(settings: Settings) -> Result<()> {
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
-    .with_graceful_shutdown(shutdown_signal())
+    .with_graceful_shutdown(stop.wait())
     .await
     .context("serving")?;
+    // The drain holds a LISTEN connection for as long as it runs, and closing the pool waits for every connection
+    // to come back: stop both loops first. A drain cut short rolls its transaction back; the table is the truth.
+    drain.abort();
+    partitions.abort();
+    let _ = drain.await;
+    let _ = partitions.await;
     store.close().await;
     Ok(())
 }
