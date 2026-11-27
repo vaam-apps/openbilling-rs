@@ -1,0 +1,30 @@
+[package]
+name = "openbilling-http"
+description = "The external API of openbilling-rs: a CrateStack schema over the ledger, and the payment provider's webhook."
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+cratestack.workspace = true
+openbilling-core.workspace = true
+
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["time"] }
+
+[dev-dependencies]
+openbilling-pg.workspace = true
+openbilling-testkit.workspace = true
+openbilling-vpay = { workspace = true, features = ["stand-in"] }
+sqlx.workspace = true
+tokio = { workspace = true, features = ["macros", "net", "rt", "rt-multi-thread"] }
+tower.workspace = true
+
+[lints]
+workspace = true

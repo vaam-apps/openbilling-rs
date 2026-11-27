@@ -1,0 +1,123 @@
+//! `openbilling serve`: connect, migrate, then run the API, the drain and the partition job until a signal.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use anyhow::{Context, Result};
+use openbilling_core::{Classify, LedgerStore};
+use openbilling_http::auth::{BearerAuth, RefuseAll};
+use openbilling_http::{Services, prepare, router};
+use openbilling_pg::{LedgerSettings, PgLedger, PgStore, Woken};
+use openbilling_vpay::VpayProvider;
+
+use crate::config::Settings;
+use crate::{ACCENT, WARN};
+
+/// How many events one drain takes.
+const DRAIN_BATCH: u32 = 500;
+/// How long the drain waits for a notification before it polls anyway (ADR 0001, point 16).
+const POLL: Duration = Duration::from_secs(5);
+/// How often partitions are made ahead (ADR 0001, point 10).
+const PARTITIONS_EVERY: Duration = Duration::from_secs(3600);
+
+/// Drains until a drain takes nothing, then waits for a wake-up or the poll. A failure is reported by its class
+/// and retried after the poll: the table is the truth.
+async fn drain_forever(ledger: PgLedger) {
+    let mut wakeup = match ledger.wakeup().await {
+        Ok(wakeup) => Some(wakeup),
+        Err(error) => {
+            anstream::eprintln!(
+                "{WARN}openbilling:{WARN:#} no LISTEN connection ({}); polling only",
+                error.class()
+            );
+            None
+        }
+    };
+    loop {
+        match ledger.drain(DRAIN_BATCH).await {
+            Ok(report) if !report.decided.is_empty() => continue,
+            Ok(_) => {}
+            Err(error) => {
+                anstream::eprintln!(
+                    "{WARN}openbilling:{WARN:#} drain failed ({})",
+                    error.class()
+                );
+            }
+        }
+        match wakeup.as_mut() {
+            Some(wakeup) => match wakeup.wait(POLL).await {
+                Ok(Woken::Notified | Woken::Polled) => {}
+                Err(_) => tokio::time::sleep(POLL).await,
+            },
+            None => tokio::time::sleep(POLL).await,
+        }
+    }
+}
+
+async fn partitions_forever(ledger: PgLedger) {
+    loop {
+        tokio::time::sleep(PARTITIONS_EVERY).await;
+        if let Err(error) = ledger.prepare_partitions().await {
+            anstream::eprintln!(
+                "{WARN}openbilling:{WARN:#} preparing partitions failed ({})",
+                error.class()
+            );
+        }
+    }
+}
+
+pub async fn serve(settings: Settings) -> Result<()> {
+    // The URL is never in an error: openbilling-pg's errors are fixed text.
+    let store = PgStore::connect(settings.database_url.expose())
+        .await
+        .context("connecting to PostgreSQL")?;
+    store.migrate().await.context("applying the migrations")?;
+    let ledger = PgLedger::new(&store, LedgerSettings::default());
+    ledger
+        .prepare_partitions()
+        .await
+        .context("preparing partitions")?;
+    prepare(store.pool())
+        .await
+        .map_err(|_| anyhow::anyhow!("creating CrateStack's idempotency table failed"))?;
+    let provider = settings
+        .vpay
+        .map(VpayProvider::new)
+        .transpose()
+        .context("the vpay configuration")?;
+    if provider.is_none() {
+        anstream::eprintln!(
+            "{WARN}openbilling:{WARN:#} no payment provider configured; top-ups and webhooks answer 503"
+        );
+    }
+    anstream::eprintln!(
+        "{WARN}openbilling:{WARN:#} no token verifier configured; every /v1 call answers 401 (ADR 0003, still open)"
+    );
+    let services = Arc::new(Services {
+        ledger: ledger.clone(),
+        provider,
+    });
+    let app = router(services, store.pool().clone(), BearerAuth::new(RefuseAll));
+
+    tokio::spawn(drain_forever(ledger.clone()));
+    tokio::spawn(partitions_forever(ledger));
+
+    let listener = tokio::net::TcpListener::bind(settings.listen)
+        .await
+        .with_context(|| format!("listening on {}", settings.listen))?;
+    anstream::eprintln!(
+        "{ACCENT}openbilling:{ACCENT:#} listening on {}",
+        settings.listen
+    );
+    cratestack::axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(async {
+        let _ = tokio::signal::ctrl_c().await;
+    })
+    .await
+    .context("serving")?;
+    store.close().await;
+    Ok(())
+}

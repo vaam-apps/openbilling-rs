@@ -1,0 +1,2893 @@
+{
+  "format": 1,
+  "domain": "cratestack/op-contract/v1",
+  "contracts": {
+    "02bb5d84c66a32f30cc472a50b6a942cbde5b12c074fc71986d3441caf996e40": {
+      "closure": {
+        "enums": [],
+        "models": [],
+        "types": [
+          {
+            "fields": [
+              {
+                "attributes": [],
+                "name": "answer",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "eventId",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              }
+            ],
+            "name": "EventAnswer"
+          },
+          {
+            "fields": [
+              {
+                "attributes": [],
+                "name": "accepted",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "Int"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "answers",
+                "ty": {
+                  "arity": "list",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "EventAnswer"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "replayed",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "Int"
+                }
+              }
+            ],
+            "name": "IntakeResult"
+          },
+          {
+            "fields": [
+              {
+                "attributes": [],
+                "name": "events",
+                "ty": {
+                  "arity": "list",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "UsageEventInput"
+                }
+              }
+            ],
+            "name": "UsageBatch"
+          },
+          {
+            "fields": [
+              {
+                "attributes": [],
+                "name": "amountMicros",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "BigInt"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "currency",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "eventId",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "member",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "occurredAt",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "DateTime"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "owner",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              }
+            ],
+            "name": "UsageEventInput"
+          }
+        ],
+        "views": []
+      },
+      "events": null,
+      "key": "POST /$procs/recordUsage",
+      "kind": "unary",
+      "model": null,
+      "procedure": {
+        "args": [
+          {
+            "name": "args",
+            "ty": {
+              "arity": "required",
+              "generic_args": [],
+              "ident_args": [],
+              "int_args": [],
+              "name": "UsageBatch"
+            }
+          }
+        ],
+        "attributes": [],
+        "kind": "mutation",
+        "name": "recordUsage",
+        "return_type": {
+          "arity": "required",
+          "generic_args": [],
+          "ident_args": [],
+          "int_args": [],
+          "name": "IntakeResult"
+        }
+      },
+      "transport": "rest",
+      "verb": "mutation"
+    },
+    "0634f0385fa6084c534183a32bdeb4aec64890c145244254044435797c920de2": {
+      "closure": {
+        "enums": [],
+        "models": [],
+        "types": [
+          {
+            "fields": [
+              {
+                "attributes": [],
+                "name": "amountMicros",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "BigInt"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "cancelUrl",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "currency",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "key",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "label",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "owner",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "successUrl",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              }
+            ],
+            "name": "TopUpInput"
+          },
+          {
+            "fields": [
+              {
+                "attributes": [],
+                "name": "checkoutId",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "checkoutUrl",
+                "ty": {
+                  "arity": "optional",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "payment",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "status",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              }
+            ],
+            "name": "TopUpStarted"
+          }
+        ],
+        "views": []
+      },
+      "events": null,
+      "key": "POST /$procs/startTopUp",
+      "kind": "unary",
+      "model": null,
+      "procedure": {
+        "args": [
+          {
+            "name": "args",
+            "ty": {
+              "arity": "required",
+              "generic_args": [],
+              "ident_args": [],
+              "int_args": [],
+              "name": "TopUpInput"
+            }
+          }
+        ],
+        "attributes": [],
+        "kind": "mutation",
+        "name": "startTopUp",
+        "return_type": {
+          "arity": "required",
+          "generic_args": [],
+          "ident_args": [],
+          "int_args": [],
+          "name": "TopUpStarted"
+        }
+      },
+      "transport": "rest",
+      "verb": "mutation"
+    },
+    "0a3d073e6279db0fc3da8c6ad1c58fd333632851d36b35612c608c80574f5caa": {
+      "closure": {
+        "enums": [
+          {
+            "name": "LotKind",
+            "variants": [
+              "allowance",
+              "promotion",
+              "adjustment",
+              "payment"
+            ]
+          }
+        ],
+        "models": [
+          {
+            "attributes": [
+              "@@paged"
+            ],
+            "fields": [
+              {
+                "attributes": [
+                  "@id"
+                ],
+                "name": "accountId",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "currency",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "label",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [
+                  "@relation(fields:[accountId],references:[accountId])"
+                ],
+                "name": "lots",
+                "ty": {
+                  "arity": "list",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "Lot"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "openedAt",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "DateTime"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "owner",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              }
+            ],
+            "name": "Account"
+          },
+          {
+            "attributes": [
+              "@@paged"
+            ],
+            "fields": [
+              {
+                "attributes": [
+                  "@relation(fields:[accountId],references:[accountId])"
+                ],
+                "name": "account",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "Account"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "accountId",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "amount",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "BigInt"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "creditId",
+                "ty": {
+                  "arity": "optional",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "expiresAt",
+                "ty": {
+                  "arity": "optional",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "DateTime"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "kind",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "LotKind"
+                }
+              },
+              {
+                "attributes": [
+                  "@id"
+                ],
+                "name": "lotId",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "Uuid"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "openedAt",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "DateTime"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "remaining",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "BigInt"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "source",
+                "ty": {
+                  "arity": "optional",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              }
+            ],
+            "name": "Lot"
+          }
+        ],
+        "types": [],
+        "views": []
+      },
+      "events": null,
+      "key": "GET /lots/{id}",
+      "kind": "unary",
+      "model": "Lot",
+      "procedure": null,
+      "transport": "rest",
+      "verb": "get"
+    },
+    "25771176cccabd5bea211c41d5df76c07744d85ed30cbb36e9cd86058c8d776a": {
+      "closure": {
+        "enums": [
+          {
+            "name": "LotKind",
+            "variants": [
+              "allowance",
+              "promotion",
+              "adjustment",
+              "payment"
+            ]
+          }
+        ],
+        "models": [
+          {
+            "attributes": [
+              "@@paged"
+            ],
+            "fields": [
+              {
+                "attributes": [
+                  "@id"
+                ],
+                "name": "accountId",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "currency",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "label",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [
+                  "@relation(fields:[accountId],references:[accountId])"
+                ],
+                "name": "lots",
+                "ty": {
+                  "arity": "list",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "Lot"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "openedAt",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "DateTime"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "owner",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              }
+            ],
+            "name": "Account"
+          },
+          {
+            "attributes": [
+              "@@paged"
+            ],
+            "fields": [
+              {
+                "attributes": [
+                  "@relation(fields:[accountId],references:[accountId])"
+                ],
+                "name": "account",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "Account"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "accountId",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "amount",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "BigInt"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "creditId",
+                "ty": {
+                  "arity": "optional",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "expiresAt",
+                "ty": {
+                  "arity": "optional",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "DateTime"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "kind",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "LotKind"
+                }
+              },
+              {
+                "attributes": [
+                  "@id"
+                ],
+                "name": "lotId",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "Uuid"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "openedAt",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "DateTime"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "remaining",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "BigInt"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "source",
+                "ty": {
+                  "arity": "optional",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              }
+            ],
+            "name": "Lot"
+          }
+        ],
+        "types": [],
+        "views": []
+      },
+      "events": null,
+      "key": "GET /lots",
+      "kind": "unary",
+      "model": "Lot",
+      "procedure": null,
+      "transport": "rest",
+      "verb": "list"
+    },
+    "30ae36f7d09bb29dbb9974878295acb8c47bf7e904841b05393cade51e6de73f": {
+      "closure": {
+        "enums": [],
+        "models": [],
+        "types": [
+          {
+            "fields": [
+              {
+                "attributes": [],
+                "name": "currency",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "member",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "owner",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              }
+            ],
+            "name": "AllowedInput"
+          },
+          {
+            "fields": [
+              {
+                "attributes": [],
+                "name": "allowed",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "Boolean"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "balanceMicros",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "BigInt"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "memberRemainingMicros",
+                "ty": {
+                  "arity": "optional",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "BigInt"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "refused",
+                "ty": {
+                  "arity": "optional",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              }
+            ],
+            "name": "AllowedRow"
+          }
+        ],
+        "views": []
+      },
+      "events": null,
+      "key": "POST /$procs/getAllowed",
+      "kind": "unary",
+      "model": null,
+      "procedure": {
+        "args": [
+          {
+            "name": "args",
+            "ty": {
+              "arity": "required",
+              "generic_args": [],
+              "ident_args": [],
+              "int_args": [],
+              "name": "AllowedInput"
+            }
+          }
+        ],
+        "attributes": [],
+        "kind": "query",
+        "name": "getAllowed",
+        "return_type": {
+          "arity": "required",
+          "generic_args": [],
+          "ident_args": [],
+          "int_args": [],
+          "name": "AllowedRow"
+        }
+      },
+      "transport": "rest",
+      "verb": "query"
+    },
+    "391cf9b37331050cb6f1218512a6a33cca3055da4db6a5ead0a16340bb679d26": {
+      "closure": {
+        "enums": [
+          {
+            "name": "LotKind",
+            "variants": [
+              "allowance",
+              "promotion",
+              "adjustment",
+              "payment"
+            ]
+          }
+        ],
+        "models": [],
+        "types": [
+          {
+            "fields": [
+              {
+                "attributes": [],
+                "name": "currencies",
+                "ty": {
+                  "arity": "list",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "labels",
+                "ty": {
+                  "arity": "list",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "lotOrder",
+                "ty": {
+                  "arity": "list",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "LotOrderEntry"
+                }
+              }
+            ],
+            "name": "ConfigurationInput"
+          },
+          {
+            "fields": [
+              {
+                "attributes": [],
+                "name": "done",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "Boolean"
+                }
+              }
+            ],
+            "name": "Done"
+          },
+          {
+            "fields": [
+              {
+                "attributes": [],
+                "name": "kind",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "LotKind"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "soonestExpiryFirst",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "Boolean"
+                }
+              }
+            ],
+            "name": "LotOrderEntry"
+          }
+        ],
+        "views": []
+      },
+      "events": null,
+      "key": "POST /$procs/configure",
+      "kind": "unary",
+      "model": null,
+      "procedure": {
+        "args": [
+          {
+            "name": "args",
+            "ty": {
+              "arity": "required",
+              "generic_args": [],
+              "ident_args": [],
+              "int_args": [],
+              "name": "ConfigurationInput"
+            }
+          }
+        ],
+        "attributes": [],
+        "kind": "mutation",
+        "name": "configure",
+        "return_type": {
+          "arity": "required",
+          "generic_args": [],
+          "ident_args": [],
+          "int_args": [],
+          "name": "Done"
+        }
+      },
+      "transport": "rest",
+      "verb": "mutation"
+    },
+    "4c556258dbda9355f764799dcc8e6d97b515d55fdd07dbc34eaef8eccadba2a6": {
+      "closure": {
+        "enums": [
+          {
+            "name": "OutcomeState",
+            "variants": [
+              "pending",
+              "applied",
+              "refused"
+            ]
+          }
+        ],
+        "models": [
+          {
+            "attributes": [
+              "@@paged"
+            ],
+            "fields": [
+              {
+                "attributes": [],
+                "name": "amount",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "BigInt"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "currency",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "decidedAt",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "DateTime"
+                }
+              },
+              {
+                "attributes": [
+                  "@id"
+                ],
+                "name": "eventId",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "member",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "occurredAt",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "DateTime"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "owner",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "reason",
+                "ty": {
+                  "arity": "optional",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "state",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "OutcomeState"
+                }
+              }
+            ],
+            "name": "UsageOutcome"
+          }
+        ],
+        "types": [],
+        "views": []
+      },
+      "events": null,
+      "key": "GET /usage_outcomes",
+      "kind": "unary",
+      "model": "UsageOutcome",
+      "procedure": null,
+      "transport": "rest",
+      "verb": "list"
+    },
+    "5c4ddfaf28017049b8972a6fc1c42f1214b40d7a47935c43469f2a6a3ed51601": {
+      "closure": {
+        "enums": [],
+        "models": [],
+        "types": [
+          {
+            "fields": [
+              {
+                "attributes": [],
+                "name": "accountId",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "amountMicros",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "BigInt"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "bookedAt",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "DateTime"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "creditId",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "expiresAt",
+                "ty": {
+                  "arity": "optional",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "DateTime"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "label",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "source",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              }
+            ],
+            "name": "CreditRow"
+          },
+          {
+            "fields": [
+              {
+                "attributes": [],
+                "name": "currency",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "owner",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              }
+            ],
+            "name": "OwnerCurrency"
+          }
+        ],
+        "views": []
+      },
+      "events": null,
+      "key": "POST /$procs/listCredits",
+      "kind": "sequence",
+      "model": null,
+      "procedure": {
+        "args": [
+          {
+            "name": "args",
+            "ty": {
+              "arity": "required",
+              "generic_args": [],
+              "ident_args": [],
+              "int_args": [],
+              "name": "OwnerCurrency"
+            }
+          }
+        ],
+        "attributes": [],
+        "kind": "query",
+        "name": "listCredits",
+        "return_type": {
+          "arity": "list",
+          "generic_args": [],
+          "ident_args": [],
+          "int_args": [],
+          "name": "CreditRow"
+        }
+      },
+      "transport": "rest",
+      "verb": "query"
+    },
+    "638cd03a325311e9905cbac6cd44ac30094b9ecfe4825130d88ec99c384cc1e0": {
+      "closure": {
+        "enums": [],
+        "models": [],
+        "types": [
+          {
+            "fields": [
+              {
+                "attributes": [],
+                "name": "accountId",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "availableMicros",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "BigInt"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "currency",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "debtMicros",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "BigInt"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "label",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "netMicros",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "BigInt"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "ownerAvailableMicros",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "BigInt"
+                }
+              }
+            ],
+            "name": "BalanceRow"
+          },
+          {
+            "fields": [
+              {
+                "attributes": [],
+                "name": "currency",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "owner",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              }
+            ],
+            "name": "OwnerCurrency"
+          }
+        ],
+        "views": []
+      },
+      "events": null,
+      "key": "POST /$procs/getBalance",
+      "kind": "sequence",
+      "model": null,
+      "procedure": {
+        "args": [
+          {
+            "name": "args",
+            "ty": {
+              "arity": "required",
+              "generic_args": [],
+              "ident_args": [],
+              "int_args": [],
+              "name": "OwnerCurrency"
+            }
+          }
+        ],
+        "attributes": [],
+        "kind": "query",
+        "name": "getBalance",
+        "return_type": {
+          "arity": "list",
+          "generic_args": [],
+          "ident_args": [],
+          "int_args": [],
+          "name": "BalanceRow"
+        }
+      },
+      "transport": "rest",
+      "verb": "query"
+    },
+    "a13abe1675434d57d4e63232e493a29876334b50fe985e90ecb069e6c7a6973a": {
+      "closure": {
+        "enums": [],
+        "models": [],
+        "types": [
+          {
+            "fields": [
+              {
+                "attributes": [],
+                "name": "id",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              }
+            ],
+            "name": "ProviderObject"
+          },
+          {
+            "fields": [
+              {
+                "attributes": [],
+                "name": "accountId",
+                "ty": {
+                  "arity": "optional",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "outcome",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "replayed",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "Boolean"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "transaction",
+                "ty": {
+                  "arity": "optional",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              }
+            ],
+            "name": "Settlement"
+          }
+        ],
+        "views": []
+      },
+      "events": null,
+      "key": "POST /$procs/reconcileRefund",
+      "kind": "unary",
+      "model": null,
+      "procedure": {
+        "args": [
+          {
+            "name": "args",
+            "ty": {
+              "arity": "required",
+              "generic_args": [],
+              "ident_args": [],
+              "int_args": [],
+              "name": "ProviderObject"
+            }
+          }
+        ],
+        "attributes": [],
+        "kind": "mutation",
+        "name": "reconcileRefund",
+        "return_type": {
+          "arity": "required",
+          "generic_args": [],
+          "ident_args": [],
+          "int_args": [],
+          "name": "Settlement"
+        }
+      },
+      "transport": "rest",
+      "verb": "mutation"
+    },
+    "ab7ddfa4409db771a92107e0be2c9d317f926e28f9a659e01558fec27ec81622": {
+      "closure": {
+        "enums": [],
+        "models": [],
+        "types": [
+          {
+            "fields": [
+              {
+                "attributes": [],
+                "name": "currency",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "month",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "Int"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "owner",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "year",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "Int"
+                }
+              }
+            ],
+            "name": "StatementInput"
+          },
+          {
+            "fields": [
+              {
+                "attributes": [],
+                "name": "amountMicros",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "BigInt"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "day",
+                "ty": {
+                  "arity": "optional",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "kind",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "line",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "reference",
+                "ty": {
+                  "arity": "optional",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              }
+            ],
+            "name": "StatementLine"
+          }
+        ],
+        "views": []
+      },
+      "events": null,
+      "key": "POST /$procs/getStatement",
+      "kind": "sequence",
+      "model": null,
+      "procedure": {
+        "args": [
+          {
+            "name": "args",
+            "ty": {
+              "arity": "required",
+              "generic_args": [],
+              "ident_args": [],
+              "int_args": [],
+              "name": "StatementInput"
+            }
+          }
+        ],
+        "attributes": [],
+        "kind": "query",
+        "name": "getStatement",
+        "return_type": {
+          "arity": "list",
+          "generic_args": [],
+          "ident_args": [],
+          "int_args": [],
+          "name": "StatementLine"
+        }
+      },
+      "transport": "rest",
+      "verb": "query"
+    },
+    "b5acca7c50a203dada5284b8a5c9a83eaa405af998bc521d64be1d98ed0bbbfa": {
+      "closure": {
+        "enums": [
+          {
+            "name": "LotKind",
+            "variants": [
+              "allowance",
+              "promotion",
+              "adjustment",
+              "payment"
+            ]
+          }
+        ],
+        "models": [
+          {
+            "attributes": [
+              "@@paged"
+            ],
+            "fields": [
+              {
+                "attributes": [
+                  "@id"
+                ],
+                "name": "accountId",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "currency",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "label",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [
+                  "@relation(fields:[accountId],references:[accountId])"
+                ],
+                "name": "lots",
+                "ty": {
+                  "arity": "list",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "Lot"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "openedAt",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "DateTime"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "owner",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              }
+            ],
+            "name": "Account"
+          },
+          {
+            "attributes": [
+              "@@paged"
+            ],
+            "fields": [
+              {
+                "attributes": [
+                  "@relation(fields:[accountId],references:[accountId])"
+                ],
+                "name": "account",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "Account"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "accountId",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "amount",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "BigInt"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "creditId",
+                "ty": {
+                  "arity": "optional",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "expiresAt",
+                "ty": {
+                  "arity": "optional",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "DateTime"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "kind",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "LotKind"
+                }
+              },
+              {
+                "attributes": [
+                  "@id"
+                ],
+                "name": "lotId",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "Uuid"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "openedAt",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "DateTime"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "remaining",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "BigInt"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "source",
+                "ty": {
+                  "arity": "optional",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              }
+            ],
+            "name": "Lot"
+          }
+        ],
+        "types": [],
+        "views": []
+      },
+      "events": null,
+      "key": "GET /accounts/{id}",
+      "kind": "unary",
+      "model": "Account",
+      "procedure": null,
+      "transport": "rest",
+      "verb": "get"
+    },
+    "bb579d8189bd2146d352887cc8f40549df5e2970aaae71067bbbd37cc505b8ee": {
+      "closure": {
+        "enums": [
+          {
+            "name": "LotKind",
+            "variants": [
+              "allowance",
+              "promotion",
+              "adjustment",
+              "payment"
+            ]
+          }
+        ],
+        "models": [
+          {
+            "attributes": [
+              "@@paged"
+            ],
+            "fields": [
+              {
+                "attributes": [
+                  "@id"
+                ],
+                "name": "accountId",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "currency",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "label",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [
+                  "@relation(fields:[accountId],references:[accountId])"
+                ],
+                "name": "lots",
+                "ty": {
+                  "arity": "list",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "Lot"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "openedAt",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "DateTime"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "owner",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              }
+            ],
+            "name": "Account"
+          },
+          {
+            "attributes": [
+              "@@paged"
+            ],
+            "fields": [
+              {
+                "attributes": [
+                  "@relation(fields:[accountId],references:[accountId])"
+                ],
+                "name": "account",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "Account"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "accountId",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "amount",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "BigInt"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "creditId",
+                "ty": {
+                  "arity": "optional",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "expiresAt",
+                "ty": {
+                  "arity": "optional",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "DateTime"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "kind",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "LotKind"
+                }
+              },
+              {
+                "attributes": [
+                  "@id"
+                ],
+                "name": "lotId",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "Uuid"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "openedAt",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "DateTime"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "remaining",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "BigInt"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "source",
+                "ty": {
+                  "arity": "optional",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              }
+            ],
+            "name": "Lot"
+          }
+        ],
+        "types": [],
+        "views": []
+      },
+      "events": null,
+      "key": "GET /accounts",
+      "kind": "unary",
+      "model": "Account",
+      "procedure": null,
+      "transport": "rest",
+      "verb": "list"
+    },
+    "bcd0a49de7d74d82a607f3ff6ec06dc398da18a6938d584ce3cd447a99867f94": {
+      "closure": {
+        "enums": [],
+        "models": [],
+        "types": [
+          {
+            "fields": [
+              {
+                "attributes": [],
+                "name": "amountMicros",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "BigInt"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "day",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              }
+            ],
+            "name": "UsageDay"
+          },
+          {
+            "fields": [
+              {
+                "attributes": [],
+                "name": "currency",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "fromTime",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "DateTime"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "owner",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "toTime",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "DateTime"
+                }
+              }
+            ],
+            "name": "UsageSeriesInput"
+          }
+        ],
+        "views": []
+      },
+      "events": null,
+      "key": "POST /$procs/getUsageSeries",
+      "kind": "sequence",
+      "model": null,
+      "procedure": {
+        "args": [
+          {
+            "name": "args",
+            "ty": {
+              "arity": "required",
+              "generic_args": [],
+              "ident_args": [],
+              "int_args": [],
+              "name": "UsageSeriesInput"
+            }
+          }
+        ],
+        "attributes": [],
+        "kind": "query",
+        "name": "getUsageSeries",
+        "return_type": {
+          "arity": "list",
+          "generic_args": [],
+          "ident_args": [],
+          "int_args": [],
+          "name": "UsageDay"
+        }
+      },
+      "transport": "rest",
+      "verb": "query"
+    },
+    "bf3c0d6c6464bd734b701cce21bebe3b75cc974be6f3822d03faf479f60dd862": {
+      "closure": {
+        "enums": [],
+        "models": [],
+        "types": [
+          {
+            "fields": [
+              {
+                "attributes": [],
+                "name": "accountId",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "replayed",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "Boolean"
+                }
+              }
+            ],
+            "name": "AccountOpened"
+          },
+          {
+            "fields": [
+              {
+                "attributes": [],
+                "name": "accountId",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "currency",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "label",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "owner",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              }
+            ],
+            "name": "NewAccountInput"
+          }
+        ],
+        "views": []
+      },
+      "events": null,
+      "key": "POST /$procs/openAccount",
+      "kind": "unary",
+      "model": null,
+      "procedure": {
+        "args": [
+          {
+            "name": "args",
+            "ty": {
+              "arity": "required",
+              "generic_args": [],
+              "ident_args": [],
+              "int_args": [],
+              "name": "NewAccountInput"
+            }
+          }
+        ],
+        "attributes": [],
+        "kind": "mutation",
+        "name": "openAccount",
+        "return_type": {
+          "arity": "required",
+          "generic_args": [],
+          "ident_args": [],
+          "int_args": [],
+          "name": "AccountOpened"
+        }
+      },
+      "transport": "rest",
+      "verb": "mutation"
+    },
+    "cb9b5018195c451c2a1be264ac2b870dbbb938dd2eeba62ca74c7d11d8feb49f": {
+      "closure": {
+        "enums": [
+          {
+            "name": "OperatorCreditSource",
+            "variants": [
+              "promotion",
+              "adjustment"
+            ]
+          }
+        ],
+        "models": [],
+        "types": [
+          {
+            "fields": [
+              {
+                "attributes": [],
+                "name": "accountId",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "debtAddedMicros",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "BigInt"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "repaidMicros",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "BigInt"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "replayed",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "Boolean"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "transaction",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              }
+            ],
+            "name": "CreditBooked"
+          },
+          {
+            "fields": [
+              {
+                "attributes": [],
+                "name": "amountMicros",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "BigInt"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "creditId",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "currency",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "expiresAt",
+                "ty": {
+                  "arity": "optional",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "DateTime"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "label",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "owner",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "source",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "OperatorCreditSource"
+                }
+              }
+            ],
+            "name": "CreditInput"
+          }
+        ],
+        "views": []
+      },
+      "events": null,
+      "key": "POST /$procs/grantCredit",
+      "kind": "unary",
+      "model": null,
+      "procedure": {
+        "args": [
+          {
+            "name": "args",
+            "ty": {
+              "arity": "required",
+              "generic_args": [],
+              "ident_args": [],
+              "int_args": [],
+              "name": "CreditInput"
+            }
+          }
+        ],
+        "attributes": [],
+        "kind": "mutation",
+        "name": "grantCredit",
+        "return_type": {
+          "arity": "required",
+          "generic_args": [],
+          "ident_args": [],
+          "int_args": [],
+          "name": "CreditBooked"
+        }
+      },
+      "transport": "rest",
+      "verb": "mutation"
+    },
+    "fa494cbc5451e82fb9f9f63272b84c31d8dd39c1b342e4726b1dd89816db42f7": {
+      "closure": {
+        "enums": [],
+        "models": [],
+        "types": [
+          {
+            "fields": [
+              {
+                "attributes": [],
+                "name": "id",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              }
+            ],
+            "name": "ProviderObject"
+          },
+          {
+            "fields": [
+              {
+                "attributes": [],
+                "name": "accountId",
+                "ty": {
+                  "arity": "optional",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "outcome",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "replayed",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "Boolean"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "transaction",
+                "ty": {
+                  "arity": "optional",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              }
+            ],
+            "name": "Settlement"
+          }
+        ],
+        "views": []
+      },
+      "events": null,
+      "key": "POST /$procs/reconcilePayment",
+      "kind": "unary",
+      "model": null,
+      "procedure": {
+        "args": [
+          {
+            "name": "args",
+            "ty": {
+              "arity": "required",
+              "generic_args": [],
+              "ident_args": [],
+              "int_args": [],
+              "name": "ProviderObject"
+            }
+          }
+        ],
+        "attributes": [],
+        "kind": "mutation",
+        "name": "reconcilePayment",
+        "return_type": {
+          "arity": "required",
+          "generic_args": [],
+          "ident_args": [],
+          "int_args": [],
+          "name": "Settlement"
+        }
+      },
+      "transport": "rest",
+      "verb": "mutation"
+    },
+    "fb9de9b7d5c149de35b760844e42167ef55559105aeb43a0e06b6b8e3fefd966": {
+      "closure": {
+        "enums": [
+          {
+            "name": "OutcomeState",
+            "variants": [
+              "pending",
+              "applied",
+              "refused"
+            ]
+          }
+        ],
+        "models": [
+          {
+            "attributes": [
+              "@@paged"
+            ],
+            "fields": [
+              {
+                "attributes": [],
+                "name": "amount",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "BigInt"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "currency",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "decidedAt",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "DateTime"
+                }
+              },
+              {
+                "attributes": [
+                  "@id"
+                ],
+                "name": "eventId",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "member",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "occurredAt",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "DateTime"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "owner",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "reason",
+                "ty": {
+                  "arity": "optional",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "state",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "OutcomeState"
+                }
+              }
+            ],
+            "name": "UsageOutcome"
+          }
+        ],
+        "types": [],
+        "views": []
+      },
+      "events": null,
+      "key": "GET /usage_outcomes/{id}",
+      "kind": "unary",
+      "model": "UsageOutcome",
+      "procedure": null,
+      "transport": "rest",
+      "verb": "get"
+    }
+  },
+  "generations": [
+    {
+      "client_contract": "86b9687695dc9a28b34c898120814cff0c6b24e49af82b9b7148b3da1094bea3",
+      "locked_at": "2026-11-27",
+      "note": "first contract (ANR-1143)",
+      "ops": {
+        "GET /accounts": "bb579d8189bd2146d352887cc8f40549df5e2970aaae71067bbbd37cc505b8ee",
+        "GET /accounts/{id}": "b5acca7c50a203dada5284b8a5c9a83eaa405af998bc521d64be1d98ed0bbbfa",
+        "GET /lots": "25771176cccabd5bea211c41d5df76c07744d85ed30cbb36e9cd86058c8d776a",
+        "GET /lots/{id}": "0a3d073e6279db0fc3da8c6ad1c58fd333632851d36b35612c608c80574f5caa",
+        "GET /usage_outcomes": "4c556258dbda9355f764799dcc8e6d97b515d55fdd07dbc34eaef8eccadba2a6",
+        "GET /usage_outcomes/{id}": "fb9de9b7d5c149de35b760844e42167ef55559105aeb43a0e06b6b8e3fefd966",
+        "POST /$procs/configure": "391cf9b37331050cb6f1218512a6a33cca3055da4db6a5ead0a16340bb679d26",
+        "POST /$procs/getAllowed": "30ae36f7d09bb29dbb9974878295acb8c47bf7e904841b05393cade51e6de73f",
+        "POST /$procs/getBalance": "638cd03a325311e9905cbac6cd44ac30094b9ecfe4825130d88ec99c384cc1e0",
+        "POST /$procs/getStatement": "ab7ddfa4409db771a92107e0be2c9d317f926e28f9a659e01558fec27ec81622",
+        "POST /$procs/getUsageSeries": "bcd0a49de7d74d82a607f3ff6ec06dc398da18a6938d584ce3cd447a99867f94",
+        "POST /$procs/grantCredit": "cb9b5018195c451c2a1be264ac2b870dbbb938dd2eeba62ca74c7d11d8feb49f",
+        "POST /$procs/listCredits": "5c4ddfaf28017049b8972a6fc1c42f1214b40d7a47935c43469f2a6a3ed51601",
+        "POST /$procs/openAccount": "bf3c0d6c6464bd734b701cce21bebe3b75cc974be6f3822d03faf479f60dd862",
+        "POST /$procs/reconcilePayment": "fa494cbc5451e82fb9f9f63272b84c31d8dd39c1b342e4726b1dd89816db42f7",
+        "POST /$procs/reconcileRefund": "a13abe1675434d57d4e63232e493a29876334b50fe985e90ecb069e6c7a6973a",
+        "POST /$procs/recordUsage": "02bb5d84c66a32f30cc472a50b6a942cbde5b12c074fc71986d3441caf996e40",
+        "POST /$procs/startTopUp": "0634f0385fa6084c534183a32bdeb4aec64890c145244254044435797c920de2"
+      }
+    }
+  ]
+}
