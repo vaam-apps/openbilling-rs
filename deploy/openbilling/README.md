@@ -5,8 +5,10 @@ NetworkPolicy and a ServiceMonitor. It is values for the [bjw-s common library](
 **5.3.0**, the library app-template is, rendered with app-template's loader. The decision is
 [ADR 0005](../../docs/adr/0005-release-fixed-versions-image-and-chart.md).
 
-**Status: not yet run in a cluster.** The chart is linted, rendered over a values matrix and checked against the
-Kubernetes schemas in CI; no release has been published yet, and nothing here has been installed anywhere.
+**Status: published, not yet run in a cluster.** The chart is linted, rendered over a values matrix and checked against
+the Kubernetes schemas in CI. Releases v0.1.1 to v0.4.0 are published and the 0.3.0 chart pulled anonymously
+(*verified 2026-11-27*); v0.4.0 was releasing that day. Nothing here has been installed in a cluster, and the
+signatures were not verified by hand.
 
 ## Install
 

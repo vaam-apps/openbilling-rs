@@ -11,4 +11,4 @@ private advisory, and we will agree on the fix and the disclosure there.
 
 ## Supported versions
 
-openbilling-rs has no release yet. Fixes go to `main`.
+Fixes go to `main` and ship in the next release; only the latest release is supported.

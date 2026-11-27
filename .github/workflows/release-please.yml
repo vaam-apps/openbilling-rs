@@ -18,9 +18,9 @@ name: release-please
 # Secrets (repository or organisation): RELEASE_PLEASE_APP_CLIENT_ID (the App's Client ID, `Iv23li…`, not its
 # numeric App ID) and RELEASE_PLEASE_APP_PRIVATE_KEY. The same names vpay uses.
 #
-# The first release: `bootstrap-sha` is main's head when this landed, so the first changelog starts after it. The
-# manifest seeds 0.1.0, the version every manifest carries while unreleased, so the next release is 0.1.1 or 0.2.0
-# depending on the commits; a `Release-As: 0.1.0` footer in a commit makes it exactly 0.1.0. A maintainer's call.
+# The first release: `bootstrap-sha` was main's head when this landed, so the first changelog starts after it. The
+# manifest seeded 0.1.0, the version every manifest carries while unreleased, so the first release was 0.1.1 (it
+# could have been 0.2.0, depending on the commits); a `Release-As: 0.1.0` footer would have made it exactly 0.1.0.
 
 on:
   push:
