@@ -1,20 +1,44 @@
 //! Pure types and rules of openbilling-rs.
 //!
-//! This crate does no I/O and has no async code. It holds the vocabulary of
-//! [ADR 0001](https://github.com/vaam-apps/openbilling-rs/blob/main/docs/adr/0001-postgres-is-the-queue.md)
+//! This crate does no I/O and has no async runtime. It holds the vocabulary of
+//! [ADR 0001](https://github.com/vaam-apps/openbilling-rs/blob/main/docs/adr/0001-postgres-is-the-queue.md) and
+//! [ADR 0002](https://github.com/vaam-apps/openbilling-rs/blob/main/docs/adr/0002-an-owner-holds-several-accounts.md)
 //! that every other crate shares:
 //!
-//! - [`EventId`] and [`AccountId`], the caller-given ids;
-//! - [`Amount`], money as an integer number of minor units;
-//! - [`EventOutcome`] and [`RefusalReason`], what a worker decided about an event;
+//! - ids: [`EventId`], [`AccountId`], [`OwnerId`], [`MemberId`], [`CreditId`], and the operator's names
+//!   [`CurrencyCode`] and [`AccountLabel`];
+//! - [`Amount`], money as an integer number of micro-units, and [`Timestamp`], [`UtcDay`] and [`UtcMonth`];
+//! - the configuration: [`LedgerConfig`], [`LotOrder`], [`Window`], [`CreditSource`], [`LotKind`];
+//! - [`UsageEvent`], [`Credit`], [`Reversal`] and what the ledger answers for them;
+//! - [`EventOutcome`] and [`RefusalReason`], what a drain decided about an event;
+//! - the storage port, [`LedgerStore`], with [`LedgerError`] and its [`Refusal`]s;
 //! - [`Error`], [`ErrorClass`] and [`Classify`], errors that tell a caller what to do.
+//!
+//! The ledger's rules are not here. They are PostgreSQL's, written once in `openbilling-pg`'s migrations (agent
+//! guide, rule 12); this crate names what goes in and out of them.
 
 mod amount;
+mod config;
 mod error;
 mod id;
 mod outcome;
+mod refusal;
+mod store;
+mod time;
+mod usage;
 
 pub use amount::Amount;
+pub use config::{CreditSource, LedgerConfig, LotKind, LotOrder, ReversalKind, Window, WithinKind};
 pub use error::{Classify, Error, ErrorClass, IdKind, IdProblem};
-pub use id::{AccountId, EventId, MAX_ID_LEN};
+pub use id::{
+    AccountId, AccountLabel, CreditId, CurrencyCode, EventId, MAX_CURRENCY_LEN, MAX_ID_LEN,
+    MAX_LABEL_LEN, MAX_OWNER_LEN, MemberId, OwnerId,
+};
 pub use outcome::{EventOutcome, RefusalReason};
+pub use refusal::{LedgerError, NAMED_IN_MESSAGE, Refusal, Rule};
+pub use store::{
+    AccountBalance, Allowed, Balance, Credit, CreditTarget, Credited, Decided, DrainReport,
+    LedgerStore, LotView, NewAccount, NotAllowed, Opened, OutcomeView, Reversal,
+};
+pub use time::{Timestamp, UtcDay, UtcMonth};
+pub use usage::{Intake, IntakeReport, UsageEvent};

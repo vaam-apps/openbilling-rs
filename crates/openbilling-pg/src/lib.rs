@@ -1,21 +1,79 @@
 //! The PostgreSQL store of openbilling-rs.
 //!
 //! [ADR 0001](https://github.com/vaam-apps/openbilling-rs/blob/main/docs/adr/0001-postgres-is-the-queue.md) makes
-//! PostgreSQL the queue, the once-only record and the ledger. This crate will hold its tables, its migrations and the
-//! hand-written SQL the ADR calls for (intake, the drain, the partition job). For now it opens a pool and checks
-//! that the database answers; the tables come with the next slice.
+//! PostgreSQL the queue, the once-only record and the ledger, and
+//! [ADR 0002](https://github.com/vaam-apps/openbilling-rs/blob/main/docs/adr/0002-an-owner-holds-several-accounts.md)
+//! gives an owner several accounts. Every rule of the ledger is SQL in `migrations/` (agent guide, rule 12);
+//! [`PgLedger`] implements the [`LedgerStore`](openbilling_core::LedgerStore) port by calling it, and
+//! [`sqlstate`] maps what it raises.
 //!
 //! PostgreSQL 19 is the minimum (ADR 0001, amended 2026-11-27). The store uses its features and refuses to start
 //! against an older server.
 
+use std::borrow::Cow;
 use std::time::Duration;
 
 use openbilling_core::{Classify, ErrorClass};
-use sqlx::PgPool;
-use sqlx::postgres::PgPoolOptions;
+use sqlx::migrate::{Migration, MigrationType, Migrator};
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+use sqlx::{PgPool, SqlSafeStr};
+
+mod ledger;
+pub mod sqlstate;
+
+pub use ledger::{LedgerSettings, NOTIFY_CHANNEL, PgLedger, Wakeup, Woken};
+
+/// The migrations, in order: hand-written SQL, embedded in the binary.
+const MIGRATIONS: [(i64, &str, &str); 4] = [
+    (
+        20_261_127_000_001,
+        "configuration and accounts",
+        include_str!("../migrations/20261127000001_configuration_and_accounts.sql"),
+    ),
+    (
+        20_261_127_000_002,
+        "ledger",
+        include_str!("../migrations/20261127000002_ledger.sql"),
+    ),
+    (
+        20_261_127_000_003,
+        "usage queue",
+        include_str!("../migrations/20261127000003_usage_queue.sql"),
+    ),
+    (
+        20_261_127_000_004,
+        "ledger functions",
+        include_str!("../migrations/20261127000004_ledger_functions.sql"),
+    ),
+];
+
+/// The migrator of the schema. Each migration runs in its own transaction, and sqlx sends its file whole, as one
+/// simple-protocol query, so the `BEGIN ATOMIC` bodies inside it are never split on `;` (*verified 2026-11-27*,
+/// sqlx-postgres 0.9.0 source: `migrate.rs` executes the file's text with no arguments, which
+/// `connection/executor.rs` sends as one `Query` message).
+#[must_use]
+pub fn migrator() -> Migrator {
+    Migrator::with_migrations(
+        MIGRATIONS
+            .iter()
+            .map(|(version, description, sql)| {
+                Migration::new(
+                    *version,
+                    Cow::Borrowed(*description),
+                    MigrationType::Simple,
+                    sql.into_sql_str(),
+                    false,
+                )
+            })
+            .collect(),
+    )
+}
 
 /// How long [`PgStore::connect`] and every query wait for a free connection.
 const ACQUIRE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How many connections [`PgStore::connect`] opens at most.
+pub const DEFAULT_MAX_CONNECTIONS: u32 = 10;
 
 /// The oldest server the store accepts, as `server_version_num`: PostgreSQL 19.0.
 pub const MIN_SERVER_VERSION_NUM: i32 = 190_000;
@@ -36,9 +94,23 @@ impl PgStore {
     ///   holds the URL, which can carry a password.
     /// - [`Error::UnsupportedServer`] when the server is older than PostgreSQL 19. The pool is closed.
     pub async fn connect(url: &str) -> Result<Self, Error> {
+        let options: PgConnectOptions = url.parse().map_err(Error::Connect)?;
+        Self::connect_with(options, DEFAULT_MAX_CONNECTIONS).await
+    }
+
+    /// [`PgStore::connect`] with parsed options and a pool of at most `max_connections`.
+    ///
+    /// # Errors
+    ///
+    /// As [`PgStore::connect`].
+    pub async fn connect_with(
+        options: PgConnectOptions,
+        max_connections: u32,
+    ) -> Result<Self, Error> {
         let pool = PgPoolOptions::new()
             .acquire_timeout(ACQUIRE_TIMEOUT)
-            .connect(url)
+            .max_connections(max_connections)
+            .connect_with(options)
             .await
             .map_err(Error::Connect)?;
         let store = Self { pool };
@@ -79,6 +151,21 @@ impl PgStore {
         }
     }
 
+    /// Applies the migrations not applied yet ([`migrator`]).
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Migrate`] when a migration fails or one applied earlier was changed.
+    pub async fn migrate(&self) -> Result<(), Error> {
+        migrator().run(&self.pool).await.map_err(Error::Migrate)
+    }
+
+    /// The pool.
+    #[must_use]
+    pub const fn pool(&self) -> &PgPool {
+        &self.pool
+    }
+
     /// Closes every connection of the pool and waits for them to close.
     pub async fn close(self) {
         self.pool.close().await;
@@ -97,6 +184,9 @@ pub enum Error {
     /// A statement failed.
     #[error("a PostgreSQL statement failed")]
     Query(#[source] sqlx::Error),
+    /// A migration failed, or one applied earlier no longer matches its file.
+    #[error("a PostgreSQL migration failed")]
+    Migrate(#[source] sqlx::migrate::MigrateError),
     /// The database answered something no PostgreSQL answers.
     #[error("PostgreSQL gave an unexpected answer")]
     UnexpectedAnswer,
@@ -112,13 +202,18 @@ impl Classify for Error {
     fn class(&self) -> ErrorClass {
         match self {
             Self::Connect(source) | Self::Query(source) => class_of(source),
+            Self::Migrate(
+                sqlx::migrate::MigrateError::Execute(source)
+                | sqlx::migrate::MigrateError::ExecuteMigration(source, _),
+            ) => class_of(source),
+            Self::Migrate(_) => ErrorClass::Internal,
             Self::UnexpectedAnswer | Self::UnsupportedServer { .. } => ErrorClass::Internal,
         }
     }
 }
 
 /// The class of a driver error: what a caller should do about it.
-fn class_of(error: &sqlx::Error) -> ErrorClass {
+pub(crate) fn class_of(error: &sqlx::Error) -> ErrorClass {
     match error {
         sqlx::Error::Io(_)
         | sqlx::Error::Tls(_)

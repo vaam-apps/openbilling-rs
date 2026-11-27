@@ -18,6 +18,7 @@ publish = false
 
 [workspace.dependencies]
 openbilling-core = { path = "crates/openbilling-core" }
+openbilling-testkit = { path = "crates/openbilling-testkit" }
 
 anyhow = "1.0.105"
 thiserror = "2.0.21"

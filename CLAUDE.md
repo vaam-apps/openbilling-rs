@@ -5,18 +5,23 @@
 ## What this is
 
 An open-source usage billing service in Rust on PostgreSQL alone: intake of usage events, rating against a price book,
-and a double-entry ledger. **Status: design and skeleton.** [ADR 0001](docs/adr/0001-postgres-is-the-queue.md) is the
-design. The Cargo workspace builds and is tested: the core types, a PostgreSQL store that connects and pings, an empty
-conformance testkit and a binary that answers `--help` and `--version`. No table, migration or billing logic exists
-yet.
+and a double-entry ledger. **Status: the ledger on pre-priced events (slice 2).** [ADR 0001](docs/adr/0001-postgres-is-the-queue.md)
+and [ADR 0002](docs/adr/0002-an-owner-holds-several-accounts.md) are the design. Built: owners with several accounts
+(one currency and label each), credits by source (payment, promotion, adjustment), refunds and chargebacks capped at
+the payment, the monthly allowance, the partitioned usage queue with once-only intake, the drain into the ledger with
+the configured draw order, debt and debt limits, member caps, and the reads. Every rule is SQL in
+`crates/openbilling-pg/migrations/`; `PgLedger` calls it through the `LedgerStore` port, and `openbilling-testkit`
+holds the conformance suite. **The suite has not run against a PostgreSQL 19 outside CI** (none was available where it
+was written). Not built: rating against a price book (slice 3), detaching and dropping old partitions, a worker loop
+and the binary's service.
 
 ## Layout
 
 | Path | What |
 |---|---|
-| `crates/openbilling-core` | Pure types and rules, no I/O, no async: `EventId`, `AccountId`, `Amount` (`i64` minor units), `EventOutcome` and `RefusalReason`, `Error` with `ErrorClass` through `Classify` |
-| `crates/openbilling-pg` | The PostgreSQL store on sqlx `=0.9.0` (held to CrateStack 0.20.6's pin); refuses a server older than PostgreSQL 19. No `migrations/` yet: the tables come in slice 2. `tests/connect.rs` needs `OPENBILLING_TEST_DATABASE_URL` |
-| `crates/openbilling-testkit` | The storage conformance suite, as macros. Empty until the storage trait exists |
+| `crates/openbilling-core` | Types, no I/O, no async runtime, no rule: the ids (`EventId`, `AccountId`, `OwnerId`, `MemberId`, `CreditId`, `CurrencyCode`, `AccountLabel`), `Amount` (`i64` micro-units), `Timestamp`/`UtcDay`/`UtcMonth`, the configuration, credits, events, `EventOutcome`, the port `LedgerStore` with `LedgerError`, `Refusal` and `Rule`, and `Error` with `ErrorClass` through `Classify` |
+| `crates/openbilling-pg` | The PostgreSQL store on sqlx `=0.9.0` (held to CrateStack 0.20.6's pin); refuses a server older than PostgreSQL 19. `migrations/` holds every rule (hand-written SQL, applied by `migrator()`); `src/ledger.rs` is `PgLedger`, a thin caller; `src/sqlstate.rs` the one map of SQLSTATEs. `tests/` need `OPENBILLING_TEST_DATABASE_URL` and make a fresh database per test |
+| `crates/openbilling-testkit` | The conformance suite of `LedgerStore`: `ledger_conformance!(factory)`, its cases in `src/cases.rs` and fixtures |
 | `bin/openbilling` | The service binary (`anyhow`). Answers `--help` and `--version` for now |
 | `docs/adr/` | The decisions, with an index in `docs/adr/README.md` |
 | `Cargo.toml`, `clippy.toml`, `deny.toml` | Workspace (edition 2024, resolver 3, MSRV `rust-version`), lints (`unsafe_code` forbidden, `unwrap`/`expect` warn outside tests), dependency policy |
@@ -28,7 +33,8 @@ yet.
 1. **PostgreSQL is the only infrastructure.** No broker, no cache in the write path. A notification wakes a worker; the
    table is the truth.
 2. **Every write is once-only.** An event, a credit and a debit each have a caller-given id; a replay changes nothing.
-3. **Money is integers** in the currency's minor unit, never a float. Time is UTC.
+3. **Money is integers** in micro-units of the account's currency (10^-6 of its major unit; ADR 0001, amended
+   2026-11-27), never a float, never converted between currencies. Time is UTC.
 4. **Ports and adapters.** Storage and identity are traits with a conformance testkit; binaries only compose them.
 5. **Decisions are ADRs** in `docs/adr/NNNN-kebab-title.md`, next number, with a row in `docs/adr/README.md`. Change a
    past decision with a dated *Amended* note, never silently.
@@ -42,6 +48,15 @@ yet.
     `OPENBILLING_TEST_REQUIRE_DB=1` (CI sets it).
 11. **PostgreSQL 19 is the minimum.** Use its features rather than workarounds for older versions (ADR 0001, amended
     2026-11-27); the store refuses an older server at connect.
+12. **SQL first: the ledger's rules live in PostgreSQL** (ADR 0002). Debit, credit by source, reversal, the drain, the
+    draw order, intake's checks and the reads are functions, constraints, triggers and views in
+    `crates/openbilling-pg/migrations/`. Rust keeps the port, the types, the wiring and the tests, and never
+    implements a rule a second time. Plain SQL gets a SQL-standard body (`LANGUAGE sql`, `RETURN` or
+    `BEGIN ATOMIC … END`: parsed at creation, dependencies tracked, no polymorphic arguments); `LANGUAGE plpgsql` only
+    for control flow or `RAISE` with a SQLSTATE, and the function's comment says which. Functions, not procedures,
+    where the caller needs rows back. Atomicity is the caller's transaction, not `BEGIN ATOMIC`. Custom SQLSTATEs are
+    class `OB` and are mapped to a refusal or a class in one place, `crates/openbilling-pg/src/sqlstate.rs`, whose
+    tests hold the table and the migrations to the same codes. Never edit an applied migration: add one.
 
 ## Skills
 
@@ -54,6 +69,7 @@ their files.
 | Writing a schema, a server, procedures, migrations or clients | `cratestack` first; it routes to the `cratestack-*` skills |
 | Authentication, tokens, the identity provider | `authkestra-quickstart`, then `authkestra-features`, `authkestra-op`, `authkestra-store` |
 | Money, ledgers, idempotency | `domain-fintech`, `cratestack-data-integrity` |
+| The ledger's SQL, migrations | `cratestack-migrations` (the applier's rules), and the PostgreSQL 19 documentation: verify every claim |
 | A decision | `documentation-and-adrs`, `doubt-driven-development` |
 | Rust | `rust-router`, `rust-skills`, `coding-guidelines` |
 | Implementing | `spec-driven-development`, `incremental-implementation`, `test-driven-development` |
@@ -71,7 +87,8 @@ cargo deny check                       # deny.toml: advisories, licences, bans, 
 cargo +1.94 check --workspace --all-targets --locked   # MSRV: rust-version of Cargo.toml
 ```
 
-A database for the tests (PostgreSQL 19; `tests/connect.rs` fails against an older one):
+A database for the tests (PostgreSQL 19; the store refuses an older one). Its user must be allowed to create
+databases: each test makes its own.
 
 ```sh
 docker run --rm -d --name openbilling-pg -p 127.0.0.1:5432:5432 -e POSTGRES_HOST_AUTH_METHOD=trust postgres:19.0

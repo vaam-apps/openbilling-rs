@@ -1,11 +1,17 @@
-//! Money as an integer number of minor units.
+//! Money as an integer number of micro-units of one currency.
 
 use std::fmt;
 use std::ops::Neg;
 
 use crate::error::Error;
 
-/// An amount of money in the minor unit of its currency (ADR 0001, point 20; agent guide, rule 3). Never a float.
+/// An amount of money in **micro-units** of its currency: one unit is 10^-6 of the currency's major unit (ADR 0001,
+/// point 20, amended 2026-11-27; agent guide, rule 3). Never a float.
+///
+/// Micro-units, not the currency's minor unit, because one usage event is often worth less than one minor unit. An
+/// `i64` of micro-units still holds about 9.2 × 10^12 major units. There is no conversion between currencies: each
+/// account carries one currency, the operator names the set of currencies, and an amount is only ever added to
+/// amounts of the same currency.
 ///
 /// The value is an `i64`, PostgreSQL's `bigint`. Its range is symmetric, `-(2^63 - 1)` to `2^63 - 1`: `i64::MIN` is
 /// refused, so every amount can be negated, and the balancing entry of any entry exists. Arithmetic is checked and
@@ -19,27 +25,27 @@ pub struct Amount(i64);
 impl Amount {
     /// Zero.
     pub const ZERO: Self = Self(0);
-    /// The largest amount, `2^63 - 1` minor units.
+    /// The largest amount, `2^63 - 1` micro-units.
     pub const MAX: Self = Self(i64::MAX);
-    /// The smallest amount, `-(2^63 - 1)` minor units: the negation of [`Amount::MAX`].
+    /// The smallest amount, `-(2^63 - 1)` micro-units: the negation of [`Amount::MAX`].
     pub const MIN: Self = Self(-i64::MAX);
 
-    /// An amount of `minor` minor units.
+    /// An amount of `micros` micro-units.
     ///
     /// # Errors
     ///
     /// [`Error::AmountOutOfRange`] for `i64::MIN`, which has no negation.
-    pub const fn from_minor(minor: i64) -> Result<Self, Error> {
-        if minor == i64::MIN {
+    pub const fn from_micros(micros: i64) -> Result<Self, Error> {
+        if micros == i64::MIN {
             Err(Error::AmountOutOfRange)
         } else {
-            Ok(Self(minor))
+            Ok(Self(micros))
         }
     }
 
-    /// The number of minor units.
+    /// The number of micro-units.
     #[must_use]
-    pub const fn minor(self) -> i64 {
+    pub const fn micros(self) -> i64 {
         self.0
     }
 
@@ -92,8 +98,8 @@ impl Neg for Amount {
 impl TryFrom<i64> for Amount {
     type Error = Error;
 
-    fn try_from(minor: i64) -> Result<Self, Self::Error> {
-        Self::from_minor(minor)
+    fn try_from(micros: i64) -> Result<Self, Self::Error> {
+        Self::from_micros(micros)
     }
 }
 
@@ -104,7 +110,7 @@ impl From<Amount> for i64 {
 }
 
 impl fmt::Display for Amount {
-    /// The number of minor units, as a plain integer. Formatting for people needs the currency, which this type
+    /// The number of micro-units, as a plain integer. Formatting for people needs the currency, which this type
     /// does not carry.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(&self.0, f)
@@ -115,17 +121,17 @@ impl fmt::Display for Amount {
 mod tests {
     use super::*;
 
-    fn amount(minor: i64) -> Amount {
-        Amount::from_minor(minor).expect("in range")
+    fn amount(micros: i64) -> Amount {
+        Amount::from_micros(micros).expect("in range")
     }
 
     #[test]
     fn i64_min_is_refused_and_everything_else_is_kept() {
-        assert_eq!(Amount::from_minor(i64::MIN), Err(Error::AmountOutOfRange));
+        assert_eq!(Amount::from_micros(i64::MIN), Err(Error::AmountOutOfRange));
         assert_eq!(Amount::try_from(i64::MIN), Err(Error::AmountOutOfRange));
-        for minor in [-i64::MAX, -1, 0, 1, i64::MAX] {
-            assert_eq!(amount(minor).minor(), minor);
-            assert_eq!(i64::from(amount(minor)), minor);
+        for micros in [-i64::MAX, -1, 0, 1, i64::MAX] {
+            assert_eq!(amount(micros).micros(), micros);
+            assert_eq!(i64::from(amount(micros)), micros);
         }
     }
 
@@ -139,8 +145,8 @@ mod tests {
 
     #[test]
     fn an_entry_and_its_negation_sum_to_zero() {
-        for minor in [-i64::MAX, -7, 0, 7, i64::MAX] {
-            let entry = amount(minor);
+        for micros in [-i64::MAX, -7, 0, 7, i64::MAX] {
+            let entry = amount(micros);
             assert_eq!(entry.checked_add(-entry), Some(Amount::ZERO));
         }
     }
@@ -165,7 +171,7 @@ mod tests {
     }
 
     #[test]
-    fn displays_minor_units() {
+    fn displays_micro_units() {
         assert_eq!(amount(-1050).to_string(), "-1050");
         assert_eq!(Amount::default(), Amount::ZERO);
     }

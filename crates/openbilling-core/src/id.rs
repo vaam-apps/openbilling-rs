@@ -1,9 +1,13 @@
-//! Caller-given ids.
+//! Caller-given ids and the names the operator configures.
 //!
 //! An id is chosen by the caller, so the service must count it once whatever the caller sends (ADR 0001, point 1).
-//! Both kinds follow one rule: 1 to [`MAX_ID_LEN`] bytes of printable ASCII, `!` (0x21) to `~` (0x7E). No
-//! whitespace, no control character and no non-ASCII text, so two ids that look the same are the same bytes, and an
-//! id can be written to a log without escaping.
+//! Ids follow one rule: 1 to [`MAX_ID_LEN`] bytes of printable ASCII, `!` (0x21) to `~` (0x7E). No whitespace, no
+//! control character and no non-ASCII text, so two ids that look the same are the same bytes, and an id can be
+//! written to a log without escaping. An [`OwnerId`] may be longer, up to [`MAX_OWNER_LEN`] bytes, because it is the
+//! subject an identity provider gives, and OpenID Connect allows 255 ASCII characters for one.
+//!
+//! The operator's names are narrower: a [`CurrencyCode`] is 1 to 16 bytes of `A`–`Z` and `0`–`9`, an
+//! [`AccountLabel`] 1 to 64 bytes of `a`–`z`, `0`–`9`, `_` and `-` (ADR 0002).
 
 use std::fmt;
 use std::str::FromStr;
@@ -13,12 +17,33 @@ use crate::error::{Error, IdKind, IdProblem};
 /// The longest id, in bytes.
 pub const MAX_ID_LEN: usize = 128;
 
-fn check(kind: IdKind, value: &str) -> Result<(), Error> {
+/// The longest [`OwnerId`], in bytes.
+pub const MAX_OWNER_LEN: usize = 255;
+
+/// The longest [`CurrencyCode`], in bytes.
+pub const MAX_CURRENCY_LEN: usize = 16;
+
+/// The longest [`AccountLabel`], in bytes.
+pub const MAX_LABEL_LEN: usize = 64;
+
+fn printable(b: u8) -> bool {
+    b.is_ascii_graphic()
+}
+
+fn currency_byte(b: u8) -> bool {
+    b.is_ascii_uppercase() || b.is_ascii_digit()
+}
+
+fn label_byte(b: u8) -> bool {
+    b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-'
+}
+
+fn check(kind: IdKind, value: &str, max: usize, allowed: fn(u8) -> bool) -> Result<(), Error> {
     let problem = if value.is_empty() {
         Some(IdProblem::Empty)
-    } else if value.len() > MAX_ID_LEN {
+    } else if value.len() > max {
         Some(IdProblem::TooLong)
-    } else if !value.bytes().all(|b| b.is_ascii_graphic()) {
+    } else if !value.bytes().all(allowed) {
         Some(IdProblem::ForbiddenCharacter)
     } else {
         None
@@ -30,21 +55,20 @@ fn check(kind: IdKind, value: &str) -> Result<(), Error> {
 }
 
 macro_rules! caller_id {
-    ($(#[$doc:meta])* $name:ident, $kind:expr) => {
+    ($(#[$doc:meta])* $name:ident, $kind:expr, $max:expr, $allowed:expr) => {
         $(#[$doc])*
         #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
         pub struct $name(String);
 
         impl $name {
-            /// Checks `value` against the id rules and wraps it.
+            /// Checks `value` against the rules of its kind (see the module) and wraps it.
             ///
             /// # Errors
             ///
-            /// [`Error::InvalidId`] when `value` is empty, longer than [`MAX_ID_LEN`] bytes, or holds a byte outside
-            /// printable ASCII.
+            /// [`Error::InvalidId`] when `value` is empty, too long, or holds a byte its kind does not allow.
             pub fn new(value: impl Into<String>) -> Result<Self, Error> {
                 let value = value.into();
-                check($kind, &value)?;
+                check($kind, &value, $max, $allowed)?;
                 Ok(Self(value))
             }
 
@@ -95,13 +119,61 @@ caller_id!(
     /// The caller-given id of a usage event. With its occurrence day it is the event's once-only key
     /// (ADR 0001, point 7).
     EventId,
-    IdKind::Event
+    IdKind::Event,
+    MAX_ID_LEN,
+    printable
 );
 
 caller_id!(
-    /// The id of an account that events are rated for and the ledger debits and credits.
+    /// The opaque id of an account: one currency and one label of one owner (ADR 0002). Given by whoever opens it,
+    /// so opening it is once-only.
     AccountId,
-    IdKind::Account
+    IdKind::Account,
+    MAX_ID_LEN,
+    printable
+);
+
+caller_id!(
+    /// The external subject that holds accounts, for example the `sub` an identity provider gives (ADR 0002).
+    OwnerId,
+    IdKind::Owner,
+    MAX_OWNER_LEN,
+    printable
+);
+
+caller_id!(
+    /// The member of an owner who caused a usage event, for a member cap. For a person's own owner it is the person.
+    MemberId,
+    IdKind::Member,
+    MAX_ID_LEN,
+    printable
+);
+
+caller_id!(
+    /// The caller-given id of a credit or a reversal: an external payment id, a grant id, an adjustment id, a refund
+    /// or a chargeback id. Once-only within its source or kind (ADR 0002).
+    CreditId,
+    IdKind::Credit,
+    MAX_ID_LEN,
+    printable
+);
+
+caller_id!(
+    /// A currency the operator names, for example `EUR` or `CREDITS`: 1 to 16 bytes of `A`–`Z` and `0`–`9`. The
+    /// ledger never converts between currencies.
+    CurrencyCode,
+    IdKind::Currency,
+    MAX_CURRENCY_LEN,
+    currency_byte
+);
+
+caller_id!(
+    /// The label of an account within its owner and currency, for example `main` or `promo`: 1 to 64 bytes of
+    /// `a`–`z`, `0`–`9`, `_` and `-`. The operator configures the labels and the order the debit draws them in.
+    AccountLabel,
+    IdKind::Label,
+    MAX_LABEL_LEN,
+    label_byte
 );
 
 #[cfg(test)]
@@ -197,6 +269,43 @@ mod tests {
         let error = AccountId::new("secret value").expect_err("whitespace is refused");
         assert!(!error.to_string().contains("secret"));
         assert!(!format!("{error:?}").contains("secret"));
+    }
+
+    #[test]
+    fn an_owner_may_be_as_long_as_an_oidc_subject() {
+        assert!(OwnerId::new("s".repeat(MAX_OWNER_LEN)).is_ok());
+        assert_eq!(
+            OwnerId::new("s".repeat(MAX_OWNER_LEN + 1)),
+            Err(Error::InvalidId {
+                kind: IdKind::Owner,
+                problem: IdProblem::TooLong
+            })
+        );
+        assert!(EventId::new("e".repeat(MAX_ID_LEN + 1)).is_err());
+    }
+
+    #[test]
+    fn currencies_and_labels_have_narrow_alphabets() {
+        for good in ["EUR", "USD", "CREDITS", "X1"] {
+            assert!(CurrencyCode::new(good).is_ok(), "{good}");
+        }
+        for bad in ["eur", "E-U", "E U", "\u{c9}", ""] {
+            assert!(CurrencyCode::new(bad).is_err(), "{bad}");
+        }
+        assert!(CurrencyCode::new("A".repeat(MAX_CURRENCY_LEN + 1)).is_err());
+        for good in ["main", "promo", "paid_2", "a-b"] {
+            assert!(AccountLabel::new(good).is_ok(), "{good}");
+        }
+        for bad in ["Main", "a b", "a.b", ""] {
+            assert!(AccountLabel::new(bad).is_err(), "{bad}");
+        }
+        assert_eq!(
+            AccountLabel::new("x".repeat(MAX_LABEL_LEN + 1)),
+            Err(Error::InvalidId {
+                kind: IdKind::Label,
+                problem: IdProblem::TooLong
+            })
+        );
     }
 
     #[test]

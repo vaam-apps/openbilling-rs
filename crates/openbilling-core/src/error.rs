@@ -50,6 +50,16 @@ pub enum IdKind {
     Event,
     /// An [`AccountId`](crate::AccountId).
     Account,
+    /// An [`OwnerId`](crate::OwnerId).
+    Owner,
+    /// A [`MemberId`](crate::MemberId).
+    Member,
+    /// A [`CreditId`](crate::CreditId).
+    Credit,
+    /// A [`CurrencyCode`](crate::CurrencyCode).
+    Currency,
+    /// An [`AccountLabel`](crate::AccountLabel).
+    Label,
 }
 
 impl fmt::Display for IdKind {
@@ -57,6 +67,11 @@ impl fmt::Display for IdKind {
         f.write_str(match self {
             Self::Event => "event",
             Self::Account => "account",
+            Self::Owner => "owner",
+            Self::Member => "member",
+            Self::Credit => "credit",
+            Self::Currency => "currency",
+            Self::Label => "label",
         })
     }
 }
@@ -68,7 +83,8 @@ pub enum IdProblem {
     Empty,
     /// The id is longer than [`MAX_ID_LEN`](crate::MAX_ID_LEN) bytes.
     TooLong,
-    /// The id holds a byte outside printable ASCII (`!` to `~`): whitespace, a control character or non-ASCII.
+    /// The id holds a byte its kind does not allow: for an id, one outside printable ASCII (`!` to `~`); for a
+    /// currency or a label, one outside its narrower alphabet.
     ForbiddenCharacter,
 }
 
@@ -77,7 +93,7 @@ impl fmt::Display for IdProblem {
         f.write_str(match self {
             Self::Empty => "it is empty",
             Self::TooLong => "it is too long",
-            Self::ForbiddenCharacter => "it holds a character outside printable ASCII",
+            Self::ForbiddenCharacter => "it holds a character its kind does not allow",
         })
     }
 }
@@ -93,15 +109,24 @@ pub enum Error {
         /// What is wrong with it.
         problem: IdProblem,
     },
-    /// A number of minor units outside the range of [`Amount`](crate::Amount).
+    /// A number of micro-units outside the range of [`Amount`](crate::Amount).
     #[error("amount is out of range")]
     AmountOutOfRange,
+    /// A number of microseconds outside the range of [`Timestamp`](crate::Timestamp).
+    #[error("timestamp is out of range")]
+    TimestampOutOfRange,
+    /// A window of zero days.
+    #[error("the intake window is invalid")]
+    InvalidWindow,
 }
 
 impl Classify for Error {
     fn class(&self) -> ErrorClass {
         match self {
-            Self::InvalidId { .. } | Self::AmountOutOfRange => ErrorClass::Invalid,
+            Self::InvalidId { .. }
+            | Self::AmountOutOfRange
+            | Self::TimestampOutOfRange
+            | Self::InvalidWindow => ErrorClass::Invalid,
         }
     }
 }
