@@ -10,7 +10,13 @@
 #   2. the common library is the archive Chart.yaml pins, by sha256;
 #   3. helm lint, defaults and every accepted values file;
 #   4. helm template of each, then render-check.sh and kubeconform (strict) on the render;
-#   5. every refused values file is refused, with its message.
+#   5. the defaults: every /v1 call refused, and the configuration file with every check at_or_above, mounted where
+#      OPENBILLING_CONFIG says; full.yaml's file is its own;
+#   6. every refused values file is refused, with its message.
+#
+# With OPENBILLING_BIN naming a built `openbilling`, the configuration file of each render is also handed to
+# `openbilling serve` (with a database that is never reached), which must accept it: the chart's refusals and the
+# binary's agree.
 
 set -eu
 
@@ -96,6 +102,61 @@ for name in OPENBILLING_AUTH_ISSUER OPENBILLING_AUTH_AUDIENCE; do
     ' "$work/defaults-auth.yaml" || die "the defaults set $name; they must leave it empty (RefuseAll)"
 done
 printf 'OPENBILLING_AUTH_ISSUER and OPENBILLING_AUTH_AUDIENCE are empty by default\n'
+
+step "the configuration file"
+# config_of RENDER: the `config.yaml` of the render's ConfigMap, unindented.
+config_of() {
+    awk '
+        /^kind:[[:space:]]*ConfigMap[[:space:]]*$/ { cm = 1 }
+        /^---/ { cm = 0; inside = 0 }
+        cm && /^[[:space:]]+config\.yaml:[[:space:]]*\|-?[[:space:]]*$/ { inside = 1; next }
+        inside && /^    / { sub(/^    /, ""); print; next }
+        inside { inside = 0 }
+    ' "$1"
+}
+expected_defaults='allowed:
+  balance: at_or_above
+  debt_limit: at_or_above
+  member_cap: at_or_above'
+[ "$(config_of "$work/defaults.yaml")" = "$expected_defaults" ] || {
+    config_of "$work/defaults.yaml" >&2
+    die "the defaults' configuration file is not every check at_or_above"
+}
+expected_full='allowed:
+  balance: never
+  debt_limit: above
+  member_cap: at_or_above'
+[ "$(config_of "$work/full.yaml")" = "$expected_full" ] || {
+    config_of "$work/full.yaml" >&2
+    die "full.yaml's configuration file is not its own"
+}
+for name in defaults full edge-with-digest; do
+    awk '
+        /-[[:space:]]+name:[[:space:]]+OPENBILLING_CONFIG[[:space:]]*$/ {
+            if ((getline line) > 0 && line ~ /^[[:space:]]+value:[[:space:]]*"?\/etc\/openbilling\/config\.yaml"?[[:space:]]*$/) env = 1
+        }
+        /-[[:space:]]+mountPath:[[:space:]]+\/etc\/openbilling\/config\.yaml[[:space:]]*$/ { mount = 1 }
+        /^[[:space:]]+subPath:[[:space:]]+config\.yaml[[:space:]]*$/ { sub_path = 1 }
+        /^[[:space:]]+checksum\/configMaps:[[:space:]]+[0-9a-f]{64}[[:space:]]*$/ { checksum = 1 }
+        END { exit (env && mount && sub_path && checksum) ? 0 : 1 }
+    ' "$work/$name.yaml" || die "$name: OPENBILLING_CONFIG, its mount and the pod's checksum of the ConfigMap do not agree"
+done
+if [ -n "${OPENBILLING_BIN:-}" ]; then
+    for name in defaults full edge-with-digest; do
+        config_of "$work/$name.yaml" > "$work/$name.config.yaml"
+        # A database on a closed port: the file is read first, then the connection fails.
+        if OPENBILLING_DATABASE_URL=postgres://nobody@127.0.0.1:1/none OPENBILLING_CONFIG="$work/$name.config.yaml" \
+            NO_COLOR=1 "$OPENBILLING_BIN" serve > "$work/$name.serve" 2>&1; then
+            die "$name: openbilling serve started against a closed port"
+        fi
+        grep -q 'connecting to PostgreSQL' "$work/$name.serve" || {
+            cat "$work/$name.serve" >&2
+            die "$name: openbilling serve refused the configuration file the chart rendered"
+        }
+    done
+    printf 'openbilling serve accepts the configuration file of every render\n'
+fi
+printf 'every render mounts its configuration file where OPENBILLING_CONFIG says, the defaults every check at_or_above\n'
 
 for values in "$here"/values/refused-*.yaml; do
     name=$(basename "$values" .yaml)

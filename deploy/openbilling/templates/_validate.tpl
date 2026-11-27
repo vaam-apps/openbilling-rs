@@ -31,6 +31,31 @@ The refusals values cannot say. Each names the value to change. Run before the c
     {{- fail "openbilling.auth.issuer: https, or http to a loopback address" -}}
   {{- end -}}
 
+  {{- /* The configuration file (OPENBILLING_CONFIG): what the binary takes, refused here as it refuses it at start.
+  The file holds policy only; secrets and endpoints are environment variables. */ -}}
+  {{- $config := dig "config" dict (.Values.openbilling | default dict) -}}
+  {{- if not (kindIs "map" $config) -}}
+    {{- fail "openbilling.config: a map; it holds only `allowed`" -}}
+  {{- end -}}
+  {{- range $key, $_ := $config -}}
+    {{- if ne $key "allowed" -}}
+      {{- fail (printf "openbilling.config.%s: not a key of the configuration file, which holds only `allowed`; secrets and endpoints are environment variables" $key) -}}
+    {{- end -}}
+  {{- end -}}
+  {{- $allowed := dig "allowed" dict $config -}}
+  {{- if not (kindIs "map" $allowed) -}}
+    {{- fail "openbilling.config.allowed: a map of debt_limit, balance and member_cap" -}}
+  {{- end -}}
+  {{- $checks := list "debt_limit" "balance" "member_cap" -}}
+  {{- range $key, $mode := $allowed -}}
+    {{- if not (has $key $checks) -}}
+      {{- fail (printf "openbilling.config.allowed.%s: not a check; the checks are debt_limit, balance and member_cap" $key) -}}
+    {{- end -}}
+    {{- if not (has (toString $mode) (list "at_or_above" "above" "never")) -}}
+      {{- fail (printf "openbilling.config.allowed.%s: at_or_above, above or never" $key) -}}
+    {{- end -}}
+  {{- end -}}
+
   {{- /* Production runs fixed versions only (ADR 0005). */ -}}
   {{- $image := dig "main" "containers" "main" "image" dict (.Values.controllers | default dict) -}}
   {{- $tag := tpl (toString (dig "tag" "" $image)) . -}}
