@@ -1,6 +1,6 @@
 [package]
 name = "openbilling-telemetry"
-description = "OpenTelemetry for openbilling-rs: traces, metrics and logs over OTLP/HTTP JSON, off unless an endpoint is set."
+description = "OpenTelemetry for openbilling-rs: traces, metrics and logs through the OpenTelemetry SDK over OTLP/HTTP JSON, off unless an endpoint is set."
 readme = "README.md"
 version.workspace = true
 edition.workspace = true
@@ -17,18 +17,23 @@ testkit = ["dep:axum"]
 openbilling-core.workspace = true
 openbilling-metrics.workspace = true
 axum = { workspace = true, optional = true }
-reqwest.workspace = true
+opentelemetry.workspace = true
+opentelemetry-otlp.workspace = true
+opentelemetry_sdk.workspace = true
+reqwest = { workspace = true, features = ["blocking"] }
 rustls.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "net", "rt", "sync", "time"] }
 tracing.workspace = true
+tracing-opentelemetry.workspace = true
 tracing-subscriber.workspace = true
 url.workspace = true
 
 [dev-dependencies]
 openbilling-telemetry = { path = ".", features = ["testkit"] }
 axum.workspace = true
+opentelemetry_sdk = { workspace = true, features = ["testing"] }
 tokio = { workspace = true, features = ["macros", "net", "rt", "rt-multi-thread", "time"] }
 
 [lints]

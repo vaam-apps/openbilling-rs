@@ -1,7 +1,8 @@
 # Dashboards
 
-Two Grafana dashboards for the operators of openbilling-rs, as code: the JSON in this folder is the dashboard. They
-read the metrics the service exports over OpenTelemetry ([`openbilling-telemetry`](../../crates/openbilling-telemetry/README.md),
+Two Grafana dashboards for the operators of openbilling-rs, as code: the JSON in this folder is the dashboard, and **it is generated** by the Python scripts in [`tools/dashboards/`](../../tools/dashboards/) (`sh tools/dashboards/generate.sh`; standard library only). Edit the script, never the JSON: CI regenerates the files and fails on any difference. A panel is one call of `timeseries` or `stat` in `service.py` or `queue_dashboard.py`.
+
+They read the metrics the service exports over OpenTelemetry ([`openbilling-telemetry`](../../crates/openbilling-telemetry/README.md),
 [ADR 0007](../../docs/adr/0007-opentelemetry-through-a-layer-over-cratestacks-spans.md)) once a collector has put
 them in a Prometheus-compatible store (Grafana's Prometheus data source, an OpenObserve instance's PromQL endpoint,
 Mimir, VictoriaMetrics, and so on).
@@ -51,7 +52,7 @@ needs the queries adjusted.
 | `Refused share of getAllowed` | Share of `getAllowed` answers that refused | Orange at 20%, red at 50%. A sudden jump with no change of usage means credit stopped arriving (a payment provider outage) |
 | `Ledger postings by kind` | Transactions booked per second: `usage_debit`, `credit`, `allowance`, `reversal`; replays are not counted | The ledger's own throughput. Debits that stop while events are accepted say the drain is stuck; reversals that rise say refunds or chargebacks |
 | `Telemetry dropped` | Spans and logs dropped per second because the exporter's queue was full | The exporter never blocks a request, it drops. A band here says the collector is slow or down and the other panels are incomplete |
-| `Telemetry exports` | Export requests per second to the collector by signal and result | `failed` is a collector that refuses or does not answer after three tries; look at its address, its credential header and its network policy |
+| `Telemetry exports` | Export requests per second to the collector by signal and result | `failed` is a collector that refuses or does not answer after the SDK's retries; look at its address, its credential header and its network policy |
 
 ## openbilling: queue, drain and database
 

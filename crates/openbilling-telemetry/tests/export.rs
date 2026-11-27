@@ -52,17 +52,49 @@ async fn spans_metrics_and_logs_reach_the_collector() {
             })
             .await
     );
+    // The exporter counts a request when the collector has answered it, a moment after the collector has the body.
+    assert!(
+        collector
+            .wait_for(Duration::from_secs(5), |_| {
+                guard
+                    .stats()
+                    .exported
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                    >= 3
+            })
+            .await,
+        "a request of each signal is counted"
+    );
     guard.shutdown(Duration::from_secs(5)).await;
 
     let span = &collector.spans()[0];
     assert_eq!(span["name"], "http.server.request");
     assert_eq!(span["kind"], 2);
+    let attributes: Vec<_> = span["attributes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["key"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(attributes, ["http.request.method"], "only the allowlist");
+    assert!(
+        span.get("events")
+            .is_none_or(|e| e.as_array().is_some_and(Vec::is_empty))
+    );
     assert_eq!(collector.logs()[0]["body"]["stringValue"], "a log line");
     assert!(
         collector
             .metrics()
             .iter()
             .any(|m| m["name"] == "openbilling.drain.runs")
+    );
+    // The exporter's own metrics: what it exported is counted, and the final flush carries them.
+    assert!(
+        collector
+            .metrics()
+            .iter()
+            .any(|m| m["name"] == "openbilling.telemetry.exports"),
+        "the exporter counts its own requests"
     );
     for resource in collector.resources() {
         let text = resource.to_string();

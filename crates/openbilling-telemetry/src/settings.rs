@@ -14,7 +14,13 @@ use url::Url;
 
 /// Variables of the OpenTelemetry specification this exporter does not honour. Set, they stop `serve` at start:
 /// a setting that is ignored in silence is worse than one that is refused.
-const UNSUPPORTED: [&str; 22] = [
+const UNSUPPORTED: [&str; 28] = [
+    "OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE",
+    "OTEL_EXPORTER_OTLP_TRACES_COMPRESSION",
+    "OTEL_EXPORTER_OTLP_METRICS_COMPRESSION",
+    "OTEL_EXPORTER_OTLP_LOGS_COMPRESSION",
+    "OTEL_SPAN_EVENT_COUNT_LIMIT",
+    "OTEL_SPAN_LINK_COUNT_LIMIT",
     "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
     "OTEL_EXPORTER_OTLP_METRICS_HEADERS",
     "OTEL_EXPORTER_OTLP_LOGS_HEADERS",
@@ -502,6 +508,12 @@ mod tests {
             "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
             "OTEL_EXPORTER_OTLP_CLIENT_KEY",
             "OTEL_BLRP_SCHEDULE_DELAY",
+            "OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE",
+            "OTEL_EXPORTER_OTLP_TRACES_COMPRESSION",
+            "OTEL_EXPORTER_OTLP_METRICS_COMPRESSION",
+            "OTEL_EXPORTER_OTLP_LOGS_COMPRESSION",
+            "OTEL_SPAN_EVENT_COUNT_LIMIT",
+            "OTEL_SPAN_LINK_COUNT_LIMIT",
         ] {
             let error = settings(&[on, (name, "x")]).unwrap_err().to_string();
             assert!(error.contains(name), "{error}");

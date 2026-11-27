@@ -110,6 +110,23 @@ jobs:
           # Every operation needs a caller, and the analysis understood every rule.
           jq -e '[.ops[] | select((.unanalysed | length > 0) or (.requires_principal | not))] | length == 0' /tmp/ops.json
 
+  dashboards:
+    name: Dashboards are generated (no drift)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The JSON in deploy/dashboards/ and deploy/openbilling/dashboards/ is written by tools/dashboards/ (Python, standard
+      # library only). Regenerate, then fail on any change or any file the scripts made that is not committed.
+      - name: Regenerate
+        run: sh tools/dashboards/generate.sh
+      - name: No difference
+        run: |
+          git diff --exit-code -- deploy
+          test -z "$(git status --porcelain -- deploy)" || { git status --porcelain -- deploy; echo "::error::deploy/ differs from what tools/dashboards/ generates: run sh tools/dashboards/generate.sh and commit"; exit 1; }
+
   deny:
     name: Dependencies (cargo deny)
     runs-on: ubuntu-24.04

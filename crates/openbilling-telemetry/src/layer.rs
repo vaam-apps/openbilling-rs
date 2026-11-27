@@ -1,102 +1,39 @@
-//! The `tracing` layer: it turns the spans of this repository and of CrateStack into OTLP spans, our `INFO`-and-above
-//! events into OTLP logs, and the database spans into the database histogram.
+//! The two small `tracing` layers that sit beside `tracing-opentelemetry`'s: [`LogLayer`], which turns the `INFO`-and-
+//! above events of this repository into OpenTelemetry logs, and [`DbTimingLayer`], which feeds the database
+//! histogram from the database spans.
 //!
-//! **An attribute leaves the process only if its field name is in [`FIELDS`].** Every other field of a span or an
-//! event is dropped where it is read, whatever its value. A text value is also held to a plain alphabet and a
-//! length ([`plain`]), so a field that is allowed for its name cannot carry a sentence. `Debug` values are never
-//! read, so a struct (an error, a request) cannot be exported by accident. Only spans and events whose target is
-//! this repository's or CrateStack's are looked at, and a log's body is the message of an event of this repository:
-//! static text, never an id (the rule is in the README and held by a test).
+//! The spans themselves go through `tracing-opentelemetry`'s layer and are cleaned at the exporter
+//! ([`crate::filter::clean`]). Logs are filtered **where they are made**: **an attribute is read only if its field name is
+//! in [`FIELDS`]**, every other field of an event is dropped where it is read, whatever its value; a text value is
+//! held to a plain alphabet and a length; a log's body is the message of an event of this repository, held to words of
+//! letters ([`plain_message`]); `Debug` values are never read, so a struct (an error, a request) cannot be exported
+//! by accident.
 
-use std::collections::hash_map::RandomState;
-use std::hash::BuildHasher;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Instant, SystemTime};
 
-use tracing::Metadata;
-use tracing::subscriber::Interest;
-
-use tokio::sync::mpsc::Sender;
+use opentelemetry::logs::{AnyValue, LogRecord, Logger, Severity};
+use opentelemetry::{Key, trace::TraceContextExt};
+use opentelemetry_sdk::logs::SdkLogger;
 use tracing::field::{Field, Visit};
 use tracing::span::{Attributes, Id, Record};
 use tracing::{Event, Level, Subscriber};
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 use tracing_subscriber::Layer;
 use tracing_subscriber::layer::Context;
-use tracing_subscriber::registry::{LookupSpan, SpanRef};
+use tracing_subscriber::registry::LookupSpan;
 
-use crate::otlp::{LogRecord, SpanRecord, Value, unix_nanos};
-use openbilling_metrics::{Counter, Histogram, Metrics, db_operation};
+use crate::filter::{FIELDS, plain, plain_message};
+use openbilling_metrics::{Histogram, Metrics, db_operation};
 
-/// The fields that may be exported, and the attribute each becomes. Everything else is dropped.
-pub const FIELDS: [(&str, &str); 17] = [
-    ("cratestack_route", "http.route"),
-    ("cratestack_procedure", "cratestack.procedure"),
-    ("cratestack_model", "cratestack.model"),
-    ("cratestack_operation", "cratestack.operation"),
-    ("cratestack_paged", "cratestack.paged"),
-    ("cratestack_authenticated", "cratestack.authenticated"),
-    ("cratestack_error", "error.type"),
-    ("http.request.method", "http.request.method"),
-    ("http.route", "http.route"),
-    ("http.response.status_code", "http.response.status_code"),
-    ("db.system", "db.system.name"),
-    ("db.operation", "db.operation.name"),
-    ("openbilling.batch.limit", "openbilling.batch.limit"),
-    ("openbilling.events.decided", "openbilling.events.decided"),
-    ("openbilling.events.applied", "openbilling.events.applied"),
-    ("openbilling.events.refused", "openbilling.events.refused"),
-    ("openbilling.error.class", "openbilling.error.class"),
-];
-
-const MAX_TEXT: usize = 64;
-
-/// A text value held to a plain alphabet and [`MAX_TEXT`] bytes; anything else is `redacted`.
-#[must_use]
-pub fn plain(text: &str) -> String {
-    let fits = text.len() <= MAX_TEXT
-        && text
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"_./$:-{}".contains(&b));
-    if fits {
-        text.to_owned()
-    } else {
-        "redacted".to_owned()
-    }
-}
-
-/// The most verbose level looked at: nothing below `INFO` is a signal of this service, and a `TRACE` callsite of
-/// sqlx, hyper or rustls must not be dispatched for it.
-const CAP: Level = Level::INFO;
-
-fn ours(target: &str) -> bool {
-    target.starts_with("openbilling") || target.starts_with("cratestack")
-}
-
-/// A log's message: words made of letters only (hyphens and underscores between letters, punctuation at their ends),
-/// 128 bytes at most. Anything else, an id with a digit in it among them, is `redacted`: so `info!("account {id}")`
-/// does not export its id, though a message of letters alone is the code's own to keep static (README).
-#[must_use]
-pub fn plain_message(text: &str) -> String {
-    let word_ok = |word: &str| {
-        let word = word.trim_matches(|c: char| ",.:;()'\"".contains(c));
-        word.chars()
-            .all(|c| c.is_ascii_alphabetic() || c == '-' || c == '_')
-    };
-    if text.len() <= 128 && text.split_whitespace().all(word_ok) {
-        text.to_owned()
-    } else {
-        "redacted".to_owned()
-    }
-}
-
+/// The allowlisted fields an event carried, by the attribute they export as, and its message.
 #[derive(Default)]
 struct Fields {
-    attributes: Vec<(&'static str, Value)>,
+    attributes: Vec<(&'static str, AnyValue)>,
     message: Option<String>,
 }
 
 impl Fields {
-    fn put(&mut self, field: &Field, value: Value) {
+    fn put(&mut self, field: &Field, value: AnyValue) {
         let Some((_, name)) = FIELDS.iter().find(|(raw, _)| *raw == field.name()) else {
             return;
         };
@@ -112,20 +49,23 @@ impl Visit for Fields {
         if field.name() == "message" {
             self.message = Some(plain_message(value));
         } else {
-            self.put(field, Value::Str(plain(value)));
+            self.put(field, AnyValue::String(plain(value).into()));
         }
     }
     fn record_i64(&mut self, field: &Field, value: i64) {
-        self.put(field, Value::Int(value));
+        self.put(field, AnyValue::Int(value));
     }
     fn record_u64(&mut self, field: &Field, value: u64) {
-        self.put(field, Value::Int(i64::try_from(value).unwrap_or(i64::MAX)));
+        self.put(
+            field,
+            AnyValue::Int(i64::try_from(value).unwrap_or(i64::MAX)),
+        );
     }
     fn record_bool(&mut self, field: &Field, value: bool) {
-        self.put(field, Value::Bool(value));
+        self.put(field, AnyValue::Boolean(value));
     }
     fn record_f64(&mut self, field: &Field, value: f64) {
-        self.put(field, Value::Double(value));
+        self.put(field, AnyValue::Double(value));
     }
     fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
         // `Debug` is read for the message only (`format_args!` of a literal): never for another field.
@@ -135,408 +75,131 @@ impl Visit for Fields {
     }
 }
 
-struct SpanData {
-    trace_id: [u8; 16],
-    span_id: [u8; 8],
-    parent: Option<[u8; 8]>,
-    name: &'static str,
-    kind: u8,
-    start: SystemTime,
-    began: Instant,
-    attributes: Vec<(&'static str, Value)>,
-    error: bool,
-    sampled: bool,
+/// Exports the events of this repository as OpenTelemetry logs. Give it a per-layer filter that lets through
+/// events at `INFO` and above whose target begins `openbilling`.
+pub struct LogLayer {
+    logger: SdkLogger,
 }
 
-fn random_u64() -> u64 {
-    static COUNTER: AtomicU64 = AtomicU64::new(1);
-    // `RandomState` is seeded randomly per process; the counter makes every call differ.
-    RandomState::new().hash_one((
-        COUNTER.fetch_add(1, Ordering::Relaxed),
-        unix_nanos(SystemTime::now()),
-    ))
-}
-
-fn new_span_id() -> [u8; 8] {
-    let id = random_u64().max(1);
-    id.to_be_bytes()
-}
-
-fn new_trace_id() -> [u8; 16] {
-    let mut id = [0_u8; 16];
-    id[..8].copy_from_slice(&random_u64().to_be_bytes());
-    id[8..].copy_from_slice(&random_u64().max(1).to_be_bytes());
-    id
-}
-
-fn kept(trace_id: &[u8; 16], ratio: f64) -> bool {
-    if ratio >= 1.0 {
-        return true;
-    }
-    let mut low = [0_u8; 8];
-    low.copy_from_slice(&trace_id[8..]);
-    #[allow(clippy::cast_precision_loss)]
-    let fraction = (u64::from_be_bytes(low) >> 11) as f64 / (1_u64 << 53) as f64;
-    fraction < ratio
-}
-
-fn kind_of(name: &str) -> u8 {
-    if name.starts_with("http.server") {
-        2
-    } else if name.starts_with("db.") {
-        3
-    } else {
-        1
-    }
-}
-
-/// The layer. Cheap to clone: senders and a reference.
-#[derive(Clone)]
-pub struct TelemetryLayer {
-    spans: Option<Sender<SpanRecord>>,
-    logs: Option<Sender<LogRecord>>,
-    ratio: f64,
-    metrics: &'static Metrics,
-    dropped: std::sync::Arc<AtomicU64>,
-}
-
-impl TelemetryLayer {
-    /// A layer that sends finished spans to `spans` and logs to `logs` (either may be `None`), keeps `ratio` of
-    /// the traces, and feeds the database histogram of `metrics`.
+impl LogLayer {
+    /// A layer that emits into `logger`.
     #[must_use]
-    pub fn new(
-        spans: Option<Sender<SpanRecord>>,
-        logs: Option<Sender<LogRecord>>,
-        ratio: f64,
-        metrics: &'static Metrics,
-    ) -> Self {
-        Self {
-            spans,
-            logs,
-            ratio,
-            metrics,
-            dropped: std::sync::Arc::default(),
-        }
-    }
-
-    /// How many spans and logs were dropped because the queue to the exporter was full.
-    #[must_use]
-    pub fn dropped(&self) -> u64 {
-        self.dropped.load(Ordering::Relaxed)
+    pub fn new(logger: SdkLogger) -> Self {
+        Self { logger }
     }
 }
 
-fn nearest<'a, S: LookupSpan<'a>>(span: &SpanRef<'a, S>) -> Option<([u8; 16], [u8; 8], bool)> {
-    span.scope().find_map(|ancestor| {
-        ancestor
-            .extensions()
-            .get::<SpanData>()
-            .map(|data| (data.trace_id, data.span_id, data.sampled))
-    })
-}
-
-impl<S> Layer<S> for TelemetryLayer
+impl<S> Layer<S> for LogLayer
 where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
-    fn register_callsite(&self, meta: &'static Metadata<'_>) -> Interest {
-        if ours(meta.target()) && *meta.level() <= CAP {
-            Interest::always()
-        } else {
-            Interest::never()
-        }
-    }
-
-    fn enabled(&self, meta: &Metadata<'_>, _: Context<'_, S>) -> bool {
-        ours(meta.target()) && *meta.level() <= CAP
-    }
-
-    fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
-        if !ours(attrs.metadata().target()) {
+    fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
+        let meta = event.metadata();
+        if !meta.target().starts_with("openbilling") || *meta.level() > Level::INFO {
             return;
         }
-        let Some(span) = ctx.span(id) else { return };
         let mut fields = Fields::default();
-        attrs.record(&mut fields);
-        // The nearest recorded ancestor, found from the span's own parent chain.
-        let parent = span.parent().and_then(|parent| nearest(&parent));
-        let (trace_id, parent_id, sampled) = match parent {
-            Some((trace, span_id, sampled)) => (trace, Some(span_id), sampled),
-            None => {
-                let trace = new_trace_id();
-                (trace, None, kept(&trace, self.ratio))
-            }
+        event.record(&mut fields);
+        let Some(body) = fields.message else { return };
+        let (severity, text) = match *meta.level() {
+            Level::ERROR => (Severity::Error, "ERROR"),
+            Level::WARN => (Severity::Warn, "WARN"),
+            _ => (Severity::Info, "INFO"),
         };
-        span.extensions_mut().insert(SpanData {
-            trace_id,
-            span_id: new_span_id(),
-            parent: parent_id,
-            name: attrs.metadata().name(),
-            kind: kind_of(attrs.metadata().name()),
-            start: SystemTime::now(),
+        let mut record = self.logger.create_log_record();
+        let now = SystemTime::now();
+        record.set_timestamp(now);
+        record.set_observed_timestamp(now);
+        record.set_severity_number(severity);
+        record.set_severity_text(text);
+        record.set_body(AnyValue::String(body.into()));
+        for (key, value) in fields.attributes {
+            if key != "error.type" {
+                record.add_attribute(Key::new(key), value);
+            }
+        }
+        // The log belongs to the span it was written in, when that span is recorded.
+        let context = tracing::Span::current().context();
+        let span = context.span();
+        let span_context = span.span_context();
+        if span_context.is_valid() && span_context.is_sampled() {
+            record.set_trace_context(
+                span_context.trace_id(),
+                span_context.span_id(),
+                Some(span_context.trace_flags()),
+            );
+        }
+        self.logger.emit(record);
+    }
+}
+
+struct Timing {
+    operation: Option<&'static str>,
+    began: Instant,
+}
+
+struct Operation(Option<&'static str>);
+
+impl Visit for Operation {
+    fn record_str(&mut self, field: &Field, value: &str) {
+        if field.name() == "db.operation" {
+            self.0 = Some(db_operation(value));
+        }
+    }
+    fn record_debug(&mut self, _: &Field, _: &dyn std::fmt::Debug) {}
+}
+
+/// Records the duration of each database span into the database histogram, sampled or not.
+pub struct DbTimingLayer {
+    metrics: &'static Metrics,
+}
+
+impl DbTimingLayer {
+    /// A layer that observes into `metrics`.
+    #[must_use]
+    pub const fn new(metrics: &'static Metrics) -> Self {
+        Self { metrics }
+    }
+}
+
+impl<S> Layer<S> for DbTimingLayer
+where
+    S: Subscriber + for<'a> LookupSpan<'a>,
+{
+    fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
+        let Some(span) = ctx.span(id) else { return };
+        let mut operation = Operation(None);
+        attrs.record(&mut operation);
+        span.extensions_mut().insert(Timing {
+            operation: operation.0,
             began: Instant::now(),
-            attributes: fields.attributes,
-            error: false,
-            sampled,
         });
     }
 
     fn on_record(&self, id: &Id, values: &Record<'_>, ctx: Context<'_, S>) {
         let Some(span) = ctx.span(id) else { return };
         let mut extensions = span.extensions_mut();
-        let Some(data) = extensions.get_mut::<SpanData>() else {
+        let Some(timing) = extensions.get_mut::<Timing>() else {
             return;
         };
-        let mut fields = Fields::default();
-        values.record(&mut fields);
-        for (key, value) in fields.attributes {
-            if key == "http.response.status_code" {
-                data.error |= matches!(value, Value::Int(code) if code >= 500);
-            }
-            match data.attributes.iter_mut().find(|(k, _)| *k == key) {
-                Some(slot) => slot.1 = value,
-                None => data.attributes.push((key, value)),
-            }
-        }
-    }
-
-    fn on_event(&self, event: &Event<'_>, ctx: Context<'_, S>) {
-        let meta = event.metadata();
-        if !ours(meta.target()) {
-            return;
-        }
-        let mut fields = Fields::default();
-        event.record(&mut fields);
-        let current = ctx.event_span(event).or_else(|| ctx.lookup_current());
-        // CrateStack says a procedure failed with an event carrying the error's code: the span takes it.
-        if *meta.level() <= Level::WARN
-            && let Some(code) = fields
-                .attributes
-                .iter()
-                .find(|(key, _)| *key == "error.type")
-                .map(|(_, value)| value.clone())
-            && let Some(span) = &current
-            && let Some(data) = span.extensions_mut().get_mut::<SpanData>()
-        {
-            data.error = true;
-            match data.attributes.iter_mut().find(|(k, _)| *k == "error.type") {
-                Some(slot) => slot.1 = code,
-                None => data.attributes.push(("error.type", code)),
-            }
-        }
-        let Some(logs) = &self.logs else { return };
-        if !meta.target().starts_with("openbilling") || *meta.level() > Level::INFO {
-            return;
-        }
-        let Some(body) = fields.message else { return };
-        let trace = current
-            .as_ref()
-            .and_then(nearest)
-            .and_then(|(trace, span, sampled)| sampled.then_some((trace, span)));
-        let severity = match *meta.level() {
-            Level::ERROR => 17,
-            Level::WARN => 13,
-            _ => 9,
-        };
-        let record = LogRecord {
-            time: unix_nanos(SystemTime::now()),
-            severity,
-            body,
-            attributes: fields
-                .attributes
-                .into_iter()
-                .filter(|(key, _)| *key != "error.type")
-                .collect(),
-            trace,
-        };
-        if logs.try_send(record).is_err() {
-            self.dropped.fetch_add(1, Ordering::Relaxed);
-            self.metrics
-                .add(Counter::TelemetryDropped, &[("signal", "logs")], 1);
+        let mut operation = Operation(None);
+        values.record(&mut operation);
+        if operation.0.is_some() {
+            timing.operation = operation.0;
         }
     }
 
     fn on_close(&self, id: Id, ctx: Context<'_, S>) {
         let Some(span) = ctx.span(&id) else { return };
-        let Some(data) = span.extensions_mut().remove::<SpanData>() else {
+        let Some(timing) = span.extensions_mut().remove::<Timing>() else {
             return;
         };
-        let elapsed = data.began.elapsed();
-        if let Some((_, Value::Str(operation))) = data
-            .attributes
-            .iter()
-            .find(|(key, _)| *key == "db.operation.name")
-        {
+        if let Some(operation) = timing.operation {
             self.metrics.observe(
                 Histogram::Db,
-                &[("operation", db_operation(operation))],
-                elapsed.as_secs_f64(),
+                &[("operation", operation)],
+                timing.began.elapsed().as_secs_f64(),
             );
         }
-        let Some(spans) = &self.spans else { return };
-        if !data.sampled {
-            return;
-        }
-        let start = unix_nanos(data.start);
-        let record = SpanRecord {
-            trace_id: data.trace_id,
-            span_id: data.span_id,
-            parent: data.parent,
-            name: data.name,
-            kind: data.kind,
-            start,
-            end: start.saturating_add(u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX)),
-            attributes: data.attributes,
-            error: data.error,
-        };
-        if spans.try_send(record).is_err() {
-            self.dropped.fetch_add(1, Ordering::Relaxed);
-            self.metrics
-                .add(Counter::TelemetryDropped, &[("signal", "traces")], 1);
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use tokio::sync::mpsc;
-    use tracing::{info, info_span, warn};
-    use tracing_subscriber::layer::SubscriberExt;
-
-    use super::*;
-
-    fn run(ratio: f64, f: impl FnOnce()) -> (Vec<SpanRecord>, Vec<LogRecord>, &'static Metrics) {
-        let metrics: &'static Metrics = Box::leak(Box::new(Metrics::new()));
-        let (span_tx, mut span_rx) = mpsc::channel(64);
-        let (log_tx, mut log_rx) = mpsc::channel(64);
-        let layer = TelemetryLayer::new(Some(span_tx), Some(log_tx), ratio, metrics);
-        tracing::subscriber::with_default(tracing_subscriber::registry().with(layer), f);
-        let mut spans = Vec::new();
-        while let Ok(span) = span_rx.try_recv() {
-            spans.push(span);
-        }
-        let mut logs = Vec::new();
-        while let Ok(log) = log_rx.try_recv() {
-            logs.push(log);
-        }
-        (spans, logs, metrics)
-    }
-
-    #[test]
-    fn only_allowlisted_fields_leave_and_their_text_is_plain() {
-        let (spans, logs, _) = run(1.0, || {
-            let span = info_span!(
-                target: "openbilling_http",
-                "http.server.request",
-                http.request.method = "POST",
-                cratestack_route = "/$procs/getAllowed",
-                owner = "acct-secret-7",
-                token = "Bearer abc",
-                amount = 123_456_789_u64,
-                cratestack_procedure = "has a space and an id acct-1",
-            );
-            let _in = span.enter();
-            info!(target: "openbilling_pg", owner = "acct-secret-7", batch = 5_u64, "drain finished");
-        });
-        assert_eq!(spans.len(), 1);
-        let keys: Vec<_> = spans[0].attributes.iter().map(|(k, _)| *k).collect();
-        assert_eq!(
-            keys,
-            ["http.request.method", "http.route", "cratestack.procedure"]
-        );
-        assert_eq!(spans[0].attributes[2].1, Value::Str("redacted".into()));
-        assert_eq!(spans[0].kind, 2);
-        assert_eq!(logs.len(), 1);
-        assert_eq!(logs[0].body, "drain finished");
-        assert!(logs[0].attributes.is_empty());
-        assert_eq!(logs[0].trace.map(|(_, s)| s), Some(spans[0].span_id));
-    }
-
-    #[test]
-    fn children_join_their_parents_trace_and_a_failure_marks_the_span() {
-        let (spans, _, _) = run(1.0, || {
-            let root = info_span!(target: "openbilling_http", "http.server.request");
-            let _root = root.enter();
-            let route = info_span!(target: "cratestack_x", "cratestack_procedure_route", cratestack_procedure = "getBalance");
-            let _route = route.enter();
-            warn!(target: "cratestack", cratestack_error = "FORBIDDEN", cratestack_detail = "acct-9", "cratestack procedure failed");
-        });
-        assert_eq!(spans.len(), 2);
-        let (child, root) = (&spans[0], &spans[1]);
-        assert_eq!(child.trace_id, root.trace_id);
-        assert_eq!(child.parent, Some(root.span_id));
-        assert!(child.error && !root.error);
-        let keys: Vec<_> = child.attributes.iter().map(|(k, _)| *k).collect();
-        assert_eq!(keys, ["cratestack.procedure", "error.type"]);
-    }
-
-    #[test]
-    fn a_foreign_target_is_not_looked_at_and_the_sample_ratio_holds() {
-        let (spans, logs, _) = run(1.0, || {
-            let span = info_span!(target: "sqlx::query", "sqlx", db.statement = "SELECT 1");
-            let _in = span.enter();
-            info!(target: "other", "hello");
-        });
-        assert!(spans.is_empty() && logs.is_empty());
-        let (none, _, _) = run(0.0, || {
-            let span = info_span!(target: "openbilling_http", "http.server.request");
-            let _in = span.enter();
-        });
-        assert!(none.is_empty());
-    }
-
-    #[test]
-    fn a_log_message_of_letters_passes_and_one_with_an_id_is_redacted() {
-        assert_eq!(
-            plain_message("drain failed (unavailable)."),
-            "drain failed (unavailable)."
-        );
-        for bad in [
-            "account acct-42 refused",
-            "token Bearer abc.def.1",
-            &"x".repeat(200),
-        ] {
-            assert_eq!(plain_message(bad), "redacted", "{bad}");
-        }
-    }
-
-    #[test]
-    fn a_full_queue_drops_and_counts() {
-        let metrics: &'static Metrics = Box::leak(Box::new(Metrics::new()));
-        let (span_tx, _span_rx) = mpsc::channel(1);
-        let layer = TelemetryLayer::new(Some(span_tx), None, 1.0, metrics);
-        let counter = layer.clone();
-        tracing::subscriber::with_default(tracing_subscriber::registry().with(layer), || {
-            for _ in 0..5 {
-                let span = info_span!(target: "openbilling_http", "http.server.request");
-                drop(span.enter());
-            }
-        });
-        assert_eq!(counter.dropped(), 4);
-        assert_eq!(
-            metrics
-                .snapshot()
-                .counter(Counter::TelemetryDropped, Some(&[("signal", "traces")])),
-            4
-        );
-    }
-
-    #[test]
-    fn verbose_levels_are_not_dispatched() {
-        let (spans, _, _) = run(1.0, || {
-            let span = tracing::debug_span!(target: "openbilling_pg", "db.query");
-            drop(span.enter());
-        });
-        assert!(spans.is_empty());
-    }
-
-    #[test]
-    fn a_database_span_feeds_the_database_histogram_even_unsampled() {
-        let (spans, _, metrics) = run(0.0, || {
-            let span = info_span!(target: "openbilling_pg", "db.query", db.system = "postgresql", db.operation = "intake");
-            let _in = span.enter();
-        });
-        assert!(spans.is_empty());
-        assert_eq!(metrics.snapshot().observations(Histogram::Db), 1);
     }
 }

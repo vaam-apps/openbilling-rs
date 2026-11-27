@@ -1,6 +1,6 @@
 # openbilling-telemetry
 
-OpenTelemetry for openbilling-rs: **traces, metrics and logs over OTLP/HTTP with JSON bodies, off unless an endpoint
+OpenTelemetry for openbilling-rs: **traces, metrics and logs through the OpenTelemetry SDK over OTLP/HTTP with JSON bodies, off unless an endpoint
 is set.** [ADR 0007](../../docs/adr/0007-opentelemetry-through-a-layer-over-cratestacks-spans.md) says why it is built
 this way. The dashboards that read what it exports are in [`deploy/dashboards`](../../deploy/dashboards/README.md).
 
@@ -16,8 +16,9 @@ this way. The dashboards that read what it exports are in [`deploy/dashboards`](
 - CrateStack has **no OpenTelemetry exporter**. `cratestack-service` offers `telemetry::init`, a `tracing_subscriber`
   text or JSON formatter; the crates.io listing of the `cratestack-*` crates holds no OTel crate.
 
-So the exporter is this crate: a `tracing` layer that turns those spans, and ours, into OTLP. It reads the spans
-CrateStack already emits, adds nothing to CrateStack, and is the place where the allowlist below is held.
+So the exporter is this crate: `tracing-opentelemetry` turns those spans, and ours, into OpenTelemetry spans, and the
+SDK exports them over OTLP. It reads the spans CrateStack already emits, adds nothing to CrateStack, and is the place
+where the allowlist below is held.
 
 ## Configuration
 
@@ -43,12 +44,12 @@ file); an endpoint with a user, a password or a query; headers over plain `http`
 
 ## What leaves the process
 
-**An attribute is exported only if its field name is in the allowlist** (`layer::FIELDS`: the CrateStack fields above,
+**An attribute is exported only if its field name is in the allowlist** (`filter::FIELDS`: the CrateStack fields above,
 `http.request.method`, `http.route`, `http.response.status_code`, `db.system`, `db.operation`, and four counts and a
-class on the loop spans). Every other field of a span or an event is dropped where it is read. A text value is also
-held to a plain alphabet and 64 bytes (`layer::plain`). `Debug` values are never read. Only spans and events whose
-target starts with `openbilling` or `cratestack`, at `INFO` or above, are looked at (the layer answers `Interest::never` for every other callsite, so the `TRACE` callsites of sqlx, hyper and rustls are never dispatched); a log is an `INFO`-or-above event of `openbilling*`
-whose message is **held to words of letters only** (`layer::plain_message`: `drain failed (unavailable).` passes; `account acct-42 refused` or anything over 128 bytes is exported as `redacted`), so an id with a digit in it cannot leave through a log. A message of letters alone is the code's own to keep static.
+class on the loop spans). `tracing-opentelemetry` records every field of a span, so **each finished span is cleaned at the exporter** (`filter::clean`, in the exporter that wraps the OTLP one): every other field is dropped, whatever its value; span events and links never leave (CrateStack's `cratestack_error` event becomes the span's `error.type` and error status); the span's status carries no message. A text value is also
+held to a plain alphabet and 64 bytes (`filter::plain`). Logs are filtered where they are made (`layer::LogLayer`) and `Debug` values are never read. Only spans and events whose
+target starts with `openbilling` or `cratestack`, at `INFO` or above, are looked at (a per-layer filter, so the `TRACE` callsites of sqlx, hyper and rustls are never dispatched); a log is an `INFO`-or-above event of `openbilling*`
+whose message is **held to words of letters only** (`filter::plain_message`: `drain failed (unavailable).` passes; `account acct-42 refused` or anything over 128 bytes is exported as `redacted`), so an id with a digit in it cannot leave through a log. A message of letters alone is the code's own to keep static.
 
 **Metrics cannot carry an identity or an amount**: a counter adds a count, a histogram records a duration, a gauge
 holds a count or an age, and a label is a pair of `&'static str` taken from a closed enum or a literal.
@@ -86,7 +87,7 @@ Names below are OTLP names; a Prometheus-compatible store has them as `openbilli
 | `openbilling.ledger.postings` | counter | `kind` (`usage_debit`, `credit`, `allowance`, `reversal`) | Transactions booked; replays not counted |
 | `openbilling.allowed.checks` | counter | `verdict` (`allowed`, `refused`), `check` (`debt_limit`, `balance`, `member_cap`, `none`, `other`), `mode` (`at_or_above`, `above`, `never`: the deployer's comparison for that check; `none` when allowed) | `getAllowed` verdicts |
 | `openbilling.telemetry.dropped` | counter | `signal` (`traces`, `logs`) | Spans or logs dropped because the exporter's queue (4096) was full |
-| `openbilling.telemetry.exports` | counter | `signal` (`traces`, `metrics`, `logs`), `result` (`ok`, `failed`) | Export requests to the collector; `failed` is after three tries |
+| `openbilling.telemetry.exports` | counter | `signal` (`traces`, `metrics`, `logs`), `result` (`ok`, `failed`) | Export requests to the collector; `failed` is after the SDK's retries |
 | `openbilling.errors` | counter | `class` (`invalid`, `conflict`, `unavailable`, `internal`), `source` (`api`, `drain`, `partitions`) | Errors by class |
 | `http.server.request.duration` | histogram, s | `method`, `route`, `procedure`, `status` (`2xx` …) | Requests |
 | `db.client.operation.duration` | histogram, s | `operation` (a closed list, else `other`) | Ledger database operations |
@@ -106,22 +107,28 @@ the trace of the span they happened in. The same lines still go to stderr, as be
 |---|---|
 | `src/settings.rs` | `Settings::from_lookup`: the variables, their refusals, the resource |
 | (`openbilling-metrics`) | The registry: `Counter`, `Histogram`, `Gauge`, `global()`, `exposed_names()`: a crate of its own with no dependency, re-exported here, so `openbilling-pg` and `openbilling-http` record without an HTTP client |
-| `src/layer.rs` | The `tracing` layer and the allowlist |
-| `src/otlp.rs` | The three OTLP/JSON request documents |
-| `src/export.rs` | `start`: the tasks that batch and post, `Guard::shutdown` to flush |
+| `src/filter.rs` | The allowlist (`FIELDS`, `clean`), the text rules, and the wrappers around the SDK's processors and exporters that count, bound and clean |
+| `src/layer.rs` | `LogLayer` (logs, filtered where they are made) and `DbTimingLayer` (the database histogram) |
+| `src/meter.rs` | The bridge: the registry's counters and histograms into the SDK's instruments, its gauges as observable instruments |
+| `src/export.rs` | `start`: builds the tracer, meter and logger providers over one `reqwest` client and installs the subscriber; `Guard::shutdown` flushes with a deadline |
 | `src/testkit.rs` | Feature `testkit`: a collector in the process (`TestCollector`), in no image |
 
 ## Dependencies
 
-No OpenTelemetry SDK, no `tonic`, no protobuf. New packages: `tracing-subscriber` (registry only: no formatter, no
-env filter, no regex) and, with it, `sharded-slab`, `thread_local` and `lazy_static`. The HTTP client is the
-workspace's `reqwest` on rustls with ring, so the static binary stays free of OpenSSL and of any C code
+*Verified 2026-11-27 (crates.io and each crate's `Cargo.toml`).* `opentelemetry` 0.33.1, `opentelemetry_sdk` 0.33.1,
+`opentelemetry-otlp` 0.33.1 (features `http-json` and `reqwest-blocking-client`: message types and a blocking client,
+no `tonic`) and `tracing-opentelemetry` 0.34.0, which move together. The HTTP client is the workspace's `reqwest` 0.13 on
+rustls with ring, supplied by this crate (the SDK's own client builder is not used), so the static binary stays free of
+OpenSSL, `aws-lc-rs`, `tonic` and any new `-sys` crate. `cargo tree` on both musl targets, before and after: the new
+packages are the four crates, `opentelemetry-http`, `opentelemetry-proto`, `prost`, `rand` 0.9 and its parts,
+`getrandom` 0.3, `futures-executor`, `const-hex`, `itertools`, `zerocopy` and `ppv-lite86`
 ([ADR 0007](../../docs/adr/0007-opentelemetry-through-a-layer-over-cratestacks-spans.md#dependencies), after ADR 0006).
+`openbilling-metrics` depends on none of them: it offers a `Recorder` seam that this crate attaches.
 
 ## Tests
 
-`cargo test -p openbilling-telemetry`: settings and their refusals (the unsupported variables, the sampler, the CA, one signal alone), the metrics registry, the layer (the allowlist,
-parents, sampling, the database histogram), the OTLP documents, the exporter against a collector in the process
-(`tests/export.rs`), a collector that never answers (`tests/hang.rs`: recording is instant and `shutdown` ends by its deadline), a full queue (a unit test), and the dashboards against the service (`tests/dashboards.rs`: every metric and label a panel
+`cargo test -p openbilling-telemetry`: settings and their refusals (the unsupported variables, the sampler, the CA, one signal alone), the metrics registry and its `Recorder` seam, the pipeline against in-memory exporters (`src/pipeline_tests.rs`: the allowlist,
+parents, a failure marking its span, sampling, the database histogram, a full queue dropping and counting), the exporter against a collector in the process
+(`tests/export.rs`: what arrives, the headers, the resource, the exporter's own metrics, and no byte of a sentinel), a collector that never answers (`tests/hang.rs`: recording is instant and `shutdown` ends by its deadline), a full queue (a unit test), and the dashboards against the service (`tests/dashboards.rs`: every metric and label a panel
 queries exists, every panel is described, the chart's copy equals the files). The flow test with a database is
 `openbilling-http/tests/otel.rs`.
