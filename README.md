@@ -13,14 +13,40 @@ partitioned queue once, drains them into a double-entry ledger across an owner's
 promotions, adjustments, refunds and chargebacks. Every rule is SQL; Rust holds the types, the port and the tests.
 Rating against a price book is next. The database tests have not yet run against a PostgreSQL 19 outside CI.
 
-## What it will do
+## Features
 
-| Part | What |
-|---|---|
-| Intake | Accept a usage event once by its id; a replay is a no-op |
-| Rating | Turn events into amounts with a versioned price book (not built yet: events carry their amount) |
-| Ledger | Debit an owner's accounts across currencies and labels in one transaction, with lots, debt and limits |
-| Reads | Balances, `allowed` with member caps, lots, outcomes and usage per day |
+Legend: ✅ built and tested in CI · ⚠️ built, but partial or not yet proven end to end · 🚧 being built ·
+📋 planned · ⏸️ on hold. Updated with every change that moves a row.
+
+| Area | Feature | Status | Notes |
+|---|---|---|---|
+| Storage | PostgreSQL 19 or later, the only infrastructure | ✅ | Older servers are refused at connect |
+| Intake | Usage events accepted once by id; a replay changes nothing | ✅ | One `ON CONFLICT DO SELECT` statement; a differing payload is a conflict ([ADR 0001](docs/adr/0001-postgres-is-the-queue.md)) |
+| Intake | Partitioned queue by occurrence day, made ahead of time | ✅ | `ob_prepare_partitions` |
+| Intake | Dropping old partitions after the window | 📋 | |
+| Intake | Pre-priced events (each carries its amount) | ✅ | |
+| Intake | Raw events rated at intake | 🚧 | Rating, below |
+| Queue | Drain with `FOR UPDATE SKIP LOCKED`, once-only per event | ✅ | Concurrency tested on the conformance suite |
+| Queue | Workers woken by `LISTEN/NOTIFY`, the table as the truth | ✅ | |
+| Queue | A worker loop in the service binary | 📋 | The drain is a function; nothing runs it on a schedule yet |
+| Rating | A versioned price book, loaded from YAML, rated in SQL | 🚧 | Each event priced by the version in force when it happened; unpriced meters refused |
+| Accounts | An owner holds several accounts (one per currency and label) | ✅ | [ADR 0002](docs/adr/0002-an-owner-holds-several-accounts.md) |
+| Ledger | Double-entry, append-only, amounts in integer micro-units | ✅ | Every transaction balances, enforced by triggers |
+| Ledger | Configurable draw order across accounts and lots | ✅ | |
+| Ledger | Debt, a debt limit, and repayment from new credit | ✅ | |
+| Ledger | Monthly allowance, granted once per account and month | ✅ | |
+| Credits | Sources: payment, promotion, adjustment, each once-only by id | ✅ | |
+| Credits | Refunds and chargebacks, capped at the payment | ✅ | Enforced by a trigger, also under concurrency |
+| Budget | `allowed`: may this owner spend, with per-member monthly caps | ✅ | |
+| Reads | Balance, lots, event outcomes, usage per day | ✅ | SQL functions today |
+| Reads | Monthly statements | 📋 | |
+| Payments | A payment-provider port with vpay as the first adapter | 🚧 | Signed webhooks become once-only credits; top-ups through the provider; each payment read back before it is credited |
+| API | External API through CrateStack: on-demand queries, custom selects, policies | 🚧 | Writes are mutation procedures that call the SQL functions |
+| API | Authentication of API callers, fail-closed | 🚧 | |
+| Testing | A conformance suite for every `LedgerStore` | ✅ | |
+| Testing | End-to-end scenarios against the real service and PostgreSQL | 📋 | Metered usage, prepaid balance, organisation caps, once-only, concurrency, price versions, statements, payment round-trip |
+| Release | A signed container image and an OCI Helm chart (bjw-s app-template v5) | 📋 | |
+| CI | fmt, clippy, tests on PostgreSQL 19, cargo deny, MSRV | ✅ | |
 
 ## Build and test
 
