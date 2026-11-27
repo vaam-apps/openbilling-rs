@@ -20,6 +20,9 @@ openbilling-http.workspace = true
 openbilling-jwt.workspace = true
 openbilling-pg.workspace = true
 openbilling-vpay.workspace = true
+# The configuration file (`OPENBILLING_CONFIG`): the deployer's policy, as YAML.
+serde.workspace = true
+serde-saphyr.workspace = true
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "signal", "time"] }
 
 [dev-dependencies]

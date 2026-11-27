@@ -256,12 +256,22 @@ pub struct Deployment {
 impl Deployment {
     /// A fresh database with `instances` services against it (started one after the other), or `None` to skip.
     pub async fn start(instances: u32, extra: &Extra) -> Option<Self> {
+        let extras = vec![extra.clone(); usize::try_from(instances).unwrap()];
+        Self::start_each(&extras).await
+    }
+
+    /// A fresh database with one service per entry of `extras`, each with that environment (started one after the
+    /// other, in order), or `None` to skip.
+    pub async fn start_each(extras: &[Extra]) -> Option<Self> {
         let admin = database_url()?;
-        let slots = SLOTS.acquire_many(instances).await.unwrap();
+        let slots = SLOTS
+            .acquire_many(u32::try_from(extras.len()).unwrap())
+            .await
+            .unwrap();
         let issuer = TestIssuer::start().await;
         let database_url = fresh_database(&admin).await;
         let mut services = Vec::new();
-        for _ in 0..instances {
+        for extra in extras {
             services.push(Service::start(&database_url, &issuer, extra).await);
         }
         Some(Self {
@@ -482,9 +492,16 @@ impl Deployment {
 
     /// `getAllowed` as the producer.
     pub async fn allowed(&self, owner: &str, member: &str) -> Value {
-        self.read(
+        self.allowed_at(0, owner, member).await
+    }
+
+    /// `getAllowed` as the producer, on service `at`.
+    pub async fn allowed_at(&self, at: usize, owner: &str, member: &str) -> Value {
+        self.call_at(
+            at,
             "getAllowed",
             Who::Producer,
+            None,
             json!({"owner": owner, "currency": EUR, "member": member}),
         )
         .await

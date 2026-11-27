@@ -1,0 +1,5 @@
+# expect: openbilling.config.allowed.debt_limit: at_or_above, above or never
+openbilling:
+  config:
+    allowed:
+      debt_limit: below

@@ -4,15 +4,15 @@
 //! window is the store's to check.
 
 use openbilling_core::{
-    Amount, CreditSource, CreditTarget, EventOutcome, Intake, LedgerConfig, LedgerStore, LotKind,
-    LotOrder, NotAllowed, RefusalReason, Reversal, ReversalKind, Rule, UsageEvent, UtcDay, Window,
-    WithinKind,
+    Allowed, AllowedPolicy, Amount, CreditSource, CreditTarget, EventOutcome, Intake, LedgerConfig,
+    LedgerStore, LotKind, LotOrder, NotAllowed, RefusalReason, RefuseWhen, Reversal, ReversalKind,
+    Rule, UsageEvent, UtcDay, Window, WithinKind,
 };
 
 use crate::fixtures::{
-    DAY, HOUR, MINUTE, account, allowed_at, allowed_now, config, credit_id, credit_to, debt,
-    drain_all, eur, event, event_id, label, lots, member, micros, net, now, open, owner, pay, plus,
-    refusal_of, remaining, remainings, rule_of, setup, take, usd,
+    DAY, HOUR, MINUTE, account, allowed_at, allowed_now, allowed_under, config, credit_id,
+    credit_to, debt, drain_all, eur, event, event_id, label, lots, member, micros, net, now, open,
+    owner, pay, plus, refusal_of, remaining, remainings, rule_of, setup, take, usd,
 };
 
 /// The same batch applied twice debits once; a mixed batch debits only the new id; a repeat inside one batch
@@ -863,7 +863,13 @@ pub async fn the_member_cap_is_per_owner_currency_member_and_month<S: LedgerStor
     );
     // The cap is per currency.
     let other = store
-        .allowed(&owner("o1"), &usd(), &member("m1"), t)
+        .allowed(
+            &owner("o1"),
+            &usd(),
+            &member("m1"),
+            t,
+            AllowedPolicy::default(),
+        )
         .await
         .expect("allowed");
     assert_eq!(
@@ -1123,8 +1129,8 @@ pub async fn an_owner_without_an_account_in_the_currency_is_refused<S: LedgerSto
 
 /// ADR 0001, point 23, amended 2026-11-27 (E1, E2), the owner's decision "Always book as debt": usage that already
 /// happened is booked as debt even past the owner's debt limit, and never refused for it. The limit refuses new
-/// calls: `allowed` answers `debt_limit` once the owner owes something and its debt is at or past the limit, which
-/// flags the owner; credit that repays the debt lifts it. With no limit, debt is unlimited.
+/// calls: under the default policy `allowed` answers `debt_limit` once the debt is at or past the limit, and the
+/// owner is flagged once it is past it; credit that repays the debt lifts it. With no limit, debt is unlimited.
 pub async fn a_debit_past_the_debt_limit_is_booked_as_debt_and_flags_the_owner<S: LedgerStore>(
     store: S,
 ) {
@@ -1173,7 +1179,7 @@ pub async fn a_debit_past_the_debt_limit_is_booked_as_debt_and_flags_the_owner<S
     let repaid = allowed_now(&store, "o1", "m1").await;
     assert_eq!((repaid.refused, repaid.balance), (None, micros(10)));
 
-    // At the limit is refused, under it is not; a limit of zero refuses as soon as anything is owed.
+    // At the limit is refused, under it is not (the comparison of each mode: `allowed_compares_as_the_policy_says`).
     take(&store, &[event("e4", "o1", "m1", 15, t)]).await;
     drain_all(&store, 10).await;
     assert_eq!(debt(&store, "o1").await, 5);
@@ -1203,6 +1209,222 @@ pub async fn a_debit_past_the_debt_limit_is_booked_as_debt_and_flags_the_owner<S
                 .await
         ),
         Rule::UnknownAccount
+    );
+}
+
+/// The owner's decision of 2026-11-27 ("plain comparison, no special case", ADR 0001, amended, F1 to F4): each check
+/// of `allowed` compares what is used with its bound as the policy says, at the boundaries: a bound of zero with
+/// nothing used, used equal to the bound, used one over. `never` reports and never refuses; the checks run in their
+/// order (debt limit, balance, member cap); and the numbers do not depend on the policy.
+pub async fn allowed_compares_as_the_policy_says<S: LedgerStore>(store: S) {
+    use RefuseWhen::{Above, AtOrAbove, Never};
+    let only = |debt_limit, balance, member_cap| AllowedPolicy {
+        debt_limit,
+        balance,
+        member_cap,
+    };
+    setup(&store).await;
+    let t = now(&store).await;
+    let verdicts = async |who: &str, by: &str, policies: [AllowedPolicy; 3]| {
+        let mut verdicts = Vec::new();
+        for policy in policies {
+            verdicts.push(allowed_under(&store, who, by, t, policy).await.refused);
+        }
+        verdicts
+    };
+
+    // The debt limit, the other checks off. o1 holds no credit and owes nothing.
+    open(&store, "a1", "o1", eur(), "main").await;
+    let debt_limit_modes = [
+        only(AtOrAbove, Never, Never),
+        only(Above, Never, Never),
+        only(Never, Never, Never),
+    ];
+    store
+        .set_debt_limit(&owner("o1"), &eur(), Some(Amount::ZERO))
+        .await
+        .expect("a limit of zero");
+    assert_eq!(
+        verdicts("o1", "m1", debt_limit_modes).await,
+        [Some(NotAllowed::DebtLimit), None, None],
+        "limit 0, debt 0: 0 >= 0, no special case for an owner who owes nothing"
+    );
+    take(&store, &[event("e1", "o1", "m1", 5, t)]).await;
+    drain_all(&store, 10).await;
+    assert_eq!(debt(&store, "o1").await, 5);
+    store
+        .set_debt_limit(&owner("o1"), &eur(), Some(micros(5)))
+        .await
+        .expect("a limit");
+    assert_eq!(
+        verdicts("o1", "m1", debt_limit_modes).await,
+        [Some(NotAllowed::DebtLimit), None, None],
+        "limit 5, debt 5"
+    );
+    let at_limit = allowed_under(&store, "o1", "m1", t, only(Never, Never, Never)).await;
+    assert_eq!(
+        (at_limit.debt, at_limit.debt_limit, at_limit.past_limit),
+        (micros(5), Some(micros(5)), false),
+        "at the limit is not past it"
+    );
+    store
+        .set_debt_limit(&owner("o1"), &eur(), Some(micros(4)))
+        .await
+        .expect("a limit");
+    assert_eq!(
+        verdicts("o1", "m1", debt_limit_modes).await,
+        [
+            Some(NotAllowed::DebtLimit),
+            Some(NotAllowed::DebtLimit),
+            None
+        ],
+        "limit 4, debt 5"
+    );
+    let past = allowed_under(&store, "o1", "m1", t, only(Never, Never, Never)).await;
+    assert_eq!(
+        (past.refused, past.debt_limit, past.past_limit, past.balance),
+        (None, Some(micros(4)), true, micros(-5)),
+        "never refuses, and still reports the owner past its limit"
+    );
+
+    // The balance: the debt against what the lots hold. o2 holds nothing and owes nothing: net 0.
+    open(&store, "a2", "o2", eur(), "main").await;
+    let balance_modes = [
+        only(Never, AtOrAbove, Never),
+        only(Never, Above, Never),
+        only(Never, Never, Never),
+    ];
+    assert_eq!(
+        verdicts("o2", "m1", balance_modes).await,
+        [Some(NotAllowed::Balance), None, None],
+        "nothing held, nothing owed: net 0"
+    );
+    pay(&store, "p2", "a2", 10).await;
+    assert_eq!(
+        verdicts("o2", "m1", balance_modes).await,
+        [None, None, None],
+        "net 10"
+    );
+    take(&store, &[event("e2", "o2", "m1", 10, t)]).await;
+    drain_all(&store, 10).await;
+    assert_eq!(
+        verdicts("o2", "m1", balance_modes).await,
+        [Some(NotAllowed::Balance), None, None],
+        "the credit drawn to zero: net 0"
+    );
+    take(&store, &[event("e3", "o2", "m1", 1, t)]).await;
+    drain_all(&store, 10).await;
+    assert_eq!(
+        verdicts("o2", "m1", balance_modes).await,
+        [Some(NotAllowed::Balance), Some(NotAllowed::Balance), None],
+        "debt 1 over nothing held: net -1"
+    );
+
+    // The member's cap: their usage this month against it. o3 holds plenty.
+    open(&store, "a3", "o3", eur(), "main").await;
+    pay(&store, "p3", "a3", 1_000).await;
+    let cap_modes = [
+        only(Never, Never, AtOrAbove),
+        only(Never, Never, Above),
+        only(Never, Never, Never),
+    ];
+    let cap = |value: i64| {
+        let store = &store;
+        async move {
+            store
+                .set_member_cap(&owner("o3"), &eur(), &member("m1"), Some(micros(value)))
+                .await
+                .expect("a cap");
+        }
+    };
+    cap(0).await;
+    assert_eq!(
+        verdicts("o3", "m1", cap_modes).await,
+        [Some(NotAllowed::MemberCap), None, None],
+        "cap 0, nothing spent"
+    );
+    take(&store, &[event("e4", "o3", "m1", 5, t)]).await;
+    drain_all(&store, 10).await;
+    cap(5).await;
+    assert_eq!(
+        verdicts("o3", "m1", cap_modes).await,
+        [Some(NotAllowed::MemberCap), None, None],
+        "cap 5, 5 spent"
+    );
+    cap(4).await;
+    assert_eq!(
+        verdicts("o3", "m1", cap_modes).await,
+        [
+            Some(NotAllowed::MemberCap),
+            Some(NotAllowed::MemberCap),
+            None
+        ],
+        "cap 4, 5 spent"
+    );
+    let over = allowed_under(&store, "o3", "m1", t, only(Never, Never, Never)).await;
+    assert_eq!(
+        (over.member_spent, over.member_cap, over.member_remaining),
+        (micros(5), Some(micros(4)), Some(micros(-1)))
+    );
+    let uncapped = allowed_at(&store, "o3", "m2", t).await;
+    assert_eq!(
+        (uncapped.refused, uncapped.member_spent, uncapped.member_cap),
+        (None, Amount::ZERO, None),
+        "no cap never refuses"
+    );
+
+    // The order, and the numbers whatever the policy. o4 owes 1 over a limit of zero; m9 has a cap of zero.
+    open(&store, "a4", "o4", eur(), "main").await;
+    take(&store, &[event("e5", "o4", "m1", 1, t)]).await;
+    drain_all(&store, 10).await;
+    store
+        .set_debt_limit(&owner("o4"), &eur(), Some(Amount::ZERO))
+        .await
+        .expect("a limit");
+    store
+        .set_member_cap(&owner("o4"), &eur(), &member("m9"), Some(Amount::ZERO))
+        .await
+        .expect("a cap");
+    let mut answers: Vec<Allowed> = Vec::new();
+    for policy in [
+        AllowedPolicy::default(),
+        only(Never, AtOrAbove, AtOrAbove),
+        only(Never, Never, AtOrAbove),
+        only(Never, Never, Never),
+    ] {
+        answers.push(allowed_under(&store, "o4", "m9", t, policy).await);
+    }
+    assert_eq!(
+        answers.iter().map(|a| a.refused).collect::<Vec<_>>(),
+        [
+            Some(NotAllowed::DebtLimit),
+            Some(NotAllowed::Balance),
+            Some(NotAllowed::MemberCap),
+            None
+        ],
+        "the debt limit first, then the balance, then the member's cap"
+    );
+    let facts = |a: &Allowed| Allowed {
+        refused: None,
+        ..a.clone()
+    };
+    assert!(
+        answers.iter().all(|a| facts(a) == facts(&answers[0])),
+        "the numbers do not depend on the policy: {answers:?}"
+    );
+    assert_eq!(
+        facts(&answers[0]),
+        Allowed {
+            refused: None,
+            balance: micros(-1),
+            available: Amount::ZERO,
+            debt: micros(1),
+            debt_limit: Some(Amount::ZERO),
+            past_limit: true,
+            member_spent: Amount::ZERO,
+            member_cap: Some(Amount::ZERO),
+            member_remaining: Some(Amount::ZERO),
+        }
     );
 }
 

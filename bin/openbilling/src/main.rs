@@ -32,7 +32,16 @@ pub const WARN: Style = AnsiColor::Yellow.on_default().effects(Effects::BOLD);
 pub const ERROR: Style = AnsiColor::Red.on_default().effects(Effects::BOLD);
 
 const ENVIRONMENT: &str = "\
-serve reads its configuration from the environment:
+serve reads its policy from an optional YAML file, and its secrets and endpoints from the
+environment. No setting is read from both:
+  OPENBILLING_CONFIG
+      The YAML file of policy, checked at start: an unknown key or value is refused.
+      Unset: every check at_or_above. A check is at_or_above (refuse when used >= bound),
+      above (used > bound) or never (report only):
+        allowed:
+          debt_limit: at_or_above   # the debt against its limit
+          balance: at_or_above      # the debt against the drawable credit
+          member_cap: at_or_above   # a member's usage this month against the cap
   OPENBILLING_DATABASE_URL, or OPENBILLING_DATABASE_URL_FILE (a file holding it)
       The PostgreSQL 19 database. Never printed.
   OPENBILLING_LISTEN

@@ -9,10 +9,10 @@ use std::sync::Arc;
 
 use cratestack::{BigInt, CratestackContext, CratestackError};
 use openbilling_core::{
-    AccountId, AccountLabel, Amount, CreditId, CreditSource, CreditTarget, Credited, CurrencyCode,
-    IdempotencyKey, LedgerConfig, LotKind as CoreLotKind, LotOrder, MemberId, NewAccount, OwnerId,
-    PaymentProvider, PaymentRequest, PaymentTarget, PriceBook, ReturnUrls, Settled, WithinKind,
-    settle_payment, settle_refund,
+    AccountId, AccountLabel, AllowedPolicy, Amount, CreditId, CreditSource, CreditTarget, Credited,
+    CurrencyCode, IdempotencyKey, LedgerConfig, LotKind as CoreLotKind, LotOrder, MemberId,
+    NewAccount, OwnerId, PaymentProvider, PaymentRequest, PaymentTarget, PriceBook, ReturnUrls,
+    Settled, WithinKind, settle_payment, settle_refund,
 };
 
 use crate::errors::{invalid, ledger, payment, settle};
@@ -24,12 +24,14 @@ use crate::intake;
 use crate::time::{date_time, timestamp};
 
 /// What the procedures call: the ledger (in the service, [`PgLedger`](openbilling_pg::PgLedger)), and the
-/// payment provider when one is configured.
+/// payment provider when one is configured; and the deployer's policy for `getAllowed`.
 pub struct Services<L, P> {
     /// The ledger.
     pub ledger: L,
     /// The payment provider, or `None`: top-ups and reconciliation then answer `503`.
     pub provider: Option<P>,
+    /// How `getAllowed` compares its numbers (the service's configuration file). A caller cannot choose it.
+    pub allowed: AllowedPolicy,
 }
 
 /// The procedure registry.
@@ -114,10 +116,14 @@ where
         args: procedures::get_allowed::Args,
         _authorized: procedures::get_allowed::Authorized,
     ) -> Result<procedures::get_allowed::Output, CratestackError> {
+        let policy = self.0.allowed;
         let args = queries::allowed_row::Args {
             owner: args.args.owner,
             currency: args.args.currency,
             member: args.args.member,
+            debtLimitMode: policy.debt_limit.as_str().to_owned(),
+            balanceMode: policy.balance.as_str().to_owned(),
+            memberCapMode: policy.member_cap.as_str().to_owned(),
         };
         db.queries().allowed_row(&args, ctx).await
     }

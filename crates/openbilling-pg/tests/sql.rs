@@ -51,7 +51,7 @@ async fn migrations_apply_once_and_every_function_answers() {
     migrator().run(&pool).await.expect("a second run");
     assert_eq!(
         scalar(&pool, "SELECT count(*) FROM _sqlx_migrations").await,
-        7
+        8
     );
     // The flag of owners past their debt limit is a view, read as a plain query (ADR 0001, amended, E3).
     assert_eq!(
@@ -108,6 +108,7 @@ async fn migrations_apply_once_and_every_function_answers() {
         "ob_rate",
         "ob_raw_payload_canonical",
         "ob_raw_payload_hash",
+        "ob_reached",
         "ob_refuse_change",
         "ob_repay_from_lot",
         "ob_reverse",
@@ -164,6 +165,7 @@ async fn migrations_apply_once_and_every_function_answers() {
             &eur(),
             &openbilling_core::MemberId::new("m1").unwrap(),
             t,
+            openbilling_core::AllowedPolicy::default(),
         )
         .await
         .unwrap();
@@ -433,6 +435,84 @@ async fn a_day_without_a_partition_is_unavailable() {
     );
 }
 
+/// The owner's decision of 2026-11-27 (ADR 0001, amended, F1, F2): `ob_reached` is a plain comparison, each mode at
+/// its boundaries (nothing used against a bound of zero, used equal to the bound, one under, one over, no bound),
+/// and `ob_allowed` takes nothing but the three names: anything else, or nothing, fails at the call.
+#[tokio::test]
+async fn each_comparison_is_plain_and_an_unknown_one_fails_at_the_call() {
+    let Some((_, pool)) = ledger_and_pool().await else {
+        return;
+    };
+    // (used, bound): 0 against 0, equal, one under, one over, no bound.
+    let cases: [(i64, Option<i64>); 5] = [
+        (0, Some(0)),
+        (5, Some(5)),
+        (4, Some(5)),
+        (6, Some(5)),
+        (5, None),
+    ];
+    for (mode, expected) in [
+        ("at_or_above", [true, true, false, true, false]),
+        ("above", [false, false, false, true, false]),
+        ("never", [false, false, false, false, false]),
+    ] {
+        let mut answers = Vec::new();
+        for (used, bound) in cases {
+            let reached: bool =
+                sqlx::query_scalar("SELECT ob_reached($1, $2::numeric, $3::numeric)")
+                    .bind(mode)
+                    .bind(used)
+                    .bind(bound)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            answers.push(reached);
+        }
+        assert_eq!(answers, expected, "{mode} over {cases:?}");
+    }
+
+    // An owner the ledger has never seen: no limit, no cap, nothing held. Each check of `ob_allowed` takes its own
+    // argument: the balance alone refuses, and only where its mode says.
+    let verdict = async |modes: [&str; 3]| -> Option<String> {
+        sqlx::query_scalar("SELECT o_refused FROM ob_allowed('o-x', 'EUR', 'm1', 0, $1, $2, $3)")
+            .bind(modes[0])
+            .bind(modes[1])
+            .bind(modes[2])
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+    };
+    assert_eq!(
+        verdict(["at_or_above", "at_or_above", "at_or_above"])
+            .await
+            .as_deref(),
+        Some("balance")
+    );
+    assert_eq!(verdict(["at_or_above", "above", "at_or_above"]).await, None);
+    assert_eq!(verdict(["never", "never", "never"]).await, None);
+
+    for (modes, code) in [
+        (["at_or_above", "below", "never"], "23514"),
+        (["At_Or_Above", "never", "never"], "23514"),
+        (["never", "never", ""], "23514"),
+    ] {
+        let error = sqlx::query("SELECT * FROM ob_allowed('o-x', 'EUR', 'm1', 0, $1, $2, $3)")
+            .bind(modes[0])
+            .bind(modes[1])
+            .bind(modes[2])
+            .fetch_one(&pool)
+            .await
+            .expect_err("an unknown comparison");
+        assert_eq!(sqlstate(&error), code, "{modes:?}");
+    }
+    let none = sqlx::query("SELECT * FROM ob_allowed('o-x', 'EUR', 'm1', 0, $1, 'never', 'never')")
+        .bind(None::<String>)
+        .fetch_one(&pool)
+        .await
+        .expect_err("no comparison");
+    assert_eq!(sqlstate(&none), "23502");
+}
+
 /// A closed pool is `unavailable`.
 #[tokio::test]
 async fn a_closed_pool_is_unavailable() {
@@ -448,6 +528,7 @@ async fn a_closed_pool_is_unavailable() {
             &eur(),
             &openbilling_core::MemberId::new("m1").unwrap(),
             openbilling_core::Timestamp::EPOCH,
+            openbilling_core::AllowedPolicy::default(),
         )
         .await
         .expect_err("closed");

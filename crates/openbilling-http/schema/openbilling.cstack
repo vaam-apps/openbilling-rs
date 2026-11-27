@@ -137,16 +137,29 @@ type AllowedRow {
   allowed               Boolean
   refused               String?
   balanceMicros         BigInt
+  availableMicros       BigInt
+  debtMicros            BigInt
+  debtLimitMicros       BigInt?
+  pastLimit             Boolean
+  memberSpentMicros     BigInt
+  memberCapMicros       BigInt?
   memberRemainingMicros BigInt?
 }
 
-// May the member spend for the owner in the currency now? The rule is the ledger's read `ob_allowed`: `refused`
-// is `debt_limit` (the owner owes something and its debt is at or past its limit), `balance` or `member_cap`.
-query allowedRow(owner: String, currency: String, member: String): AllowedRow
+// May the member spend for the owner in the currency now? The rule is the ledger's read `ob_allowed`, which compares
+// each check as the deployer's configuration file says (`allowed:` in OPENBILLING_CONFIG; the procedure passes it,
+// a caller never does): `refused` is `debt_limit` (the debt against the owner's limit), `balance` (the debt against
+// the drawable credit) or `member_cap` (the member's usage this month against their cap), in that order. The numbers
+// are facts whatever the policy: `balanceMicros` (credit less debt), `availableMicros`, `debtMicros`,
+// `debtLimitMicros`, `pastLimit` (debt > limit), `memberSpentMicros`, `memberCapMicros`, `memberRemainingMicros`. A
+// caller with a rule of its own reads them and ignores `allowed` and `refused` (the owner's decision of 2026-11-27).
+query allowedRow(owner: String, currency: String, member: String, debtLimitMode: String, balanceMode: String, memberCapMode: String): AllowedRow
   @@sql("""
     SELECT a.o_refused IS NULL AS "allowed", a.o_refused AS "refused", a.o_balance AS "balanceMicros",
-           a.o_member_remaining AS "memberRemainingMicros"
-    FROM ob_allowed($1, $2, $3, ob_micros(now())) a
+           a.o_available AS "availableMicros", a.o_debt AS "debtMicros", a.o_debt_limit AS "debtLimitMicros",
+           a.o_past_limit AS "pastLimit", a.o_member_spent AS "memberSpentMicros",
+           a.o_member_cap AS "memberCapMicros", a.o_member_remaining AS "memberRemainingMicros"
+    FROM ob_allowed($1, $2, $3, ob_micros(now()), $4, $5, $6) a
   """)
   @allow(owner == auth().sub || hasRole("operator") || hasRole("producer"))
 
@@ -401,7 +414,8 @@ type DebtLimitInput {
 }
 
 // Sets, or with no `limitMicros` removes, an owner's debt limit in a currency (`ob_set_debt_limit`). Usage is
-// booked as debt even past it; it refuses new calls through `getAllowed` and flags the owner.
+// booked as debt even past it; `getAllowed` compares the debt with it as the deployer's configuration says, and the
+// reads flag an owner whose debt is above it.
 mutation procedure setDebtLimit(args: DebtLimitInput): Done
   @allow(hasRole("operator"))
 

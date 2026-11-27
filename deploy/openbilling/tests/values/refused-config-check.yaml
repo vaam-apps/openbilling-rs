@@ -1,0 +1,5 @@
+# expect: openbilling.config.allowed.debt_limt: not a check; the checks are debt_limit, balance and member_cap
+openbilling:
+  config:
+    allowed:
+      debt_limt: above

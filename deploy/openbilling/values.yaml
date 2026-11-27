@@ -29,6 +29,23 @@ openbilling:
     # -- How the issuer's role values map to openbilling's two roles: `value=operator,value=producer`; empty is
     # each value as itself. OPENBILLING_AUTH_ROLE_MAP.
     roleMap: ""
+  # -- The service's configuration file: the deployer's policy, never a secret or an endpoint (those are the
+  # environment's). Rendered as YAML into the ConfigMap `config`, mounted read-only at /etc/openbilling/config.yaml
+  # and named by OPENBILLING_CONFIG; a change rolls the pods. Refused when wrong by templates/_validate.tpl, as the
+  # binary refuses it at start. The owner's decision of 2026-11-27: the service reports the numbers, and the
+  # deployer decides here how `getAllowed` judges them.
+  config:
+    # -- One comparison per check of `getAllowed`, in the order they run: `at_or_above` refuses when what is used
+    # is at or above its bound, `above` when it is above it, `never` never (the numbers are reported either way).
+    allowed:
+      # -- The owner's debt against its debt limit. A limit of 0 refuses an owner who owes nothing under
+      # `at_or_above` (0 >= 0); `above` lets debt reach the limit.
+      debt_limit: at_or_above
+      # -- The owner's debt against its drawable credit: `at_or_above` refuses a net balance of 0 or below, `above`
+      # one below 0, `never` lets the debt limit alone decide.
+      balance: at_or_above
+      # -- A member's applied usage this month against their cap.
+      member_cap: at_or_above
 
 controllers:
   main:
@@ -65,6 +82,8 @@ controllers:
           OPENBILLING_AUTH_JWKS_URL: "{{ .Values.openbilling.auth.jwksUrl }}"
           OPENBILLING_AUTH_ROLES_CLAIM: "{{ .Values.openbilling.auth.rolesClaim }}"
           OPENBILLING_AUTH_ROLE_MAP: "{{ .Values.openbilling.auth.roleMap }}"
+          # The configuration file, from `openbilling.config` (the ConfigMap `config`, mounted below).
+          OPENBILLING_CONFIG: /etc/openbilling/config.yaml
           OPENBILLING_DATABASE_URL:
             valueFrom:
               secretKeyRef:
@@ -121,6 +140,22 @@ controllers:
             memory: 64Mi
           limits:
             memory: 256Mi
+
+# The configuration file: `openbilling.config` as YAML. Its checksum is on the pod, so a change rolls the pods.
+configMaps:
+  config:
+    enabled: true
+    data:
+      config.yaml: "{{ toYaml .Values.openbilling.config }}"
+
+persistence:
+  config:
+    type: configMap
+    identifier: config
+    globalMounts:
+      - path: /etc/openbilling/config.yaml
+        subPath: config.yaml
+        readOnly: true
 
 defaultPodOptions:
   # The image's user: distroless `nonroot`, uid and gid 65532.

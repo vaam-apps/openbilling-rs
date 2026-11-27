@@ -1,9 +1,9 @@
 //! Helpers the conformance cases share. They panic on anything unexpected: they are test code.
 
 use openbilling_core::{
-    AccountId, AccountLabel, Allowed, Amount, CreditId, CreditSource, CreditTarget, Credited,
-    CurrencyCode, DrainReport, EventId, LedgerConfig, LedgerError, LedgerStore, LotOrder, LotView,
-    MemberId, NewAccount, OwnerId, Rule, Timestamp, UsageEvent,
+    AccountId, AccountLabel, Allowed, AllowedPolicy, Amount, CreditId, CreditSource, CreditTarget,
+    Credited, CurrencyCode, DrainReport, EventId, LedgerConfig, LedgerError, LedgerStore, LotOrder,
+    LotView, MemberId, NewAccount, OwnerId, Rule, Timestamp, UsageEvent,
 };
 
 /// The euro: the currency most cases use.
@@ -172,10 +172,21 @@ pub async fn remainings<S: LedgerStore>(store: &S, id: &str) -> Vec<i64> {
         .collect()
 }
 
-/// Whether `by` may spend for `who` in EUR at `at`.
+/// Whether `by` may spend for `who` in EUR at `at`, under the default policy (every check `at_or_above`).
 pub async fn allowed_at<S: LedgerStore>(store: &S, who: &str, by: &str, at: Timestamp) -> Allowed {
+    allowed_under(store, who, by, at, AllowedPolicy::default()).await
+}
+
+/// Whether `by` may spend for `who` in EUR at `at`, under `policy`.
+pub async fn allowed_under<S: LedgerStore>(
+    store: &S,
+    who: &str,
+    by: &str,
+    at: Timestamp,
+    policy: AllowedPolicy,
+) -> Allowed {
     store
-        .allowed(&owner(who), &eur(), &member(by), at)
+        .allowed(&owner(who), &eur(), &member(by), at, policy)
         .await
         .expect("allowed")
 }

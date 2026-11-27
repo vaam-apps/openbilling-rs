@@ -50,9 +50,23 @@ calls, through the `allowed` check, and an owner past it is flagged. Built by th
 | # | Change | Points |
 |---|---|---|
 | E1 | **The drain refuses no event for the limit.** Its step 4 draws each event across the owner's accounts and books what they lack as debt, against revenue, whatever the limit. The reason `limit` is gone, from the SQL's checks and from `RefusalReason` (no API type names it: the outcome's `reason` is text). A debit whose debt would pass the largest amount is still refused, now as `overflow`, a rule of its own | 23 |
-| E2 | **The limit refuses new calls.** `ob_allowed` answers `debt_limit` when the owner owes something and its debt is at or past its limit, before `balance` and `member_cap`. With no limit, debt is unlimited and this never refuses. A limit of zero refuses as soon as anything is owed (the owner's rule read as "debt ≥ limit, with some debt": an owner who owes nothing is not refused for a limit of zero) | 23 |
+| E2 | **The limit refuses new calls.** `ob_allowed` answers `debt_limit` when the owner owes something and its debt is at or past its limit, before `balance` and `member_cap`. With no limit, debt is unlimited and this never refuses. A limit of zero refuses as soon as anything is owed (the owner's rule read as "debt ≥ limit, with some debt": an owner who owes nothing is not refused for a limit of zero). *Amended 2026-11-27 (F1, F2): no "with some debt"; the comparison is the deployer's* | 23 |
 | E3 | **An owner past the limit is flagged**: the view `ob_past_debt_limit` (owner, currency, debt, limit, for a debt above the limit), and on the API's balance read the columns `debtLimitMicros` and `pastLimit` | 23 |
 | E4 | *Bad, or to be managed* below: "Usage refused for a limit is not billed" no longer holds; every applied event is billed, and debt past the limit is the operator's to collect | Consequences |
+
+*Amended 2026-11-27 (the deployer decides how `allowed` judges):* the owner's decision of that day, in their words:
+**"Its not the role of this service to judge that"**, and **"I mean, if it's too specialized into OPA validation,
+it makes it difficult to reuse. I prefer this backend reports only So your option "plain comparison, no special
+case" and let the end developer decide how in the .yaml configuration"**. Built by the migration
+`20261127000008_allowed_policy.sql` and the service's configuration file. What changes (E2 above is amended by F1
+and F2):
+
+| # | Change | Points |
+|---|---|---|
+| F1 | **No special case for zero.** Each check of `ob_allowed` is a plain comparison of what is used against its bound: the owner's debt against its debt limit, the debt against the drawable credit (`balance`), a member's usage this month against their cap. E2's guard "with some debt" is gone: under `at_or_above` a limit of zero refuses an owner who owes nothing (0 >= 0), and a deployer who wants otherwise says `above` | 23 |
+| F2 | **The deployer chooses the comparison**, per check, in the service's configuration file (`OPENBILLING_CONFIG`, YAML): `at_or_above` (refuse when used >= bound, the default, the behaviour of E2 less its guard), `above` (used > bound) or `never` (report only). The rule stays in SQL: the mode is an argument of `ob_allowed` (the domain `ob_comparison`, so a call that names another mode, or none, fails), and the service passes the file's choice on every call; an API caller cannot choose it. The checks keep their order: the debt limit, the balance, the member's cap | 23 |
+| F3 | **The facts are answered whatever the policy.** `ob_allowed`, the port's `Allowed` and `getAllowed` carry the net balance, the drawable credit, the debt, the limit, the flag `pastLimit` (debt > limit, as E3's view), the member's usage this month, their cap and what is left of it, beside the verdict. A caller with a rule of its own (an external policy engine, for example) reads them and ignores the verdict | 23 |
+| F4 | **The file holds policy, the environment secrets and endpoints.** No setting is read from both, so neither overrides the other; an unknown key or value is refused at start, and with no file every check is `at_or_above`. The chart renders its `openbilling.config` value into a ConfigMap, mounted and named by `OPENBILLING_CONFIG`, and refuses what the binary would | — |
 
 ## Summary
 
@@ -193,6 +207,8 @@ PostgreSQL is already the only infrastructure (rule 1 of the agent guide). This 
     amount it would have been. A refusal is final for that event. *Amended 2026-11-27 (E1 to E3), "Always book as
     debt": no debit is refused for the limit; what finds no credit is debt, whatever the limit, and the limit
     refuses new calls through `allowed`. A debit whose debt would pass the largest amount is refused `overflow`.*
+    *Amended 2026-11-27 (F1 to F3): `allowed` compares each check as the deployer's configuration says, with no
+    special case for zero, and reports the numbers whatever it decides.*
 24. **Counter-accounts carry no live balance row.** Every debit has a balancing credit, for instance to a revenue
     account per currency. If that account had a balance row, every event of every account would lock it. Its balance
     is the sum of its entries, read on demand or rolled up by a job.

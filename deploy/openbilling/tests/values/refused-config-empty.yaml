@@ -1,0 +1,6 @@
+# expect: openbilling.config.allowed.member_cap: at_or_above, above or never
+# An empty mode is not the default: write the mode, or leave the key out.
+openbilling:
+  config:
+    allowed:
+      member_cap: ""

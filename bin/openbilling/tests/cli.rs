@@ -46,6 +46,7 @@ fn help_prints_the_usage_and_the_environment() {
     assert!(stdout.contains("serve"), "{stdout}");
     assert!(stdout.contains("--version"), "{stdout}");
     assert!(stdout.contains("OPENBILLING_DATABASE_URL"), "{stdout}");
+    assert!(stdout.contains("OPENBILLING_CONFIG"), "{stdout}");
 }
 
 #[test]
@@ -79,6 +80,30 @@ fn serve_without_a_database_says_what_is_missing() {
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(stderr.contains("OPENBILLING_DATABASE_URL"), "{stderr}");
+}
+
+/// The configuration file is checked at start, before any connection: a bad one stops `serve` with exit 1, saying
+/// which variable and where, never what the file holds.
+#[test]
+fn serve_refuses_a_configuration_file_it_does_not_understand() {
+    let dir = std::env::temp_dir().join(format!("ob-cli-config-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let bad = dir.join("config.yaml");
+    std::fs::write(&bad, "allowed:\n  debt_limit: sometimes\n").unwrap();
+    // A database that is never reached: the file is refused first.
+    let db = (
+        "OPENBILLING_DATABASE_URL",
+        "postgres://nobody@127.0.0.1:1/none",
+    );
+    for config in [bad.to_str().unwrap(), "/nowhere/config.yaml"] {
+        let output = run_with(&["serve"], &[db, ("OPENBILLING_CONFIG", config)]);
+        assert_eq!(output.status.code(), Some(1), "{config}");
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(stderr.contains("OPENBILLING_CONFIG"), "{stderr}");
+        assert!(!stderr.contains("sometimes"), "{stderr}");
+        assert!(!stderr.contains("connecting"), "{stderr}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A fresh, empty database on the server `OPENBILLING_TEST_DATABASE_URL` names, as a URL, or `None` to skip
