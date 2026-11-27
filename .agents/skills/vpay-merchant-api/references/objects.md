@@ -1,0 +1,364 @@
+# Wire objects
+
+_Verified against vpay `b747e5d5` (2026-09-23); the struck staff-surface paragraph at `f885170c` (2026-10-27, vaam-apps/vpay#383) and its correction at `10f42747` (2026-10-30); the refund `destination` paragraphs at `98f4d32b` (2026-10-24, vaam-apps/vpay#363); the `payment_method_details` row and paragraph, the key count and the routing sentences at `08fb2566` (2026-10-24, vaam-apps/vpay#365). Version-sensitive claims
+carry the date they became true — see [VERSIONING.md](https://github.com/vaam-apps/vpay-skills/blob/main/VERSIONING.md)._
+
+Every wire DTO lives in one module: `vpay_api::model`
+(`backends/crates/vpay-api/src/model.rs`). They are rendered, never returned as
+errors, and never deserialised from a merchant's request — request shapes are
+separate `Deserialize` structs in each `v1::*` handler module.
+
+## The rule that governs every object here
+
+**`#[serde(skip_serializing_if)]` is the exception in this module, never the
+default**, deliberately. Every other key is present on every render, so an SDK can model a field as
+_required and nullable_ and an absent key never means "unknown". `name: null`
+on an `account_holder` is a **meaningful answer** — "the rail does not know
+this number" — which an omitted key could not express.
+
+The module header says there is none "anywhere below". There are **five**
+attributes on **four** types in `vpay-api/src/model.rs`, all on the payer
+surface or an erased customer, each argued in place:
+
+- `CheckoutSessionForPayer::merchant` — present only on the payer surface;
+- `RailSpec::display_name`, and both of `RailDisplayName`'s `en`/`fr` — the
+  payer surface's per-rail descriptor, since 2026-09-16 (vpay#186); omitted
+  when the deployment configured no name, "matching `merchant`'s convention";
+- `CustomerObject::deleted` — present only on an erased customer.
+
+_(This said "two exceptions" until 2026-09-23, when the restamp first wrote
+"four sites". That counted types, not attributes; `RailDisplayName` carries
+two. The `RailSpec` and `RailDisplayName` attributes postdate the `d3a8810b`
+stamp.)_
+
+~~The staff surface (`vpay-api/src/staff/mod.rs`) has four more:
+`otpauth_uri`, `enrolment`, `access_token` and `access_token_expires_at`,
+each on a sign-in or enrolment response rather than a `/v1` object.~~
+**Corrected 2026-10-27:** vaam-apps/vpay#383 deleted `vpay-api/src/staff/`
+with the staff sign-in, and those four went with it. As of vpay `f885170c`
+no `skip_serializing_if` remains anywhere in `vpay-api/src/` outside
+`model.rs`; the console-key object on `/svc/v1` (`vpay_api::svc`) carries
+none. **Corrected 2026-10-30:** vaam-apps/vpay#390 (VPA-3) restored
+`vpay-api/src/staff/`, and at `10f42747` its `mod.rs` carries the same four
+again (`otpauth_uri`, `enrolment`, `access_token`, `access_token_expires_at`),
+served only where `human_login` is. They are still the only ones outside
+`model.rs`.
+
+If you add a field, add it unconditionally. `cargo xtask verify-serde` checks
+the _naming_ convention (snake_case on the wire, with a table of exemptions in
+ADR-0016) but not this rule; the rule is held by the module's own tripwire
+tests, which pin each object's exact key set (e.g.
+`the_refund_object_is_the_documented_ten_keys`). **Adding a key to an object
+breaks its tripwire test on purpose** — update the count and the SDKs together.
+
+## Id prefixes
+
+`vpay_core::ids` owns all of them, with `is_well_formed(prefix, id)` and a
+minting function per type.
+
+| Prefix  | Object                                                                                                                                                                       |
+| ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pi_`   | PaymentIntent                                                                                                                                                                |
+| `ch_`   | Charge (internal — never on the wire)                                                                                                                                        |
+| `re_`   | Refund                                                                                                                                                                       |
+| `evt_`  | Event                                                                                                                                                                        |
+| `cs_`   | CheckoutSession                                                                                                                                                              |
+| `cus_`  | Customer                                                                                                                                                                     |
+| `in_`   | Invoice                                                                                                                                                                      |
+| `ii_`   | InvoiceItem                                                                                                                                                                  |
+| `stf_`  | Staff member                                                                                                                                                                 |
+| `cred_` | Credential                                                                                                                                                                   |
+| `lt_`   | Ledger transaction (internal — never on the wire; added 2026-09-15)                                                                                                          |
+| `mp_`   | Manual (out-of-band) payment — on the wire only as `invoice.out_of_band_payment.id`; since vaam-apps/vpay step A (RFC-0004 §§ 5–6, merged in vaam-apps/vpay#251, 2026-09-23) |
+
+Also in `ids`: `CLIENT_SECRET_INFIX` (`_secret_`), `client_secret_suffix()`
+(160 bits from the OS CSPRNG), `client_secret(id, suffix)`, and
+`return_token()`. Cursor paging validates the prefix, so a `pi_…` cursor on
+`/v1/events` is a `400` naming the parameter rather than an empty page.
+
+## PaymentIntent — `PaymentIntentObject`
+
+| Field                    | Type                    | Notes                                                             |
+| ------------------------ | ----------------------- | ----------------------------------------------------------------- |
+| `id`                     | string                  | `pi_…`                                                            |
+| `object`                 | `"payment_intent"`      |                                                                   |
+| `amount`                 | integer                 | **minor units** — see `vpay-payments`                             |
+| `currency`               | string                  | **lowercase on the wire**, uppercase in the database              |
+| `status`                 | enum                    | `IntentStatus` — five values, **no `failed`**                     |
+| `payment_method_types`   | string[]                | rail codes and/or method types — see below the table              |
+| `payment_method_details` | object or null          | `{ type, rail }` of the one charge; `null` before one — see below |
+| `next_action`            | object or null          | redirect rails only                                               |
+| `last_payment_error`     | object or null          | `{ code, message }`                                               |
+| `metadata`               | object of string→string |                                                                   |
+| `description`            | string or null          |                                                                   |
+| `customer`               | string or null          | `cus_…`; accepted-and-dropped before S4a, stored since            |
+| `created`                | integer                 | Unix **seconds**                                                  |
+| `livemode`               | boolean                 |                                                                   |
+
+**`payment_method_types` takes two kinds of value since 2026-10-23**
+(ADR-0029 D6). A **rail code** (`mtn_momo`, `orange_money`, `notchpay`) means
+that rail, pinned, exactly as before. A **method type** (`mtn_wallet`,
+`orange_wallet`) means the payer's wallet network: a create accepts one only
+when an enabled rail serves it in the intent's currency (else `400` naming
+`payment_method_types`; `card` and `bank_transfer` are refused as reserved),
+and a confirm whose `payment_method_data[type]` is a type is **routed** to the
+highest-scored rail, with the payer's fields under the type
+(`payment_method_data[mtn_wallet][msisdn]`) and an optional pin,
+`payment_method_options[<type>][rail]=<code>` (a `400` naming it when that rail
+cannot take the payment; never a fallback). `payment_method_types` shows what
+the merchant asked for; **the chosen rail and the type are on the object since
+2026-10-24, as `payment_method_details`**, and **the ranking is on none** (D10
+as amended that day): it is only in `routing_decisions`. _(Until 2026-10-24
+this said "the chosen rail and the ranking are on no `/v1` object".)_ The ranking's formula
+is provisional (`provisional-1`). `orange_wallet` can route to a redirect rail
+(`return_url`) or a push rail (`msisdn`), so a server confirming it should pin.
+The confirm ranks on its own: following the rail the checkout page showed is
+decided (RFC-0008 § R8.4, 2026-10-23) and **not built**.
+Neither SDK can confirm by type yet (`docs/sdks/parity.md`, dated
+2026-10-23). Before 2026-10-23 this row read "rail codes: `mtn_momo`,
+`orange_money`".
+
+**`payment_method_details` since 2026-10-24** (migration `0054`, the
+maintainer's "Both" and then "Go with A"). It is `null` until the intent has a
+charge, then `{ "type": "mtn_wallet", "rail": "mtn_momo" }`:
+
+- `rail` is the rail the one charge was made on, never `null` inside the
+  object.
+- `type` is the method type the charge records, the same value a refund's
+  `destination[<method type>]` must name, or `null` where it records none: a
+  rail-code confirm on `notchpay`, or a charge from before `0053`. It is never
+  inferred from the rail, so an old `mtn_momo` charge says `null`.
+- Its source is two columns on `payment_intents` that
+  `vpay_db::charges::insert_for_intent` copies from the charge in the
+  transaction that opens it.
+- It reaches every rendering: `/v1`, `/v1/browser` (the payer sees it), and
+  every `payment_intent.*` event written since. Events written before it have
+  thirteen keys and are never rewritten.
+- The **outcome**, not the decision: the candidates, scores and configuration
+  version stay in `routing_decisions`.
+
+`PaymentIntentWithSecret` is the same object `#[serde(flatten)]`ed plus
+`client_secret`: **fourteen** keys plus one, as the table above lists and
+`the_browser_wrapper_is_the_fourteen_keys_plus_the_client_secret` pins.
+_(This said "twelve keys plus one" until 2026-09-23 (`customer` became the
+thirteenth on 2026-09-06, S4a), and "thirteen" until 2026-10-24, when
+`payment_method_details` made fourteen. It also said that `model.rs`'s own
+doc comments still said "twelve", which stopped being true on 2026-09-23. And
+it said the wrapper is returned by `confirm`, which it is not.)_ It is
+returned by `create`, `retrieve` and the two `/v1/browser` reads. `confirm`,
+`cancel`, a list and `events.data` render the plain object
+(`SecretRendering::Omit`).
+
+`NextAction` is `#[serde(tag = "type")]` with exactly one variant today:
+`redirect_to_url` → `RedirectToUrl { url, return_url }`. A rail given no
+`return_url` renders `return_url: null`, not a missing key.
+
+`LastPaymentErrorObject.code` is a **`String`, not `vpay_core::FailureCode`**,
+and that is deliberate on both SDKs too: the column is text, the vocabulary is
+owned by the core and may grow, and a value that failed to parse would make a
+merchant's `GET` answer `500` instead of showing them why their payment failed.
+The vocabulary is enforced where it is _written_, not on the read path.
+
+## Refund — `RefundObject`
+
+Exactly ten keys: `id` (`re_…`), `object`, `amount`, `currency`,
+`payment_intent`, `status` (`RefundStatus`), `reason`, `metadata`, `created`,
+`fee`.
+
+**One renderer for all five refund routes and both event types.** Two would
+let the documented webhook fallback answer a different question from the one
+the webhook asked, which is the same rule `vpay_api::v1::events` follows for
+its own object.
+
+`fee` is `Option<i64>` and the null-versus-zero distinction is the whole reason
+it exists (issue #46). See `vpay-payments` for the invariant it protects. It is
+`null` on every row in every deployment, and will stay so: only the settlement
+writes it, and nothing settles a `pending` refund.
+
+~~Nothing writes a `refunds` row.~~ **Corrected 2026-09-16:
+`POST /v1/refunds` does (RFC-0003 § 2).** What the create accepts, which is
+_not_ the object's key set:
+
+| Param            | Notes                                                                                                                                                               |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `payment_intent` | required; must be this merchant's `succeeded` intent, else a `404`                                                                                                  |
+| `amount`         | **a string on the wire** — the body is form-encoded, and typing it here would hand "not a number" to serde, which answers `param: "body"`. Defaults to what remains |
+| `reason`         | optional                                                                                                                                                            |
+| `destination`    | a nested map — see below                                                                                                                                            |
+| `metadata`       | the usual bounds                                                                                                                                                    |
+
+**`destination` is the eleventh key that is deliberately not on the object.**
+The wire shape is `destination[<rail_code>][msisdn]` — nested under the rail's
+own code, for `payment_method_data`'s reason: a typed struct here would have to
+name `mtn_momo` as a field, and `if provider == "mtn_momo"` outside an adapter
+crate is what ADR-0002 forbids. It is **required** on a rail declaring
+`RefundDestination::Required` (`mtn_momo`, `orange_money`) and **refused** on
+one that returns money to the instrument that paid (`notchpay`, since
+2026-10-20, vaam-apps/vpay#295, `357c825`, the first shipping one,
+whose refund is still a `NotImplemented` token). The **adapter** parses the inner
+map; the core's whole business with it is presence.
+
+**The outer key is the charge's rail code or, since 2026-10-24
+(vaam-apps/vpay#363), the payment-method type the charge records.**
+`charges.method_type` (migration `0053`) is set on every routed charge and on a
+rail-code charge whose rail serves one type, so `destination[mtn_wallet][msisdn]`
+refunds a routed `mtn_wallet` charge without the merchant knowing which rail
+won. The rail is on the intent since the same day, as
+`payment_method_details.rail` (above). Only the type the
+charge records is accepted: another type, a type on a charge that records none
+(a multi-type rail confirmed by its code, or a charge from before `0053`), or
+the rail and the type **both** in one map is a `400` naming `destination` (one
+payee, one key). Whichever key is used, the adapter gets the same inner map.
+The maintainer chose "Both", and both halves are built: this one, and the
+intent naming its rail (`payment_method_details`, 2026-10-24). Do not guess a
+rail on the merchant's behalf. Send the type the intent's
+`payment_method_details.type` names, or, when that is `null`, the rail's
+code. _(Until the second half landed this said "`/v1` naming the rail is the
+other half, and not built".)_
+
+**It is persisted nowhere**: there is no `destination` column on `refunds`,
+because its retention is RFC-0003 open question 3 and is **undecided** — the
+customer object settled on twelve months and a refund destination has no
+policy. It is in no response, in no event body, and logged only **masked**
+(`+2376••••200`). The cost, stated rather than hidden: vpay cannot tell an
+operator which payee a refund went to. One qualification, recorded on review
+2026-09-16: `refunds.failure_raw` stores the rail's own refusal text and a rail
+may echo the payee into it. Nothing renders that column — `RefundObject` is ten
+keys and none is a failure field — so it reaches no response and no webhook.
+
+`POST /v1/refunds/{id}` updates **`metadata` and nothing else**: `amount`,
+`reason`, `payment_intent` and `destination` each earn a `400` naming the
+parameter, refused _before_ the claim so the key is left unspent and the
+corrected retry is a fresh request rather than a replay of the refusal.
+
+## CheckoutSession — `CheckoutSessionObject`
+
+`id` (`cs_…`), `object` (`"checkout.session"`), `livemode`, `payment_intent`,
+`ui_mode`, `status`, `payment_status`, `success_url`, `cancel_url`,
+`return_url`, `url`, `customer`, `expires_at`, `created`.
+
+`ui_mode`, `status` and `payment_status` are **plain `String`s on this type**,
+not Rust enums. The vocabulary is enforced by database CHECKs where the values
+are _written_ (`ui_mode_is_known`, `status_is_known`, `payment_status_is_known`,
+migration `0028`):
+
+- `status`: `open | complete | expired`
+- `payment_status`: `unpaid | paid | failed`
+
+`payment_intent` is an `ExpandableIntent` — `#[serde(untagged)]`, so it
+serialises as **a string or a whole object with no wrapper**. `/v1` renders the
+id (a merchant already holds the intent they created, and expanding in a list
+would repeat every amount per row); `/v1/browser` renders the expanded intent,
+because the payer page holds only a session id and needs amount, currency,
+status, `payment_method_types`, `next_action` and `last_payment_error` before
+it can paint anything.
+
+`CheckoutSessionObject::expired_snapshot(row)` builds the `data.object` of a
+`checkout.session.expired` event: it renders `status: "expired"` and `url: None`
+while leaving the row itself saying `open`, and leaves `payment_status`
+untouched — an expired session that was already `paid` keeps saying so.
+
+## Customer — `CustomerObject`
+
+`id` (`cus_…`), `object`, `name`, `email`, `phone`, `address`, `metadata`,
+`created`, `livemode`, and `deleted: true` only when erased.
+
+At least one of `name`/`email`/`phone` is required and **`phone` alone is
+enough** (a 2026-09-05 maintainer decision — this market's payers often have no
+email). A patch that would clear the last identifier is a `400` naming `name`.
+A field sent **empty** is _cleared_, which is a different request from omitting
+it; `address[…]` **replaces** the address whole rather than merging.
+
+`AddressObject`: `city`, `state`, `postal_code`, `country`,
+`latitude_microdeg`, `longitude_microdeg` — coordinates are integer
+microdegrees, consistent with the no-float rule.
+
+## Invoice — `InvoiceObject`
+
+`id` (`in_…`), `object`, `customer`, `currency`, `status`
+(`vpay_core::InvoiceStatus`), `number`, `amount_due`, `amount_paid`,
+`amount_remaining`, `amount_refunded`, `paid_out_of_band`,
+`out_of_band_payment`, `due_date`, `description`, `metadata`,
+`payment_intent`, `hosted_invoice_url`, `lines`, `status_transitions`,
+`created`, `livemode` — **twenty-one keys** since vaam-apps/vpay step A
+(RFC-0004 §§ 5–6, merged in vaam-apps/vpay#251), pinned by
+`the_invoice_object_is_the_documented_twenty_one_keys`. This list had nineteen
+until 2026-09-23 (no `paid_out_of_band`, no `out_of_band_payment`), which is
+still the shape of any older `master`.
+
+`out_of_band_payment` is `null`, or `{id, method, reference, received_at}` —
+four keys and **no `object`**. `method` is `cash | cheque | bank_transfer |
+other`; `reference` is `[redacted]` once the invoice's customer is erased.
+**Nothing in vpay verified it**; it is the merchant's statement, echoed.
+
+`lines` is a `ListObject<InvoiceLineObject>` with `has_more` always `false` and
+a `url` of `/v1/invoice_items` — a route that exists — rather than Stripe's
+`/v1/invoices/{id}/lines`, which vpay does not serve.
+
+`InvoiceStatusTransitions`: `finalized_at`, `paid_at`, `voided_at`,
+`marked_uncollectible_at`, all Unix seconds or null.
+
+`hosted_invoice_url` and `payment_intent` are `null` until
+`POST /v1/invoices/{id}/pay` mints an intent. An out-of-band `pay`
+(2026-09-23) sets neither. An invoice paid out of band therefore carries
+`null`, or the canceled earlier attempt's intent and URL, which stay attached
+(ADR-0024 D15). Neither is evidence of a rail payment. _(Added 2026-09-23.)_
+
+**The four `invoice.*` webhook bodies carry `lines.data` EMPTY** while this
+object always carries them — a real, deliberate difference between what a
+webhook says and what the API says about the same object. See `vpay-webhooks`.
+
+## Event — `EventObject`
+
+`id` (`evt_…`), `object`, `type` (the Rust field is `kind`, serde-renamed),
+`created`, `livemode`, `data` (`EventDataObject { object: Value }`).
+
+**One renderer, and that is the point.** `GET /v1/events` and the webhook
+deliverer serialise the _same_ `EventObject`. Two renderers would let the
+documented fallback answer a different question from the one the webhook asked,
+and the difference would surface as a merchant's signature check failing
+against a body they re-fetched.
+
+## AccountHolder — `AccountHolderObject`
+
+Four keys, always four: `object`, `payment_method_type`, `name` (nullable and
+meaningfully so), `verified`. **There is no row behind this object** — it is
+rendered from a rail's live answer and never stored.
+
+## Lists and deletions
+
+`ListObject<T>`: `object` (`"list"`), `data`, `has_more`, `url`. Cursor-paged
+with `limit` / `starting_after` / `ending_before`; `DEFAULT_LIMIT` is 10 and
+`MAX_LIMIT` is 100 (`vpay_api::v1::paging`).
+
+The `/dash/v1/$procs/search*` procedures are **offset-paged instead**, and
+their own module docs say what that costs: `OFFSET` is recounted per call, so a
+row inserted behind a caller's back shifts the window. Anything that must not
+double-count — a reconciliation, an export, a sum — reads the cursor list, not
+the procedure.
+
+`DeletedObject<T>` / `DeletedTrue`: `{ id, object, deleted: true }`.
+
+## Validation bounds
+
+Enforced in `vpay_api::v1::payment_intents` and shared by the other handlers:
+
+| Bound                        | Value                                                     |
+| ---------------------------- | --------------------------------------------------------- |
+| `MAX_AMOUNT`                 | `(1 << 53) - 1` (safe in JS)                              |
+| metadata key                 | 40 chars                                                  |
+| metadata value               | 500 chars                                                 |
+| `description`                | 1000 chars                                                |
+| `out_of_band[reference]`     | 1–500 chars (step A, D13)                                 |
+| `out_of_band[received_at]`   | ≤ now + 30 s, ≥ `finalized_at`'s second (step A, D11/D14) |
+| `return_url`                 | 2048 chars                                                |
+| `last_payment_error.message` | 512 chars                                                 |
+| raw rail failure text stored | 2000 chars                                                |
+| form nesting depth           | 8 (`vpay_api::form`)                                      |
+| request body (`/v1`)         | 64 KiB                                                    |
+
+Request encoding is `application/x-www-form-urlencoded`, Stripe-shaped:
+`metadata[order_id]=1234`, `payment_method_data[mtn_momo][msisdn]=…` (or
+`[mtn_wallet]` for a method type), and
+**both** the indexed `payment_method_types[0]=…` form the SDKs send and the
+unindexed `payment_method_types[]=…` form the curl examples use.

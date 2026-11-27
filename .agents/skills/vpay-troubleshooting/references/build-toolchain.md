@@ -1,0 +1,240 @@
+# Build and toolchain failures
+
+_Verified against vpay `f885170c` (2026-10-27) for the RUSTSEC-2026-0387 bullet on what verifies with P-256, and its 2026-10-30 correction against `10f42747`; against `a33aac61` (2026-09-29) for §§ `check-schema` and "Editing `schemas/vpay.cstack`"; the rest of this page was last read at `d3a8810b` (2026-09-16). Version-sensitive claims
+carry the date they became true — see [VERSIONING.md](https://github.com/vaam-apps/vpay-skills/blob/main/VERSIONING.md)._
+
+## Three version numbers that are not each other
+
+Getting these confused is the most common toolchain mistake here.
+
+| Where                              | Value (2026-09-16)  | What it is                                                                                                                                            |
+| ---------------------------------- | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `rust-toolchain.toml` `channel`    | `1.98.0`            | the compiler this workspace is built and tested with. CI reads the pin **from the file**, never `@stable`                                             |
+| `backends/Dockerfile` `FROM rust:` | `1.98.0-alpine3.22` | the one place that **cannot** read the file                                                                                                           |
+| `Cargo.toml` `rust-version`        | `1.88`              | `cargo metadata`'s max `rust_version` across the _resolved dependency graph_ — "a theoretical floor nobody has actually compiled this workspace with" |
+
+`rust-toolchain.toml` was `1.95.0` until 2026-09-05. `CLAUDE.md` said `1.95.0`
+for a while after it moved, and a review finding exists whose entire content is
+that sentence being stale.
+
+### `verify-toolchain` fails
+
+**Cause:** `backends/Dockerfile`'s `FROM rust:` version and
+`rust-toolchain.toml`'s `channel` disagree. This is the tenth gate, added
+2026-09-05 out of the 1.95.0 → 1.98.0 bump review, because a mismatch there
+"was measured to pass every other gate".
+
+**Fix:** bump both together. The gate checks **the compiler version only** —
+the Alpine suffix is deliberately outside its subject.
+
+**Do not bump the Alpine base as a rider.** `rust:1.98.0-alpine3.23` exists and
+was not taken: "an Alpine major bump changes musl and gcc under a static build
+and is its own decision with its own evidence."
+
+Only **one** `FROM` names the rust image (the `chef` stage); `planner` and
+`builder` are both `FROM chef`, "so the three stages cannot drift apart by
+construction. **Do not turn that into three literals.**"
+
+## `cannot produce proc-macro for 'async-trait' as the target 'x86_64-unknown-linux-musl' does not support these crate types`
+
+**Cause:** `.cargo/config.toml` sets `-C target-feature=+crt-static` for
+`x86_64-unknown-linux-musl`. When host and target are the same triple and **no
+`--target` is given**, cargo applies target rustflags to _host_ artifacts too —
+build scripts and proc-macros — and a proc-macro cannot be a static executable.
+
+**Fix:** always pass an explicit `--target`. `just build-dist` does;
+`backends/Dockerfile` does. With one, cargo keeps host artifacts free of target
+rustflags, and output lands under `target/<triple>/dist/`.
+
+This is not hypothetical: the first CI build of that Dockerfile (run
+`33646048616`, 2026-09-02) failed exactly this way.
+
+## musl target missing
+
+**Symptom:** `just build-dist` fails.
+
+**Fix:** `rustup target add x86_64-unknown-linux-musl`.
+
+**But note the Dockerfile does not use that triple.** Per ADR-0014 it passes
+`--target` set to the **builder's own host triple**, read from `rustc -vV` at
+build time, because `rust:*-alpine` is a multi-arch image whose toolchain is
+already musl-native for whichever architecture Docker pulled — and hardcoding
+`x86_64-unknown-linux-musl` on an arm64 host forces a cross-compile needing a
+GNU-compatible cross-linker no `rust:*-alpine` ships. It "fails outright".
+
+## `check-schema: FAIL — needs the 'cratestack' CLI on PATH, and it is not there.`
+
+The recipe follows that with: "this is a failure, not a skip: nothing checked
+`schemas/vpay.cstack` in this run."
+
+**Fix:**
+
+```bash
+cargo install cratestack-cli --locked --version 0.16.0
+```
+
+~~`--version 0.12.0`~~ ~~`0.15.0` (2026-09-29, vaam-apps/vpay#259)~~ —
+**0.16.0 since 2026-10-26** (vaam-apps/vpay#376). The
+recipe prints this line with the version it pins (`justfile`'s
+`cratestack_version`), so copy the recipe's, not this page's, if they ever
+differ.
+
+Three sub-traps the recipe's own message covers:
+
+- Installing **from inside the checkout** used to fail with an MSRV error while
+  `rust-toolchain.toml` pinned 1.95.0 (`cratestack-cli` declares
+  `rust-version = 1.98.0`). The instruction then was to `cd` out of the tree
+  first. The pin is 1.98.0 now, so it works in place — **that bump is why.**
+- There is **no prebuilt binary for linux MUSL.** Five triples only:
+  x86_64/aarch64 linux-gnu and apple-darwin, x86_64-pc-windows-msvc. That is
+  what the recipe's message says at vpay `a33aac61`; it was measured against the
+  0.12.0 release, and **vpay did not re-check the 0.15.0 release's asset list**
+  when it moved the pin (it re-checked the CI install action's retry, and that
+  the `v0.15.0` tag is lightweight). Unverified at 0.15.0.
+- A CLI on `PATH` at a **different version** prints a WARNING and **still runs
+  the check against the wrong grammar.** `docs/status.md` records exactly that:
+  pinned `0.12.0` (the pin is `0.15.0` since 2026-09-29; the example is
+  history), CLI on the authoring machine `0.11.1`, check ran in full
+  against the 0.11.1 grammar. "A gate that ran against a different grammar than
+  CI will is a gate whose green means less than it looks."
+
+A further hazard inside the gate: an **emptied or truncated** `.cstack`, or one
+with the `datasource` block deleted, **type-checks vacuously and exits 0**.
+`cratestack check` is right to accept both (a client-only schema is a real
+thing) and there is no CLI flag that refuses it — so the recipe asserts a
+declaration floor itself, next to the claim it protects.
+
+## Editing `schemas/vpay.cstack` breaks `cargo build`
+
+**`schemas/vpay.cstack` IS wired into the build.** `CLAUDE.md`'s bullet said
+the opposite — "not wired into the build, its syntax is unverified, do not try
+to make it compile" — and had been wrong **in two stages**: `just check-schema`
+began verifying the syntax 2026-09-05, and `vpay-db`'s private `mod schema`
+began _compiling_ the file 2026-09-06. A syntax error in it is now a
+`cargo build` failure.
+
+Three consequences:
+
+1. **The CLI and the library must stay on one version.** `justfile`'s
+   `cratestack_version` and `Cargo.toml`'s `cratestack = "=0.16.0"` (it was
+   `=0.15.0` until 2026-10-26 and `=0.12.0` until 2026-09-29) — bump them
+   together, with `Cargo.toml`'s `cratestack-cose` and `cratestack-core` and
+   `vpay-db`'s `cratestack-codec-json` (all `=0.16.0` since 2026-10-26). A bump also repoints the two
+   `install-cratestack-cli` steps in `.github/workflows/ci.yml` at the tag's
+   commit, and moves the twelve `cratestack-*` entries in `Cargo.lock`
+   (`cargo update -p cratestack-pg --precise <version>`).
+2. **The generated module is private to `vpay-db` on purpose.**
+   `cargo xtask verify-repositories` fails if `mod schema` is made `pub` or
+   re-exported, "because the module the macro creates exists in no source file
+   and nothing else would object."
+3. **Adding a `model` is not free.** It must match the live table, and
+   `postgres_smoke.rs`'s drift test pins the exact gap. See
+   `docs/reference/vpay-db/cratestack.md`. (`vpay-db.md` § CrateStack is a
+   pointer to it and keeps that heading on purpose — four doc comments in
+   `backends/crates/vpay-db/src/` link to `vpay-db.md#cratestack`, and
+   `verify-links` does not check anchors.)
+
+## `cargo deny` — RUSTSEC-2023-0071
+
+**Do not try to fix this.** It is in `deny.toml`'s `[advisories] ignore` list
+with its reasoning in full, accepted deliberately by the maintainer on
+2026-08-09.
+
+- The "Marvin Attack": a timing side-channel in the `rsa` crate's PKCS#1 v1.5
+  **decryption**.
+- **There is no patched release.** The advisory has carried no fixed version
+  since 2023, and `rsa` is an unconditional, non-optional dependency of
+  `authkestra-engine`, which vpay uses to run its own OpenID Provider. It
+  cannot be feature-gated away, and `authkestra-op` signs RS256 only.
+- The exposure is on-topic, not incidental — it is the crate that signs every
+  token vpay issues. What limits it is that the attack needs a _decryption_
+  oracle and vpay's use is signing and verification.
+- The entry genuinely fires: `cargo deny -L info check advisories` reports
+  `note[advisory-ignored]` against `rsa v0.9.10`.
+
+Revisit if a fixed `rsa` appears, if authkestra gains non-RSA signing, or if
+the Keycloak/ZITADEL comparison ADR-0009 leaves open is carried out.
+
+## `cargo deny` — RUSTSEC-2026-0387
+
+**Do not try to fix this either.** `crypto-bigint` 0.5.5 has non-constant-time
+operations; the fix is only in 0.7.6. It is in `deny.toml`'s `ignore` list,
+accepted by the maintainer on 2026-10-24 and again on 2026-10-26.
+
+- **No upgrade clears it.** The chain is `crypto-bigint 0.5.5 <- elliptic-curve
+0.13.8 <- ecdsa 0.16.9 <- p256 0.13.2 / p384 0.13.1 <- jsonwebtoken 11.0.0`,
+  and `jsonwebtoken` arrives through all three authkestra crates and through
+  `vpay-sdk`. The fix needs `elliptic-curve` 0.14. `jsonwebtoken`'s newest
+  release (11.1.0) still requires `p256 ^0.13`, and authkestra's newest
+  (`=0.13.1`, which vpay moved to on 2026-10-26 from `=0.7.1`) still requires
+  `jsonwebtoken` 11. **Bumping authkestra was tried, and did not clear it.**
+- Why it is safe to accept: vpay uses P-256/P-384 only to **verify** ES256/ES384
+  signatures, against public keys — a merchant's client assertion, ~~a staff SSO
+  id_token~~, a DPoP proof, and since 2026-10-27 a console key's possession
+  proof (`vpay_api::console_keys`, which links `p256` 0.13 directly and
+  signs with `SigningKey` only in its `#[cfg(test)]` module).
+  _(Corrected 2026-10-27: vaam-apps/vpay#383 deleted the SSO verifier.
+  `deny.toml`'s comment still cites `vpay-api/src/staff/sso/verify.rs` at
+  `f885170c`. ADR-0036 has the console's keys generated in a
+  browser by WebCrypto, which is VP-6b and not built; vpay only verifies.)_
+  _(**Corrected 2026-10-30:** vaam-apps/vpay#391 (VPA-4) restored
+  `vpay-api/src/staff/sso/verify.rs`, whose `ALLOWED_ALGORITHMS` includes
+  `ES256` and `ES384`, so a staff SSO `id_token` is a P-256/P-384 **verify**
+  call site again, compiled into every build and reached only where
+  `human_login` and `staff_auth.sso` are served. `deny.toml`'s citation is
+  accurate again at `10f42747`. It is still verify-only; the argument
+  below stands. VP-6b is still not built.)_ Nothing in vpay or authkestra signs with an EC key
+  outside tests: the OP signs RS256, `vpay-sdk` signs RS256 only, merchant
+  webhooks use HMAC.
+- That rests on reading the call sites, not on a timing measurement. **If
+  vpay ever signs with, or generates, an EC key, the entry stops being safe
+  and must go.**
+
+Remove it when `jsonwebtoken` or authkestra reaches `p256` 0.14 /
+`elliptic-curve` 0.14, or when `cargo deny` reports `advisory-not-detected`.
+
+## `cargo deny` — RUSTSEC-2026-0462, -0543 and -0440 (2026-11-17, vpay#402)
+
+_vpay#402, re-read at `c3358352`._ `cargo deny check` failed on
+`master` that day, and CI showed it only on a pull request touching a Cargo or
+CI file, because the `supply-chain` job is path-filtered.
+
+- **RUSTSEC-2026-0462 (`rmcp` < 3.9.0 reads MCP HTTP response bodies with no
+  size limit) is fixed, not ignored:** a lockfile bump, `rmcp` 3.7.0 → 3.10.0
+  via `cratestack-mcp`. If you see it, your lockfile predates vpay#402.
+- **RUSTSEC-2026-0543 (`chrono` unmaintained) and RUSTSEC-2026-0440
+  (`astral-tokio-tar` unmaintained) are ignored in `deny.toml`, each "pending
+  the maintainer's acceptance"** — no maintainer decision is recorded, unlike
+  the two entries above. Both are "unmaintained" notices with no exploitable
+  defect named and no safe upgrade. `chrono` is in every shipping binary
+  (through authkestra, `cratestack-client-rust` and `schemars`); revisit when
+  those drop it, or at once if a real vulnerability is published.
+  `astral-tokio-tar` reaches only test code (testcontainers 0.27 ←
+  `vpay-testkit`); moving to testcontainers 0.28 is its own PR. **Do not
+  describe either as accepted.**
+- PR #396's branch had added the same `RUSTSEC-2026-0440` entry
+  independently; `master` after vpay#404 (`c3358352`) carries it once.
+
+The web graph gained the same kind of entry that day: **GHSA-fc5q-39xc-vjpf**
+(`picomatch` ≤ 4.0.7, ReDoS via repeated extglobs, published 2026-11-17 with no
+fixed release on npm) is ignored by id in `pnpm-workspace.yaml`'s
+`auditConfig.ignoreGhsas`, reached only through build, test and lint tooling,
+**proposed, pending the maintainer's acceptance**, `REMOVE WHEN` picomatch
+publishes 4.0.8. Before it, `just audit-web` was red on `master` and every open
+PR. vpay#400 the same day cleared nine other moderate advisories (glob,
+minimatch, hono, `@hono/node-server`, next) **by overrides, with nothing
+ignored**.
+
+## Adding a dependency that needs OpenSSL
+
+**It will fail `cargo deny`, and that is the intended friction.** `openssl`,
+`openssl-sys` and `native-tls` are banned outright (ADR-0005) so a _transitive_
+dependency that pulls one in fails CI rather than silently linking and
+defeating the static-musl goal. Adopting one needs a new ADR.
+
+## Slow first build
+
+Expect it. `just test` needs `postgres:16-alpine` and `wiremock/wiremock`
+pulled; the conformance suite starts **a real WireMock container per rail per
+test**. `just demo` builds every image it needs in Docker. Docker Compose
+**v2.24+** is required — the demo overlay uses `!reset`.

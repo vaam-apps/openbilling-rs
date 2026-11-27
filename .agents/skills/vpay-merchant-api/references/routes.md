@@ -1,0 +1,432 @@
+# Every mounted route, and the middleware around them
+
+_Verified against vpay `10f42747` (2026-10-30) for the surface table's `management` and discovery rows and the 2026-10-30 note under § `/dash/v1`; against `3bcf0763` (2026-10-28, after vpay#384) for the rest of the surface table and § `/v1/oauth`; against `f885170c` (2026-10-27) for § `/mcp/v1`, § `/dash/v1` and § Middleware; against `a33aac61` (2026-09-29) for § `/provider` and the step A table; the rest of this page was last read at `b747e5d5` (2026-09-23). Version-sensitive claims
+carry the date they became true — see [VERSIONING.md](https://github.com/vaam-apps/vpay-skills/blob/main/VERSIONING.md)._
+
+Assembled in `vpay_api::router` (`backends/crates/vpay-api/src/lib.rs`).
+Counts and contents verified against the code on **2026-09-23** (this said
+2026-09-16; no count moved in between).
+
+**Not every process mounts every nest.** This has been true since 2026-09-16
+(ADR-0022, vpay#183, status _Proposed_), and this page did not say so until
+2026-09-23. `vpay_api::router` reads `RouterDeps::surfaces`, which is
+resolved from `deployment.surfaces` by
+`vpay_config::Deployment::enabled_surfaces`:
+
+| Surface                                    | Mounts                                                                                                                                                                                                                                                                                  |
+| ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `business`                                 | `/v1`, `/v1/browser`, `/provider`, `/svc/v1` (since 2026-10-27, vpay#383), and `POST /v1/oauth/token` only where `auth.methods` permits `machine_tokens` (since 2026-10-27, vpay#384)                                                                                                   |
+| `management`                               | `/dash/v1` (the reads and `$procs`), when `dashboard:` is configured **or `human_login` is served** (`dashboard_client` alone mounts it, since 2026-10-30, vpay#390); with `human_login` served, also the eleven `STAFF_ROUTES` (`/dash/v1/staff/*`, `/dash/v1/oauth/*`, vpay#390/#391) |
+| `mcp`                                      | `POST /mcp/v1` and its RFC 9728 metadata (since 2026-10-27, vpay#377); **never in `ALL`**                                                                                                                                                                                               |
+| business (with `machine_tokens`) and `mcp` | `/v1/oauth/.well-known/openid-configuration`, `/v1/oauth/jwks.json`: mounted where something reads them (since 2026-10-27; "any" until then) — and on a `management` pod that serves `human_login` (since 2026-10-30, vpay#390)                                                         |
+| always                                     | `/healthz`, and `GET /.well-known/vpay-auth` (`{"methods": [...]}`, unauthenticated, since 2026-10-27, ADR-0037)                                                                                                                                                                        |
+
+An absent `surfaces:` key means `business` and `management`
+(`EnabledSurfaces::ALL`), which is every pre-ADR-0022 deployment; `mcp` is
+mounted only when named. _(This table said `management` mounted "the staff
+routes" until 2026-10-27; vpay#383 deleted them. **Corrected 2026-10-30:**
+vpay#390 (VPA-3) mounts them again, only where `human_login` is served.)_ An empty list is `ConfigError::NoSurfacesConfigured`
+at boot. `/token` is business-only because a management pod serving it would
+mint merchant credentials on the staff tier. A nest that is not mounted
+answers the outer `404 unknown_route`.
+
+Nest order in the source is `/v1/oauth`, `/v1/browser`, `/v1`, `/provider`,
+then the two conditional `/dash/v1` mounts. axum's path table is
+order-independent for distinct prefixes — `/v1/browser` and `/v1/browser/{*rest}`
+match more specifically than `/v1/{*rest}` — so the ordering is a reading
+convenience, not a correctness device. What _is_ a correctness device is that
+**every nest carries its own `.fallback(crate::not_found)`**: without one, axum
+flattens the nest into the outer path table and an unmatched `/v1/oauth/…`
+matches the _authenticated_ `/v1` wildcard, answering `401` to a caller whose
+whole reason for being there is that it has no token yet.
+`the_oauth_nest_answers_its_own_404` fails with `left: 401, right: 404` if the
+fallback is deleted.
+
+## `/v1` — merchant API
+
+Source: `V1_ROUTES` in `backends/crates/vpay-api/src/v1/mod.rs`.
+**23 paths, 37 methods as of 2026-09-16, re-counted unchanged on
+2026-09-23** — ~~21 paths, 33 methods~~, which
+this page said until the refund routes landed (RFC-0003 § 2, vpay#178). Both
+figures are counted off `V1_ROUTES`' own `methods:` field, which is the
+router's source rather than a description of it.
+
+| Method(s)                | Path                                   | Handler                                             |
+| ------------------------ | -------------------------------------- | --------------------------------------------------- |
+| POST, GET                | `/v1/payment_intents`                  | `payment_intents::{create, list}`                   |
+| GET                      | `/v1/payment_intents/{id}`             | `payment_intents::retrieve`                         |
+| POST                     | `/v1/payment_intents/{id}/confirm`     | `payment_intents::confirm`                          |
+| POST                     | `/v1/payment_intents/{id}/cancel`      | `payment_intents::cancel`                           |
+| GET                      | `/v1/events`                           | `events::list`                                      |
+| GET                      | `/v1/events/{id}`                      | `events::retrieve`                                  |
+| GET                      | `/v1/account_holders`                  | `account_holders::retrieve`                         |
+| POST, GET                | `/v1/checkout/sessions`                | `checkout_sessions::{create, list}`                 |
+| GET                      | `/v1/checkout/sessions/{id}`           | `checkout_sessions::retrieve`                       |
+| POST                     | `/v1/checkout/sessions/{id}/expire`    | `checkout_sessions::expire`                         |
+| POST, GET                | `/v1/refunds`                          | `refunds::{create, list}`                           |
+| GET, POST                | `/v1/refunds/{id}`                     | `refunds::{retrieve, update}`                       |
+| POST                     | `/v1/refunds/{id}/cancel`              | `refunds::cancel`                                   |
+| POST, GET                | `/v1/customers`                        | `customers::{create, list}`                         |
+| GET, POST, DELETE        | `/v1/customers/{id}`                   | `customers::{retrieve, update, delete}`             |
+| POST, GET                | `/v1/invoices`                         | `invoices::{create, list}`                          |
+| GET, POST, PATCH, DELETE | `/v1/invoices/{id}`                    | `invoices::{retrieve, update, update, delete}`      |
+| POST                     | `/v1/invoices/{id}/finalize`           | `invoices::finalize`                                |
+| POST                     | `/v1/invoices/{id}/void`               | `invoices::void`                                    |
+| POST                     | `/v1/invoices/{id}/mark_uncollectible` | `invoices::mark_uncollectible`                      |
+| POST                     | `/v1/invoices/{id}/pay`                | `invoices::pay`                                     |
+| POST                     | `/v1/invoice_items`                    | `invoice_items::create`                             |
+| GET, POST, PATCH, DELETE | `/v1/invoice_items/{id}`               | `invoice_items::{retrieve, update, update, delete}` |
+
+**Scopes (2026-11-17, vpay#404, re-read at `c3358352`).**
+Each row now declares its scope policy beside its methods. Every row takes
+`payments:read` or `payments:write` for `GET`/`HEAD` and `payments:write`
+otherwise — **except `GET /v1/account_holders`, which takes
+`account_holders:read` and nothing else** (no payment scope implies it), with
+`HEAD` held to the same policy. `POST /v1/refunds` keeps `payments:write` but
+additionally requires `account_holders:read` when the body names a
+`destination`, checked in the handler. No path or method was added.
+
+**Since vaam-apps/vpay step A (RFC-0004 §§ 5–6, merged in vaam-apps/vpay#251 on
+2026-09-23), no row is added** — only parameters, on rows that exist:
+
+| Route                          | Takes                                                                                                                  | Since                   |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------- | ----------------------- |
+| `GET /v1/payment_intents`      | `limit`, `starting_after`, `ending_before`, **`customer`** (the intent's own)                                          | `customer`: 2026-09-23  |
+| `GET /v1/checkout/sessions`    | cursor, `payment_intent`, **`customer`** (the **session's** own, ADR-0024 D12; see ADR-0025 below)                     | `customer`: 2026-09-23  |
+| `GET /v1/refunds`              | cursor, `payment_intent`, **`customer`** (through the refund's intent)                                                 | `customer`: 2026-09-23  |
+| `GET /v1/invoices`             | cursor, `customer`, `status`                                                                                           | 2026-09-07              |
+| `GET /v1/customers`            | cursor only — **no filter, deliberately** (ADR-0024 D4)                                                                | —                       |
+| `POST /v1/invoices/{id}/pay`   | `success_url`, `cancel_url`; **or** `paid_out_of_band=true` + `out_of_band[method\|reference\|received_at]` and no URL | out of band: 2026-09-23 |
+| `GET /dash/v1/payment_intents` | `status`, `created_gte`, `created_lte`; **`customer` is a `400`**                                                      | refusal: 2026-09-23     |
+
+Before step A, `customer` on the first three and on `/dash/v1` was **silently
+ignored** — the answer was the unfiltered list. The oracle rule, the one
+shared `400` and the D12 consequence are in the SKILL page.
+
+~~The D12 consequence was that a session naming a customer on a customer-less
+intent was listed by the sessions filter and not by the other two.~~
+**Corrected 2026-09-29:** that stopped being true for sessions created from
+2026-09-23 (ADR-0025, vaam-apps/vpay#253): `POST /v1/checkout/sessions` now
+writes the session's customer onto a customer-less intent in the same
+transaction, so all three lists agree. It is still true of **older rows**,
+which were not backfilled. A `POST /v1/checkout/sessions` that names a
+customer therefore has two refusals it did not have as a distinct code path
+before: the `400` naming `customer` when a concurrent session won the intent
+for another customer, and a `409` when the customer was erased between the
+pre-check and the insert (ADR-0027). The SKILL page's `customer` section has
+both and the idempotency consequence.
+
+Things about this table that are decisions rather than accidents:
+
+- **`POST` is Stripe's update.** Stripe's API has no `PATCH`, so a merchant's
+  existing client sends `POST`. `PATCH` is mounted **beside it on the same
+  handler function** on the two `{id}` paths that have it — they cannot answer
+  differently because they are one function.
+- **`/checkout/sessions`, not `/checkout_sessions`.** Stripe's own spelling,
+  and the object's `object` field is `checkout.session` for the same reason.
+- **`expire` is a `POST`, not a `DELETE`** — expiring is a transition that
+  returns the object, exactly as `cancel` is for an intent. Nothing is removed.
+  It also **emits no event**: you asked for it. The hourly sweep's expiry does
+  emit `checkout.session.expired`.
+- **`/account_holders` is plural with no `/{id}`.** A mobile-money number is
+  not an id vpay mints and nothing is stored to address later; the collection
+  is what is searched, via query parameters.
+- **There is no collection `GET` on `/v1/invoice_items`.** An invoice's lines
+  are read from the invoice (`invoice.lines`, expanded on every render).
+- ~~**`GET /v1/refunds/{id}` with no `POST /v1/refunds`** is deliberate and
+  unusual — issue #45 decided a refund needs an authoritative read even though
+  nothing can create one.~~ **Corrected 2026-09-16:** all five refund methods
+  are mounted (RFC-0003 § 2). `POST /v1/refunds` is no longer a `404`, and a
+  merchant request can now reach the `no_over_refund` CHECK. The read-only
+  period ran from 2026-09-05 (issue #45) to 2026-09-16.
+  **What did not change:** nothing settles a refund. There is no refund poll
+  ladder (RFC-0003 open question 8), so every refund these routes create stays
+  `pending` — and **no rail in this repository has ever returned money to
+  anyone.** Mounting a route is not a rail call; do not read these five rows as
+  a payout path.
+
+## `/v1/oauth` — the merchant OP, where `machine_tokens` is permitted
+
+**Since 2026-10-27 (ADR-0037, vpay#384) `POST /v1/oauth/token` is mounted iff
+`auth.methods` permits `machine_tokens`** (an honest `404` otherwise), and `/v1`
+reads the `vpay:v1` tokens it mints again. It is the only token source for the
+MCP endpoint below. _(From 2026-10-26 until #384 this section was headed "now
+only for `/mcp/v1`" and said nothing on `/v1` read what it mints; vpay#380 had
+made `/v1` signed-only.)_ It stays until VP-4, and VP-4 has no replacement for `/mcp/v1` yet
+(ADR-0033, "Left to the maintainer" item 4). Since vpay#377,
+`op::token::apply_resource_indicator` maps RFC 8707 `resource` onto the
+audience: one `resource` with no `audience` _is_ the audience, and two targets
+or a disagreeing pair is `invalid_target`. Before that the OP silently dropped
+`resource`.
+
+Built inline in `router`, not from a table. Unauthenticated by necessity: the
+credential _is_ the request body (RFC 7523 §2.2), so requiring a bearer token
+here would be circular.
+
+| Method | Path                                         |
+| ------ | -------------------------------------------- |
+| POST   | `/v1/oauth/token`                            |
+| GET    | `/v1/oauth/.well-known/openid-configuration` |
+| GET    | `/v1/oauth/jwks.json`                        |
+
+`POST /v1/oauth/token` renders **RFC 6749 §5.2's error body**
+(`{"error":…,"error_description":…}`), _not_ the Stripe envelope — every OAuth
+client in existence parses that shape. It is the one place in the crate where
+an error is not an `ApiError`, other than `/healthz`.
+
+`/v1/oauth` is **not configurable**: a deployment that moved it would silently
+break every merchant who took the SDK default. There is **no rate limit** on
+`/token`; ADR-0009 leaves it to ingress, and nothing in this repository
+verifies that ingress actually limits it.
+
+## `/mcp/v1` — the merchant MCP endpoint (since 2026-10-27)
+
+Mounted only when `deployment.surfaces` names `mcp` (vpay#377, ADR-0033 step 3).
+`Repositories::merchant_mcp_router` in `vpay-db` builds it around CrateStack's
+generated tool table and `StreamableHttpServer`, and `vpay_api::mcp::merchant_router`
+supplies the authenticator and the `MerchantOperations` port. `vpay_api::router`
+merges it in after `with_state`, through `RouterDeps::merchant_mcp`.
+
+| Method | Path                                           | Notes                                                                  |
+| ------ | ---------------------------------------------- | ---------------------------------------------------------------------- |
+| POST   | `/mcp/v1`                                      | JSON-RPC `tools/list` and `tools/call`; bearer token, Origin allowlist |
+| GET    | `/.well-known/oauth-protected-resource/mcp/v1` | RFC 9728 metadata; names `{public_base_url}/v1/oauth`                  |
+
+The nine tools and what each does: `vpay-merchant-api` § "The merchant MCP
+endpoint". The tool-per-route map, and the 28 routes with no tool, is vpay
+`docs/api/mcp-parity.md`, which `cargo xtask verify-mcp-parity` holds to
+`V1_ROUTES` in both directions.
+
+## `/v1/browser` — the payer's browser
+
+Source: `BROWSER_ROUTES` in `backends/crates/vpay-api/src/browser/mod.rs`.
+**Five routes, four of them `GET`.** Pinned at exactly five by
+`every_browser_route_is_reachable_without_a_merchant_token`.
+
+| Method | Path                                        | Credential presented                      |
+| ------ | ------------------------------------------- | ----------------------------------------- |
+| GET    | `/v1/browser/payment_intents/{id}`          | publishable key + intent `client_secret`  |
+| POST   | `/v1/browser/payment_intents/{id}/confirm`  | publishable key + intent `client_secret`  |
+| GET    | `/v1/browser/checkout/sessions/{id}`        | publishable key + session `client_secret` |
+| GET    | `/v1/browser/checkout/sessions/{id}/return` | publishable key + session `return_token`  |
+| GET    | `/v1/browser/checkout/origins`              | publishable key alone                     |
+
+The credential ladder is the design (`browser::checkout_sessions`' module
+docs). The session secret rides in a **URL fragment**, which never leaves the
+browser, so it may expand the intent _with_ its own `client_secret`. The
+`return_token` rides in a **query string** — it must, because a fragment does
+not survive a rail's redirect — so it gets strictly less: enough to render an
+outcome, not enough to confirm. The two are **sibling path patterns read by two
+different handlers**, which is what makes "a `return_token` cannot reach the
+intent's `client_secret`" a routing fact rather than a review promise.
+
+**Every refusal is the same 404.** `browser::authenticate` has four ways to
+fail and answers all of them byte-identically. That is the entire
+confidentiality property of an unauthenticated surface: a distinct answer for
+"unknown publishable key" enumerates a deployment's merchants, one for "wrong
+secret" separates existence from authorisation. `/checkout/origins` answers
+`200 {"origins": []}` for an unknown key for the same reason.
+
+**No rate limiting here, deliberately.** What stands between a guesser and an
+intent is 160 bits of `client_secret`, the uniform 404, and one-charge-per-intent
+— not a counter. A per-process limiter across N replicas is a limit of N times
+what it claims.
+
+**This is the only nest with CORS.** `CorsLayer` with `allow_origin(Any)`,
+credentials off, `GET`/`POST`/`OPTIONS`, and `allow_headers([CONTENT_TYPE])`
+only — notably **not** `Idempotency-Key` or `Authorization`, because allowing
+either invites a browser to send one.
+`cors_is_mounted_on_the_browser_nest_and_on_no_other` fails if a second nest
+gets one. The merchant `/v1` nest gets none: nothing legitimate calls it from a
+browser, and a permissive header there would invite a merchant to put a bearer
+token in a page.
+
+## `/provider` — rail callbacks
+
+Source: `vpay_api::provider_callback`. One route.
+
+| Method | Path                        |
+| ------ | --------------------------- |
+| POST   | `/provider/{code}/callback` |
+
+`POST` only. MTN's documentation says its callback is a `POST` on one page
+and a `PUT` on another, and a `PUT` here would get axum's bare `405`. That is
+unobserved and recorded, not fixed: "To confirm with MTN" item 1 in
+`docs/flows/adapter-mtn-momo.md` (added 2026-10-21, vaam-apps/vpay#319).
+Mounting `PUT` waits on a real MTN callback, not on the documentation.
+
+The path is not free: `vpay_config::ProviderHost::effective_callback_url`
+derives `{public_base_url}/provider/{code}/callback`, and that is what both
+adapters have been sending in `X-Callback-Url` / `notif_url` since Step 3.
+`the_mounted_path_is_the_one_the_rails_are_told_to_call` is the join between
+the two crates.
+
+**Nothing authenticates this route.** Neither MTN nor Orange signs a callback
+or sends a shared secret. **There is no signature verification to find on
+those two, and adding a naive one would be inventing a scheme the rails do
+not implement.** Since 2026-10-23 (RFC-0014) a rail that **does** sign has its
+signature checked by its adapter's `verify_callback`, after the charge is
+found: `notchpay`'s `x-notch-signature`, where its Hash Key is configured. A
+refused callback moves nothing and is answered the same `202`; each verdict is
+counted on `vpay_provider_callbacks_total`. The handler is written around all
+of that: it never writes charge or intent state, verified or not.
+~~The only thing it can do is bring an already-queued `poll_charge` job
+forward~~ **Corrected 2026-09-23:** it runs two statements in one transaction.
+`enqueue_in_tx` inserts a `poll_charge` job (`ON CONFLICT DO NOTHING` on
+`poll:<charge>`, so a no-op when one exists; it takes a `Duration`, here
+`ZERO`, and Postgres computes `now() + delay` — the application host's clock
+until ADR-0026, 2026-09-23), and `pull_forward_in_tx` then
+brings the job forward. A fresh job is written only when the charge has none,
+for example after an operator deleted it or after it finished. The pull-forward
+is skipped if the job is already due within `PULL_FORWARD_FLOOR` (10 s, the
+poll ladder's fastest rung). The module's own header still says only "bring
+an already-queued job forward". `provider_callback::callback`'s step list is
+the accurate one. `CallbackRef::ref_extra` — Orange's
+`notif_token` / `pay_token` — is **discarded**, because writing rail key
+material from an unauthenticated request is the one thing this route must not
+do.
+
+| Case                                        | Answer                                                 |
+| ------------------------------------------- | ------------------------------------------------------ |
+| `code` names no adapter this process links  | `404`, byte-identical to the router's fallback         |
+| body is not a notification this rail sends  | `400` (plus a `warn` carrying the adapter's reason)    |
+| reference names no charge here              | `202`                                                  |
+| reference names a charge, the check refuses | `202` (plus a `warn`; nothing moved, since 2026-10-23) |
+| reference names a charge, the check admits  | `202`                                                  |
+
+The last three are identical on purpose: ~~a non-2xx makes the rail retry forever,
+and~~ a distinct answer would be an oracle for "does this charge exist".
+**Corrected 2026-10-20 (RFC-0013 § 11, item 1):** this page said a non-2xx makes
+the rail retry forever, which is what vpay's own module docs for
+`provider_callback.rs` ("MTN and Orange both do"), `docs/flows/reconciler.md`
+and `docs/reference/vpay-api/provider-callback.md` also say. MTN's
+documentation says the opposite, twice: "There is no retry mechanism if the
+partner system does not respond". No source read says either way for Orange.
+So the retry half is **unestablished for both shipping rails**; RFC-0013
+reads it as becoming true of the three rails that register their endpoint
+(Stripe, PayPal, Notch Pay). Stripe and PayPal have no adapter;
+Notch Pay's is on `master` since `357c825` (vaam-apps/vpay#295, 2026-10-20),
+and its webhook URL is registered by hand (_by vpay itself since 2026-10-22,
+RFC-0013 steps 2–4; see `vpay-notchpay`_). The oracle argument stands on its
+own. Those three vpay texts are still uncorrected on `master` at `b8be107`
+(2026-10-20, the merge of vaam-apps/vpay#285, which added RFC-0013);
+RFC-0013's delivery step 0 corrects them. **Updated 2026-10-21:**
+vaam-apps/vpay#319 is that step for this item; on a `master` that contains
+it, all three carry a dated correction.
+
+**There is no rate limit**, and the module says so plainly: a caller who knows
+a live `provider_reference_id` can hold one charge at roughly one rail request
+per worker claim. Bounded only by the 16 KiB body limit and the dedupe key.
+
+## `/dash/v1` — the dashboard (owned by `vpay-dashboard`)
+
+> **Superseded 2026-10-27 (vaam-apps/vpay#383).** Everything below about staff
+> routes, `require_dashboard_token`, `dashboard_client` and `/dash/v1/oauth` is
+> **history**: the staff routes are deleted, `/dash/v1` and `$procs` accept only
+> COSE_Sign1 messages under a paired console key, and `/svc/v1` (business
+> surface) pairs and revokes keys. Read `vpay-dashboard` for the current
+> surface. Still true: the two `DASH_ROUTES` reads, the five `$procs` searches,
+> and, since vpay#377, `only_dashboard_procedures`, which answers `404` for any
+> other procedure name (the merchant MCP procedures are in the same schema).
+>
+> **Corrected 2026-10-30 (vaam-apps/vpay#390, VPA-3; #391, VPA-4).** The staff
+> routes are back **where `auth.methods` serves `human_login`** (permitted, and
+> both `staff_auth` and `dashboard_client` written) — not on vaam's
+> `[keypair, hmac_webhooks]` deployment. `staff::STAFF_ROUTES` lists **eleven**
+> as of `10f42747`: the eight in the table below plus `GET /dash/v1/staff/sso`,
+> `POST /dash/v1/staff/sso/start` and `POST /dash/v1/staff/sso/callback`. They
+> are merged in **outside** the envelope; where the method is not served none is
+> mounted and every one is the honest `404`. `require_dashboard_token` is not
+> back: a session bearer on `/dash/v1` is checked by
+> `envelope::console::session_scope`, beside the console key, with the envelope
+> in `Optional` mode. A request that is signed **and** carries a bearer is `400`;
+> writes stay key-only. The paragraph and table below remain the pre-#383
+> record; the current surface is `vpay-dashboard`'s, and vpay
+> `docs/flows/dashboard-auth/human-login.md` § "When it is served".
+
+Two `GET` reads from `DASH_ROUTES`, eight unauthenticated staff routes merged
+in from `staff::routes()`, and the CrateStack procedure transport
+`nest_service`d at the same prefix. The staff router is built inline.
+`STAFF_ROUTES` is a separate `(path, methods)` list kept beside it for the
+boundary walk, not its source. _(This said "merged in from `STAFF_ROUTES`"
+until 2026-09-23.)_ The whole nest is **conditional** on the `management`
+surface being enabled (since 2026-09-16, ADR-0022) **and** on the deployment
+having both a `dashboard_validator` and a `dashboard` binding. A deployment
+with no `dashboard_client` mounts nothing, and every `/dash/v1/…` path falls
+through to the outer honest 404.
+
+| Method | Path                                      | Notes                                                                                |
+| ------ | ----------------------------------------- | ------------------------------------------------------------------------------------ |
+| GET    | `/dash/v1/payment_intents`                | `DASH_ROUTES`, behind `require_dashboard_token`; refuses `customer` since 2026-09-23 |
+| GET    | `/dash/v1/payment_intents/{id}`           | same                                                                                 |
+| POST   | `/dash/v1/staff/login`                    | `staff::routes()`, outside the token layer                                           |
+| POST   | `/dash/v1/staff/totp`                     | same                                                                                 |
+| POST   | `/dash/v1/staff/password`                 | same                                                                                 |
+| GET    | `/dash/v1/staff/session`                  | same                                                                                 |
+| GET    | `/dash/v1/staff/session/stage`            | same                                                                                 |
+| POST   | `/dash/v1/staff/logout`                   | same                                                                                 |
+| GET    | `/dash/v1/oauth/authorize`                | same                                                                                 |
+| POST   | `/dash/v1/oauth/token`                    | same                                                                                 |
+| POST   | `/dash/v1/$procs/searchPaymentIntents`    | CrateStack transport                                                                 |
+| POST   | `/dash/v1/$procs/searchRefunds`           | CrateStack transport                                                                 |
+| POST   | `/dash/v1/$procs/searchWebhookDeliveries` | CrateStack transport                                                                 |
+| POST   | `/dash/v1/$procs/searchCustomers`         | CrateStack transport                                                                 |
+| POST   | `/dash/v1/$procs/searchCheckoutSessions`  | CrateStack transport                                                                 |
+
+`/dash/v1` is **read-only structurally, not by promise**:
+`require_dashboard_token` refuses any method that is not `GET`/`HEAD` with a
+`403` _before_ the router matches, so a write mounted here would be a refused
+request rather than an unlogged one (ADR-0008 wants an `audit_log` row per
+dashboard write and none exists). The `$procs` transport is POST-only and
+therefore uses a **separate** middleware,
+`require_dashboard_procedure_token`.
+
+> **Docs↔code disagreement (code wins).** `backends/crates/vpay-db/src/schema.rs`'s
+> test is named `no_generated_model_route_is_mounted_only_the_one_procedure_is`
+> and asserts "the one procedure this transport mounts"; `vpay_api::router`'s
+> comment and `schema/search_payment_intents.rs`'s module docs say the same.
+> That was true for Lane C. `procedure_router` mounts **every** procedure in
+> the `ProcedureRegistry`, and `schemas/vpay.cstack` now declares **five**.
+> Only `searchPaymentIntents` is exercised over HTTP by any test. And since
+> 2026-09-23 the test's "no model route is mounted" half probes **19** of the
+> schema's **20** models, because `manual_payments` (step A) is not in its
+> `MODEL_TABLES`. See `vpay-dashboard`.
+
+## Middleware, and why the order is load-bearing
+
+Outer stack, applied to the whole router in `router`:
+
+1. `discard_unusable_request_id` — vet the caller's own `x-request-id`
+2. `SetRequestIdLayer::x_request_id(MakeRequestUuid)` — mint one if none survived
+3. `mirror_request_id_header` — copy it onto the response under Stripe's
+   `request-id` spelling
+4. `TraceLayer` with `make_request_span` — open the span carrying `request_id`
+5. `PropagateRequestIdLayer::x_request_id`
+
+That order is what makes `Category::Internal`'s "Contact support with the
+request id" a promise a merchant can act on: the id exists before the span is
+built and reaches the caller afterwards. Nothing in `vpay_api::error` generates
+an id of its own — a second id would appear in the log and in no header, which
+is worse than none.
+
+Per-nest layers, **inside** each nest:
+
+- `track_http_metrics` on _every_ nest individually, and on the outer router
+  **before** the `.nest()` calls. `Router::layer` wraps only the routes that
+  exist when it is called, so the outer copy covers `/healthz` and the outer
+  404 only. Moving that line below the nests would double every `/v1` count and
+  label half of them `unmatched`. A request's route _pattern_ only exists once
+  the nest has matched, which is why the layer cannot live outside.
+- ~~`RequestBodyLimitLayer` **outside** the auth layer on `/v1`, `/dash/v1` and
+  the `$procs` transport, so an anonymous caller cannot make the process buffer
+  a body before the 401.~~ **Corrected 2026-10-27:** since vpay#380 (and #383
+  for `/dash/v1`, `$procs` and `/svc/v1`) the body limit is **inside** the
+  `EnvelopeLayer`: the layer itself buffers at most `ENVELOPE_BODY_LIMIT_BYTES`
+  of COSE message, and the limit then bounds the _opened_ payload the handler
+  reads. `vpay_api::envelope`'s module header has the diagram.
+- `CorsLayer` on `/v1/browser` and nowhere else.
+- The `$procs` transport carries its **own** `.fallback(not_found)` added after
+  its token layer, and it is not optional: `Router::nest_service` registers a
+  _catch-all_ in the outer path table, which beats the fallback router where
+  `Router::nest` put `dash::routes`' fallback. Without it, `GET
+/dash/v1/not_a_route` with a valid token answers `403` instead of `404`.

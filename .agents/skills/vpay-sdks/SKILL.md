@@ -1,0 +1,425 @@
+---
+name: vpay-sdks
+description: "The six packages under sdks/ and the parity rule that binds the two merchant SDKs — add a capability to one and you add it to all, or you write a dated gap row. Covers what each SDK is and which are published, how a parity row is written and all three directions of cargo xtask verify-sdk-parity with the measured holes that motivated each, the Stripe SDK compatibility story, the five refund methods and the destination[<rail>][msisdn] payee whose leading + no SDK may add for you, the three payer surfaces — browser, Flutter and the Tauri v2 plugin whose Rust half no root gate compiles — and the generated code that exists (pigeon, ZenStack) versus the OpenAPI codegen that does not. Load before adding, renaming or removing any SDK method or test, and before touching anything under sdks/tauri."
+---
+
+# vpay SDKs
+
+> **Verified against vpay `a33aac61` (2026-09-29); the method-type paragraph under
+> "Refunds" at `98f4d32b` (2026-10-24, vaam-apps/vpay#363); the
+> `payment_method_details` paragraph at `08fb2566` (2026-10-24,
+> vaam-apps/vpay#365); the two merchant-SDK rows of "The packages" at `f885170c`
+> (2026-10-27).** Version-sensitive claims below
+> carry the date they became true — a feature in vpay's `master` may be absent
+> from the tree you are editing. On an older or newer vpay, trust the
+> repository over this page. See [VERSIONING.md](https://github.com/vaam-apps/vpay-skills/blob/main/VERSIONING.md).
+
+The Tauri payer plugin arrived with
+[vpay#238](https://github.com/vaam-apps/vpay/pull/238), merged 2026-09-22 as
+`999a23f9`; it is absent from any `master` checkout older than that.
+~~This page carried a note that #238 was unmerged and that
+`node tools/verify-coverage.mjs` therefore failed against `master`.~~
+**Corrected 2026-09-22:** it merged, the stamp above moved onto the merge
+commit, and the gate passes against `master`.
+
+`sdks/` holds **six** packages as of 2026-09-22 (five until then). Two are
+merchant SDKs, **three** are payer surfaces, and one is evidence rather than an
+SDK. **Five of them carry vpay's own version** — `0.5.0` since the `v0.5.0`
+release of 2026-09-23 (vpay#239; `sdks/rust` through `version.workspace`);
+release-please moves all twenty-four annotated version lines together, so no
+package has a release line of its own. _(Qualified 2026-10-20: "twenty-four"
+is the count of 2026-09-23. vaam-apps/vpay#285 (merged 2026-10-20 as `b8be107`)
+added one more annotated line, the `vpay-notchpay` pin in the root `Cargo.toml`:
+`cargo xtask verify-versions` counted 24 version references on 2026-10-17 at
+vpay `44c5bf5` and counts 25 at `b8be107`. The Notch Pay adapter
+(vaam-apps/vpay#295, `357c825`, 2026-10-20) adds the `vpay-adapter-notchpay` pin
+and counts 26. `0.5.0` here is likewise a figure
+of 2026-09-23; vpay's workspace is at `0.8.0` since the release of 2026-10-20, vpay#282.)_ `sdks/stripe-compat` is `0.0.0`,
+private, and never released. `npm view` answers `0.5.0` for `@vaam-apps/vpay-sdk` and
+`@vaam-apps/vpay-stripe-js`, and `404` for `@vaam-apps/vpay-tauri-checkout`
+(measured 2026-09-23).
+
+## The rule, before anything else
+
+> **Add a capability to one SDK and you add it to all of them — or you write a
+> dated `⛔` row in `docs/sdks/parity.md` for the ones that do not have it.**
+
+That is ADR-0015, and `cargo xtask verify-sdk-parity` enforces it on every
+`just verify`, which is in `just ci`. It is not advisory and it is not a
+reviewer's job.
+
+Three things follow that catch people out:
+
+- **Renaming a test breaks the build.** A `✅` cell names the test(s) that prove
+  the capability; the gate looks each one up by exact name under that column's
+  directory. Rename `a_cached_token_is_reused_across_calls` and `just verify`
+  fails naming the cell.
+- **A method with no row breaks the build**, naming the `file:line` it is
+  declared on.
+- **An `#[ignore]`d, `it.skip`ped or `skip: true` test does not count.** Nor
+  does a commented-out declaration, nor a title that only appears inside a
+  string.
+
+> **A `✅` proves a test NAME exists. It never proves anything RUNS it.**
+> `verify-sdk-parity` reads the name and finds it in that SDK's sources; it
+> cannot tell whether any job executes it. Measured 2026-09-16: the Rust
+> column's `live_refund_lifecycle` and `live_refund_destination_refusals` were
+> `✅` on **three rows for a full day** while `.github/workflows/ci.yml` named
+> only `--test live_invoices`, so nothing compiled that binary. The workflow
+> names `--test live_refunds` too now. **Read a `✅` as "a case exists that
+> would fail", not "something ran it."** Adding a row whose test lives in a
+> new binary means adding that binary to the workflow in the same change —
+> the gate will not remind you.
+
+Full mechanics, including how to write a row and what each direction of the
+gate refuses: `references/parity.md`. Read it before editing
+`docs/sdks/parity.md`.
+
+## The packages
+
+| Path                                    | Name                                                                          | What it is                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | Published                                                                                                                                            |
+| --------------------------------------- | ----------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sdks/nodejs`                           | `@vaam-apps/vpay-sdk`                                                         | **Merchant** SDK for `/v1`. Since 2026-10-26 (vpay#380) it **seals every call and opens every answer**: an Ed25519 seed or a signer callback, the server's two pinned response keys, the Rust SDK's sealing code compiled to WebAssembly (`sdks/rust/wasm`), and `VpayUnsignedResponseError`/`VpayUnverifiedResponseError`. ~~`private_key_jwt` auth, the single-401 re-auth~~ (deleted, with the token cache). Also the form encoder, `verifyWebhook` and nine resources. Second entry point `./stripe` exports `createStripeHttpClient` (`createStripeAuthenticator` until 2026-10-26), with `stripe` as an **optional** peer                                                                                                                                                                                            | yes, public                                                                                                                                          |
+| `sdks/rust`                             | `vpay-sdk`                                                                    | The Rust twin. Same nine resources, same wire. Since 2026-10-26 it signs with an Ed25519 seed or an external signer and opens each answer under its pinned keys (`Error::Unsigned`, `Error::Unverified`). It **vendors** the 37-row operation table (`sdks/rust/src/contracts.rs`), so it stays publishable without the workspace, and a workspace test fails if the copy drifts from `vpay-wire`. Assertion minting, the token cache and `token_exchange` are deleted                                                                                                                                                                                                                                                                                                                                                     | **`publish = false`, deliberately** — "publishing a client for an API nobody can reach would be actively misleading". Flip it once `/v1` is deployed |
+| `sdks/stripe-js`                        | `@vaam-apps/vpay-stripe-js`                                                   | The browser **payer** surface, Stripe.js-shaped. `loadStripe`, `initEmbeddedCheckout`, `openCheckoutPopup`, `notifyCheckoutOpener`. **Zero runtime dependencies**. Since 2026-11-17 (issue #65, vpay#402) the popup completes on vpay's own `vpay:complete` (primary, pinned to `checkoutBaseUrl`'s origin) or the `success_url` → `notifyCheckoutOpener` message (fallback), once per session id; the opening page must send a `Referrer-Policy` that keeps its origin — `references/parity.md`                                                                                                                                                                                                                                                                                                                           | yes, public                                                                                                                                          |
+| `sdks/flutter/vpay_checkout_flutter`    | `vpay_checkout_flutter`                                                       | The mobile **payer** surface. **Renders the checkout as a native Flutter sheet** (`VpayCheckoutSheet`, driven by the session's server-sent `rails`) since 2026-09-17 (#189 lane 2). The payer's own browser (Custom Tab / `SFSafariViewController`, since 2026-09-16) is no longer the checkout: the **only** thing it opens is a `redirect` rail's leg, and since 2026-09-18 (#195/#200) that is vpay's own `/c/{id}/redirect` page on the checkout origin — never the hosted page, and never the rail's own URL. **Material 3 since 2026-09-17** ([vpay#198](https://github.com/vaam-apps/vpay/pull/198)), themed through `VpayCheckoutTheme` — the sheet still paints no palette of its own, but a deployment's `primary_color` may now seed its `ColorScheme`. Reports a typed result once the intent actually settles | **`publish_to: none`** (2026-09-13)                                                                                                                  |
+| `sdks/tauri/tauri-plugin-vpay-checkout` | `tauri-plugin-vpay-checkout` (crate) + `@vaam-apps/vpay-tauri-checkout` (npm) | The **Tauri v2 payer** surface, new 2026-09-22 (ADR-0023, T1–T7; it inherits ADR-0021's D1–D9 unchanged). One guest-JS state machine, three deliberately stupid hosts: a partial Custom Tab on Android, an `SFSafariViewController` on iOS, the default browser on desktop — and the **same package** is a `window.open` popup host outside Tauri, which is what "android + ios + web" meant. **The crate is its own Cargo workspace (T2), so no root gate compiles it** — see the section below before touching anything here                                                                                                                                                                                                                                                                                             | crate **`publish = false`** with a stated reason; npm package publish-ready and **published by nothing** (2026-09-22)                                |
+| `sdks/stripe-compat`                    | `@vaam-apps/vpay-stripe-compat`                                               | **Evidence, not an SDK.** Drives the real `stripe@22.6.1` package against a live compose stack. `private: true`, ships nothing, and **gets no rows in the parity matrix** — "the compat suite proves claims rather than making them"                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | never                                                                                                                                                |
+
+The **three** payer surfaces are **not** additional merchant SDKs. They
+authenticate a payer's _device_ with a publishable key and a per-session
+`client_secret`, speak `/v1/browser`, and share **no capability row** with the
+merchant tables. Each has its own table in `docs/sdks/parity.md`, and the
+Tauri plugin's is a **single-column** one for the same reason the Flutter
+plugin's is: there is no second implementation to diverge from, so the table's
+job is the other direction — a `✅` names a test that exists, and everything
+without one is a dated `⛔`.
+
+**Nine** merchant resources as of 2026-09-16, in both languages:
+`payment_intents`, `checkout.sessions`, `customers`, `invoices`,
+`invoice_items`, `refunds`, `events`, `account_holders`, `balance`. (~~Eight.~~
+This page said eight beside a list of nine; corrected 2026-09-16 by counting
+`client.ts`. Nothing gates a count in prose.)
+
+## Refunds: five methods each since 2026-09-16, and one trap that will bite
+
+Both SDKs ship **create, retrieve, update, list and cancel** on `refunds`, and
+both event unions carry `charge.refunded` and `charge.refund.updated`.
+`refunds.create` takes a `destination`. `balance.retrieve` is now the only SDK
+method in either package with no route behind it.
+
+**The wire shape is `destination[<rail_code>][msisdn]`** — a rail-agnostic
+envelope with a rail-specific interior, and **the rail's own code is the outer
+key**, not a constant. The rail is not a preference: a refund goes back on the
+rail the charge was made on, the server reads that off the charge, and a
+`destination` naming any other rail is a `400` naming `destination`.
+
+> **The trap.** The server's validator — `vpay_provider::RefundTarget::
+mobile_money`, which is fallible and canonicalising — **requires a leading
+> `+`**. `+237600000200` is a payee; the bare national `600000200` is a `400`
+> naming `destination`, even though `GET /v1/account_holders` accepts the bare
+> form on the same server. The asymmetry is deliberate and runs in the safe
+> direction: a lookup that guesses the country wrong returns the wrong name, a
+> transfer that guesses wrong sends the money.
+>
+> **Neither SDK normalises the number, and neither may start.** They send the
+> string the merchant wrote, byte for byte — no `+` added, none stripped, no
+> rewriting. An SDK that "helpfully" canonicalised would pass every one of its
+> own fixtures and fail against the real server the moment the server's rule
+> widened, because the fixtures would be asserting the SDK's rule back to
+> itself. `the_sdk_never_normalises_a_payees_number` and `refunds.create never
+normalises a payee's number on its way to the wire` are the cases; deleting
+> either is how this regresses.
+
+`destination` is optional in both param types **only** because the port allows
+a rail that refunds to the instrument that paid, and such a rail refuses one.
+Neither rail on `master` at `b8be107` is one — both declare
+`RefundDestination::Required` — so there a create with no `destination` is a
+`400`. **`notchpay` is one** (2026-10-20, vaam-apps/vpay#295,
+`357c825`): it refuses a `destination`, and its `refund` is a declared
+`NotImplemented` token. That branch also adds `notchpay` to both SDKs'
+`PaymentMethodType`, and a push-rail confirm shape: `ConfirmPaymentIntentParams::notchpay(msisdn)`
+in Rust and `NotchPayPaymentMethodData` in Node, with one parity row and a
+test in each SDK.
+
+**`mtn_wallet` and `orange_wallet` join both SDKs' `PaymentMethodType` on
+2026-10-23**, on the **create** side only: a merchant can create an intent the
+server will route, and the hosted checkout can confirm it. Neither SDK's
+`ConfirmPaymentIntentParams` can confirm by type or send the
+`payment_method_options[<type>][rail]` pin — a ⛔ row dated 2026-10-23 in
+`docs/sdks/parity.md`. Do not paper over it with a confirm shape that guesses
+the fields: `orange_wallet`'s depend on the rail the server ranks first
+(`return_url` for `orange_money`, `msisdn` for `notchpay`). The Rust enum is
+`#[non_exhaustive]`, so the variants are additive. A type in an
+account-holder lookup is refused by the server, which wants a rail code there.
+In a refund's `destination` (`RefundDestination`'s `payment_method_type`, this
+same enum) a type is **accepted since 2026-10-24** (vaam-apps/vpay#363), but
+only the type the charge records: pass `MtnWallet`/`mtn_wallet` to refund a
+charge the server routed as `mtn_wallet`, without knowing which rail won. Any
+other type, or a type on a charge that records none, is a `400` naming
+`destination`, and the type-checker cannot tell the two apart. Both SDKs' doc
+comments on the field say so.
+
+**An intent says which rail its charge went to since 2026-10-24.** Both SDKs
+decode `payment_method_details`:
+
+- Rust: `vpay_sdk::PaymentMethodDetails { method_type: Option<String>, rail:
+String }` (`type` on the wire) on `PaymentIntent::payment_method_details`.
+- Node: `PaymentMethodDetails`, `payment_method_details?: … | null`.
+- `null` until the intent has a charge. `method_type` is `None` where the
+  charge records no type (a rail-code `notchpay` confirm, an old charge).
+- Optional with `#[serde(default)]` / `?`, because an older vpay omits the
+  key. Proven by a parity row in `docs/sdks/parity.md`.
+- `@vaam-apps/vpay-stripe-js` types it too, and the Tauri fixture carries it.
+- **The Flutter checkout plugin does not model it.** Its `fromJson` ignores
+  the key. A Dart change belongs with a test that runs.
+
+**And the sentence none of this changes: no rail has ever returned money to
+anyone.** A `201` from `refunds.create` means a row exists and its amount is
+reserved against the intent. It does not mean the payee has been paid: the
+refund is `pending` and **nothing settles a pending refund** (RFC-0003 open
+question 8). Both SDKs' module docs open with that; keep it there.
+
+One asymmetry recorded rather than faked: Rust's `CreateRefundParams` has a
+hand-written `Debug` that redacts the payee and the Node package **cannot** —
+its params are an object literal the merchant allocated, so `util.inspect` and
+`JSON.stringify` print the number in full. A `⛔ 2026-09-16` row, written
+because the row above it was `✅/✅` on a title naming `inspect` while neither
+Node test checked it.
+
+## Step A: two new parameters, one source break in Rust
+
+Since vaam-apps/vpay step A (RFC-0004 §§ 5–6, merged in vaam-apps/vpay#251). **No method
+was added**; two existing ones take more:
+
+- **`customer` on `payment_intents.list`, `checkout.sessions.list` and
+  `refunds.list`**, in both SDKs, validated by neither. An older server ignores
+  it and returns the **unfiltered** list; both SDKs' doc comments say so.
+- **`invoices.pay` takes one optional out-of-band object** (ADR-0024 D19) —
+  Rust `out_of_band: Option<OutOfBandParams>`, Node `outOfBand` — whose
+  presence puts `paid_out_of_band=true` and `out_of_band[…]` on the wire and
+  no URL. A URL beside it is refused before any request.
+- **ADR-0025 changed the `customer` doc comments in both SDKs, and nothing
+  else** (2026-09-23, vaam-apps/vpay#253; no signature, field or wire change —
+  `docs/status/merchant-sdks.md` has the row). A checkout session created with
+  `customer` on a customer-less intent now writes it onto the intent _on a
+  server that has ADR-0025_, so the intent and refund `customer` filters find
+  its payment; a server without it, or a session from before 2026-09-23, keeps
+  the customer on the session only. Neither SDK can tell which server it is
+  talking to. The comments also corrected the contradiction refusal from `409`
+  to `400` (`invalid_param` naming `customer`) — the server always answered
+  `400`. Do not add SDK logic that "reconciles" the two lists.
+
+> **BREAKING in `sdks/rust` — source, not wire.** `ListPaymentIntentsParams`,
+> `ListCheckoutSessionsParams`, `ListRefundsParams` and `PayInvoiceParams`
+> each gained a public field, so a struct literal naming every field with no
+> `..Default::default()` stops compiling (`E0063`). A three-field
+> `ListPaymentIntentsParams { … }` literal is the likeliest casualty.
+> Constructors, `Default::default()` and `..Default::default()` are
+> unaffected, and the bytes on the wire are the same. **`sdks/nodejs` is not
+> breaking.** Recorded in `sdks/rust/README.md` § Status.
+
+**Node's first camelCase request fields are deliberate:** `outOfBand` and
+`receivedAt`, by the maintainer's decision of 2026-09-23. Do not "fix" either
+SDK to match the other. Shapes, counts and the corrected parity note:
+[references/parity.md](references/parity.md) § "Step A".
+
+## A path `id` that is empty or only dots is refused (2026-10-21)
+
+Since vaam-apps/vpay#306 (2026-10-21); absent from any vpay older than that.
+Both merchant SDKs put a caller's id into a URL path through **one helper
+each** — `path_segment(id)?` in `sdks/rust/src/resources.rs` and
+`pathSegment(id)` in `sdks/nodejs/src/validate.ts` — and it refuses `""` and
+any id made only of dots before anything is sent, the token request included:
+`Error::InvalidParams { param: "id", .. }` in Rust, a
+`VpayInvalidParamsError` with `param === "id"` in Node (a bare `TypeError`
+until vaam-apps/vpay#315, later the same day), one fixed message that never
+quotes the id. Escaping could not do this, because
+the URL parser under each SDK reads `%2E%2E` as `..`: before the fix,
+`customers.del("..")` was a `DELETE /v1/`. What vpay answered for each method
+is on vpay's `docs/status/verification/2026-10-21-sdk-dot-segment-ids.md`.
+
+- **A new method that takes an id calls the helper and gets a line in both
+  test lists**, `every_id_taking_call` (`sdks/rust/tests/resources.rs`) and
+  `everyIdTakingCall` (`sdks/nodejs/src/client.test.ts`). Never interpolate
+  `percent_encode(id)` or `encodeURIComponent(id)` directly. Both tests count
+  the id-taking methods off the source text and fail when the list is
+  shorter, and both pin **21**; move that number and the prose citing it
+  together.
+- **`...` and longer runs are refused by decision**, the same one the
+  server-side port's `vpay_provider::http::path_segment` took on 2026-10-20
+  (`vpay-provider-adapters`). They are not dot segments to either URL
+  standard. Do not relax the guard to `""`, `.` and `..`: a mutation that did
+  is one of the cases the tests were checked against.
+- ~~**Node's `TypeError` is deliberate.** It matches the amount refusal, and
+  the dated `⛔` "the refusal is one of this SDK's own error types" covers
+  both.~~ **Corrected 2026-10-21, later the same day (vaam-apps/vpay#315):
+  every local refusal in `sdks/nodejs` is a `VpayInvalidParamsError` now**:
+  amount, id, the form encoder's, and `invoices.pay`'s URL beside
+  `outOfBand`. The class `extends VpayError` and carries `param`, and the
+  `⛔` is closed. A new refusal in Node throws
+  `new VpayInvalidParamsError(param, detail)`, never `TypeError` and never a
+  bare `Error`. Its `message` is Rust's `Display`,
+  `invalid request parameter {param}: {detail}`. It is **not** a `TypeError`
+  and cannot be one, because a class has one superclass. Code that matched
+  `instanceof TypeError` broke on purpose (that PR's title carries `!`). Do
+  not "restore" the old behaviour by making `VpayError` extend `TypeError`,
+  which would make every error the package throws one.
+- **It is a behaviour change, not a signature change.** Every method already
+  returned `Result<_, Error>` / a `Promise`, and `InvalidParams` already
+  existed. A caller who saw a `404` for these inputs now gets the local
+  refusal. Both READMEs' § Status say so.
+- **The payer surfaces are not exposed, by construction and, since
+  2026-10-21, by test.** `@vaam-apps/vpay-stripe-js`'s `parseClientSecret`
+  and the Flutter plugin's `_tryParseClientSecret` take the id out of a client
+  secret and require it to start with `pi_` or `cs_` and be longer than that
+  prefix. That rule is the only thing keeping `.` and `..` out of a
+  `/v1/browser` path, because escaping leaves dots alone. The Tauri plugin
+  builds no path of its own: its guest-JS calls stripe-js. Since
+  vaam-apps/vpay#309, tests drive every method that builds a path, the
+  embedded frame's `/e/{id}` included, through sixteen such secrets and
+  assert nothing is sent. The list is
+  `sdks/stripe-js/src/testing/unroutable-secrets.ts`, with a copy in
+  `sdks/flutter/vpay_checkout_flutter/test/browser_client_test.dart`. Other
+  tests pin that an id carrying `/../` stays one segment. A new payer method
+  that builds a path gets a line in those tests, and a new refused shape
+  goes in both lists. _(This said "No test there names a dot segment, so
+  loosening that prefix check would reopen it silently" until 2026-10-21.)_
+
+## Parity is per capability, not per method name or per shape
+
+ADR-0015 decision 1. Two deliberate asymmetries you will meet:
+
+- **One spelling divergence exists and it is a table, not a rule.**
+  `PARITY_COLUMN_SPELLINGS` in `.xtask/src/main.rs` carries exactly one entry:
+  Node's `invoices.markUncollectible` is the row's `invoices.mark_uncollectible`.
+  Rust cannot spell the first (`non_snake_case`) and the Node package should
+  not spell the second (Stripe's own Node SDK says `markUncollectible`).
+  **An entry in that table that exempts nothing fails the build**, the way
+  ADR-0016's serde exemption table does. A _rule_ ("TypeScript may camel-case
+  any row") was rejected: it would make every future divergence silent.
+- **Types diverge where the languages do.** A patch field is three-state in
+  both (`Option<Option<String>>` / `string | null | undefined`) because
+  `description=` clears; an _invoice item_ patch field is two-state in both,
+  because its columns are `NOT NULL` and `description=` is a `400`. `refund.fee`
+  is `Option<i64>` in Rust and `fee?: number | null` in TypeScript. Each cell's
+  proving test asserts the resulting **body**, never the type.
+
+## The live suites fail rather than skip
+
+`sdks/rust/tests/live_invoices.rs` and `live_refunds.rs` (both behind the
+`live-stack` cargo feature) and `sdks/nodejs/src/{invoices,refunds}.live.test.ts`,
+all run by `just sdk-live` and CI's `e2e` job.
+
+**The two languages are wired differently, and only one of them is safe.**
+Node's live cases are one vitest project matching a **glob** —
+`vitest.live.config.ts`, `src/**/*.live.test.ts`, with `passWithNoTests: false`
+— so a new `*.live.test.ts` is picked up with no wiring. A Rust live binary
+must be **named explicitly** in `.github/workflows/ci.yml`: the step is `cargo
+test -p vpay-sdk --features live-stack --test live_invoices --test
+live_refunds`, and `live_refunds` was missing from it for a day after wave 3
+added the file, which is the measurement behind the parity-gate warning above.
+Add a Rust live binary and add it to the workflow in the same change.
+
+`sdks/stripe-compat` works the same way:
+`src/preflight.ts` is a vitest `globalSetup` that fails the run when no stack
+answers `/healthz` or the merchant handshake does not complete.
+
+Run with no `VPAY_BASE_URL` they **fail, naming the variable**. They never
+skip, because `AGENTS.md` forbids `#[ignore]` for exactly this reason: a suite
+that skipped itself would print `ok` with zero cases and be indistinguishable,
+in a CI summary, from one that passed.
+
+It earned its keep immediately: the first live run found that `currency` is
+**required** on `POST /v1/invoices`, which both SDKs had documented as optional
+with a deployment default that does not exist.
+
+## There is no OpenAPI spec and no OpenAPI codegen
+
+Both merchant SDKs are **hand-written** against the wire contract in
+`docs/flows/merchant-auth.md` and the flow docs. `verify-sdk-parity` is what
+keeps them in step — there is no generator to re-run and no spec to edit.
+Generated code that _does_ exist (pigeon, ZenStack) and how to regenerate it is
+in `references/generated-code.md`.
+
+## The Tauri plugin: what an agent must know before touching it
+
+All 2026-09-22, and all caveat rather than tour — the tour is
+`references/tauri-plugin.md`, which you should read before editing anything
+under `sdks/tauri/`.
+
+- **No root gate compiles the Rust, and none compiles the Kotlin or the Swift
+  either.** The crate carries its own empty `[workspace]` table (T2), so
+  `cargo nextest run --workspace`, `just clippy`, `just deny`,
+  `verify-no-mocks`'s `cargo metadata` sweep and `verify-serde` (which scans
+  `backends/crates` only) all walk past it. The only commands in the
+  repository that build it are `just test-tauri-rust`,
+  `just clippy-tauri-rust` and `just check-tauri-mobile` — each driving cargo
+  through `--manifest-path`, and **none of the three in `just ci` or
+  `just verify`** (T7: the CI image has no `libwebkit2gtk-4.1-dev`, no Android
+  SDK/NDK and no Xcode). `just test-tauri-js` is a scoped convenience. The
+  **TypeScript** half is the one genuinely gated part: `pnpm-workspace.yaml`
+  names `sdks/tauri/*`, so `pnpm -r typecheck|lint|test` reaches it through
+  `just lint-web`/`just test-web` with no recipe change. The Kotlin and the
+  Swift **do** now compile and link — but only inside `examples/tauri-checkout`
+  (`tauri android build` / `tauri ios build`, both exit 0 on 2026-09-22), run
+  by a human, never by a gate — and the example's own `src-tauri/` is the
+  ungated slice (its TypeScript does run in `pnpm -r`; its Rust, lockfile and
+  `dev` script are in 0 recipes, 0 workflows and 0 xtasks, which is how
+  vpay#241's two bugs stayed green — `references/tauri-plugin.md`).
+- **The state machine is guest-JS (T1)**, so **a change to D1 or D4 behaviour
+  is a TypeScript change.** The Rust, Kotlin and Swift hosts hold no rule
+  about money; their whole vocabulary is
+  `{ outcome: "dismissed" | "stopUrlReached", reachedUrl }`, once per `show`,
+  with no `succeeded`/`canceled`/`failed` on that wire at all.
+- **iOS cannot produce `stopUrlReached` (T6)** — not "unverified",
+  unreachable. tauri-v2.11.6's Swift `Plugin` base class exposes no
+  app-delegate hook, and Tauri's own `deep-link` plugin ships no `ios/` at
+  all. **Every iOS checkout ends `dismissed`**, which D1/D4 make correct;
+  `matchesStopUrl`/`handleUniversalLink` exist and nothing calls them. Do not
+  "fix" this by deleting them or by inventing a hook.
+- **Desktop has no dismissal signal at all (T4)**, by decision. `dismiss()` is
+  the only trigger. The Flutter macOS host shipped a focus-regained signal
+  once and removed it on 2026-09-16; do not re-invent it here.
+- **`verify-sdk-parity` cannot cite a test whose title contains `|`.** Its
+  table reader splits a row on every raw `|` with no escape handling, and two
+  live cases in `guest-js/host-tauri.test.ts` assert the invoke names
+  `plugin:vpay-checkout|show` / `|dismiss`. Both pass; neither can appear in a
+  cell, and the parity table says so in prose instead. **Do not rename a test
+  to suit the parser.**
+- **`permissions/autogenerated/` and `permissions/schemas/` are tracked build
+  output.** `tauri_plugin::Builder` rewrites them on **every** `cargo build`,
+  and they are in `.prettierignore` because a formatted copy is un-formatted
+  again by the next build. Commit what the generator wrote.
+- **swift-rs compiles the Swift for iOS 13.0** unless
+  `IPHONEOS_DEPLOYMENT_TARGET` or a consuming app's
+  `bundle.iOS.minimumSystemVersion` says otherwise, and the host needs 15.0
+  for `sheetPresentationController`: `cargo check --target aarch64-apple-ios`
+  failed **exit 101** until an `if #available(iOS 15.0, *)` guard landed in
+  `VpayCheckoutExternalBrowserSession.swift`. **That guard is load-bearing.**
+- **The guest-JS depends on `@vaam-apps/vpay-stripe-js`** (`workspace:*`, T3)
+  and every npm script chains a `deps` script that builds it first — its types
+  resolve through `exports` to `dist/`. A bare `tsc` there fails for that
+  reason and no other.
+- **Quote `VITE_VPAY_SESSION_URL` in any dotenv file.** A session URL's
+  fragment **is** the session secret, and vite reads an unquoted `#` as a
+  comment and silently drops it — the symptom is `unresolved` with
+  `invalid_request` and nothing reaching the server, which reads as a broken
+  plugin and is a broken `.env` line (2026-09-22).
+
+## More
+
+- `references/parity.md` — how to write a row, all three directions of the
+  gate, and the measured holes each direction closed. **Read this before
+  editing the matrix.**
+- `references/stripe-compat.md` — using the official Stripe SDKs against vpay:
+  the one seam, and the divergences an integration actually hits.
+- `references/flutter-plugin.md` — the payer plugin's three architectures
+  (WebView → payer's browser → native sheet), which one is current, the
+  screen machine and what still has no native analogue.
+- `references/tauri-plugin.md` — the Tauri v2 payer plugin: the shape, the
+  wire between guest-JS and the four hosts, T1–T7 with the reason for each,
+  the dated gaps, and which `just` recipe proves what. **Read it before
+  editing anything under `sdks/tauri/`.**
+- `references/generated-code.md` — pigeon and ZenStack, and the hand-added line
+  that regeneration will silently drop.

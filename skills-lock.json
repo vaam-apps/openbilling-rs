@@ -707,6 +707,153 @@
       "sourceType": "github",
       "skillPath": "skills/using-agent-skills/SKILL.md",
       "computedHash": "741fa4facdd7970231184d621f4c5eaa5c52dedc3cf53e87b25f9daf4873d2cc"
+    },
+    "vpay": {
+      "source": "vaam-apps/vpay-skills",
+      "commit": "19f15ba4a19953b652f918f0c5b9db19b2f7a443",
+      "sourceType": "github",
+      "skillPath": "skills/vpay/SKILL.md",
+      "computedHash": "eaafe205ad4342565e4167024b95d5f0fb654a80ab936764ea78c1d737ef5b99"
+    },
+    "vpay-checkout": {
+      "source": "vaam-apps/vpay-skills",
+      "commit": "19f15ba4a19953b652f918f0c5b9db19b2f7a443",
+      "sourceType": "github",
+      "skillPath": "skills/vpay-checkout/SKILL.md",
+      "computedHash": "c33479abaa1119723a2c154e7915d346080a6fbfe18387be6615dbdab207fc8f"
+    },
+    "vpay-conventions": {
+      "source": "vaam-apps/vpay-skills",
+      "commit": "19f15ba4a19953b652f918f0c5b9db19b2f7a443",
+      "sourceType": "github",
+      "skillPath": "skills/vpay-conventions/SKILL.md",
+      "computedHash": "409a3d5332b608ba2a65f7a6145ad39ab706fabddb4837ceb2556f434ba45a68"
+    },
+    "vpay-customers": {
+      "source": "vaam-apps/vpay-skills",
+      "commit": "19f15ba4a19953b652f918f0c5b9db19b2f7a443",
+      "sourceType": "github",
+      "skillPath": "skills/vpay-customers/SKILL.md",
+      "computedHash": "1fd1997950ffc76304f7592cef3b4f515b278b3b769ff062216ba9e28a805b9e"
+    },
+    "vpay-dashboard": {
+      "source": "vaam-apps/vpay-skills",
+      "commit": "19f15ba4a19953b652f918f0c5b9db19b2f7a443",
+      "sourceType": "github",
+      "skillPath": "skills/vpay-dashboard/SKILL.md",
+      "computedHash": "fbdea2a79318567d1a4600eadc4a3e94794faac609aa5baaf4c9263b3fac969d"
+    },
+    "vpay-data-layer": {
+      "source": "vaam-apps/vpay-skills",
+      "commit": "19f15ba4a19953b652f918f0c5b9db19b2f7a443",
+      "sourceType": "github",
+      "skillPath": "skills/vpay-data-layer/SKILL.md",
+      "computedHash": "cb7f53eb6050b583177483909026028b753a9f37d86c462b3f946c438a478688"
+    },
+    "vpay-docs-status": {
+      "source": "vaam-apps/vpay-skills",
+      "commit": "19f15ba4a19953b652f918f0c5b9db19b2f7a443",
+      "sourceType": "github",
+      "skillPath": "skills/vpay-docs-status/SKILL.md",
+      "computedHash": "a779d1f6736d2c6374f97150bcf1ad30209272926d5d9b9527b5d8f9843ee7f4"
+    },
+    "vpay-frontend": {
+      "source": "vaam-apps/vpay-skills",
+      "commit": "19f15ba4a19953b652f918f0c5b9db19b2f7a443",
+      "sourceType": "github",
+      "skillPath": "skills/vpay-frontend/SKILL.md",
+      "computedHash": "39f11630b66e6784b8c04756346ccdd5a4f5a0443d142df92c9179143c4de23d"
+    },
+    "vpay-invoices": {
+      "source": "vaam-apps/vpay-skills",
+      "commit": "19f15ba4a19953b652f918f0c5b9db19b2f7a443",
+      "sourceType": "github",
+      "skillPath": "skills/vpay-invoices/SKILL.md",
+      "computedHash": "4ed7fb2a501b5f975b7f9eaee8433467cd149e9f534d5ba42e4f442b5627198d"
+    },
+    "vpay-merchant-api": {
+      "source": "vaam-apps/vpay-skills",
+      "commit": "19f15ba4a19953b652f918f0c5b9db19b2f7a443",
+      "sourceType": "github",
+      "skillPath": "skills/vpay-merchant-api/SKILL.md",
+      "computedHash": "44a4a6a67ec28e1d040c12d7af50f3748f2610935d8ef08a36ffc2f1d86f62c1"
+    },
+    "vpay-mtn-momo": {
+      "source": "vaam-apps/vpay-skills",
+      "commit": "19f15ba4a19953b652f918f0c5b9db19b2f7a443",
+      "sourceType": "github",
+      "skillPath": "skills/vpay-mtn-momo/SKILL.md",
+      "computedHash": "15c9f9561a94e249b1cb22d8bea68043411a9e06e8a8d0e4e8acb1bb2c41b232"
+    },
+    "vpay-notchpay": {
+      "source": "vaam-apps/vpay-skills",
+      "commit": "19f15ba4a19953b652f918f0c5b9db19b2f7a443",
+      "sourceType": "github",
+      "skillPath": "skills/vpay-notchpay/SKILL.md",
+      "computedHash": "78a5ca5f13a886cc8d5c886c4cd331d3bf48d886569b0b1f4d25bb1ff89ea827"
+    },
+    "vpay-ops": {
+      "source": "vaam-apps/vpay-skills",
+      "commit": "19f15ba4a19953b652f918f0c5b9db19b2f7a443",
+      "sourceType": "github",
+      "skillPath": "skills/vpay-ops/SKILL.md",
+      "computedHash": "1cfa843b0ffae3158160f8f09f43a58ca2efa1b28cf8199e910e691fa5e03189"
+    },
+    "vpay-orange-money": {
+      "source": "vaam-apps/vpay-skills",
+      "commit": "19f15ba4a19953b652f918f0c5b9db19b2f7a443",
+      "sourceType": "github",
+      "skillPath": "skills/vpay-orange-money/SKILL.md",
+      "computedHash": "0db3926e38c4c7b938182436a0b7115087efe53f19357906308d9bba89e65680"
+    },
+    "vpay-payments": {
+      "source": "vaam-apps/vpay-skills",
+      "commit": "19f15ba4a19953b652f918f0c5b9db19b2f7a443",
+      "sourceType": "github",
+      "skillPath": "skills/vpay-payments/SKILL.md",
+      "computedHash": "e2e816992a7307ee2b79d9ace864e403bc9d4998a753022549be1232a3d24f5f"
+    },
+    "vpay-provider-adapters": {
+      "source": "vaam-apps/vpay-skills",
+      "commit": "19f15ba4a19953b652f918f0c5b9db19b2f7a443",
+      "sourceType": "github",
+      "skillPath": "skills/vpay-provider-adapters/SKILL.md",
+      "computedHash": "8367ab059a9c37b26e46694e24bda0d207863c8a6b37019c576064fdb6cea986"
+    },
+    "vpay-reconciler": {
+      "source": "vaam-apps/vpay-skills",
+      "commit": "19f15ba4a19953b652f918f0c5b9db19b2f7a443",
+      "sourceType": "github",
+      "skillPath": "skills/vpay-reconciler/SKILL.md",
+      "computedHash": "54b9aa3b69df8e4ea133f90f9cb174bc3b1ad01dd693bd9a6653c4f722a23c02"
+    },
+    "vpay-sdks": {
+      "source": "vaam-apps/vpay-skills",
+      "commit": "19f15ba4a19953b652f918f0c5b9db19b2f7a443",
+      "sourceType": "github",
+      "skillPath": "skills/vpay-sdks/SKILL.md",
+      "computedHash": "fd58915a384c45591a2bf8490a464c9e0ebd6446c500d1bd0af1a996ae33ab50"
+    },
+    "vpay-tooling": {
+      "source": "vaam-apps/vpay-skills",
+      "commit": "19f15ba4a19953b652f918f0c5b9db19b2f7a443",
+      "sourceType": "github",
+      "skillPath": "skills/vpay-tooling/SKILL.md",
+      "computedHash": "1a5afe1091f3cdad7a2e6138f906760ec0468e01f248765058d3c51469fbcda0"
+    },
+    "vpay-troubleshooting": {
+      "source": "vaam-apps/vpay-skills",
+      "commit": "19f15ba4a19953b652f918f0c5b9db19b2f7a443",
+      "sourceType": "github",
+      "skillPath": "skills/vpay-troubleshooting/SKILL.md",
+      "computedHash": "ada89933ff5e520c690c0dd7b0bf0db8d32c55981fd60006ac2a914cea7e5170"
+    },
+    "vpay-webhooks": {
+      "source": "vaam-apps/vpay-skills",
+      "commit": "19f15ba4a19953b652f918f0c5b9db19b2f7a443",
+      "sourceType": "github",
+      "skillPath": "skills/vpay-webhooks/SKILL.md",
+      "computedHash": "e95963b7df83f4ce4f40be17344d2fdf9be3b53acaab06b49435ea06481a70a8"
     }
   }
 }

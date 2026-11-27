@@ -1,0 +1,282 @@
+# Docker and testcontainers
+
+_Verified against vpay `10f42747` (2026-10-30) for the 2026-10-30 correction at the top of § "macOS has one loopback address", and `f885170c` (2026-10-27) for the one under it; against `a33aac61` (2026-09-29) for § "A bounded retry over `run_once` is a flake"; the rest of this page was last read at `d3a8810b` (2026-09-16). Version-sensitive claims
+carry the date they became true — see [VERSIONING.md](https://github.com/vaam-apps/vpay-skills/blob/main/VERSIONING.md)._
+
+Everything Postgres-backed in this workspace starts a real container. Nothing
+skips when Docker is absent — `README.md`: the suites "**fail loudly** without a
+reachable daemon — they never skip, so a green run is a real one." The adapter
+conformance suite needs Docker too, because a stub rail is a host reached over
+HTTP (ADR-0006), not an in-process double.
+
+## Rootless Docker
+
+**Symptom:** `Error: postgres:16-alpine container starts … Caused by: … (Connect)`.
+
+**Cause:** `testcontainers` reads `/var/run/docker.sock` by default and reads a
+rootless socket path **only** from `DOCKER_HOST`. Your `docker` CLI works
+because it uses a context; the test harness does not.
+
+**Fix:**
+
+```bash
+export DOCKER_HOST=unix:///run/user/$(id -u)/docker.sock
+```
+
+On the authoring machine that is literally `unix:///run/user/1000/docker.sock`,
+and it appears in the header of nearly every `docs/plans/*/opus-review.md` as
+part of the recorded run environment. Copy that habit: state the daemon you ran
+against.
+
+You also need `postgres:16-alpine` pulled.
+
+## `failed to create a container: Timeout error` at ~120 s
+
+The 120 s figure is testcontainers' container-create deadline. A failure at
+`120.0xx s` is that deadline, not your code.
+
+**How to tell it is the host and not the tree,** the four signals the reviews
+use:
+
+1. It fails on a **different, untouched** test each run.
+2. It is never an assertion — always a container-start error.
+3. The same suite passes in isolation, or on the same tree at lower load.
+4. `docker ps -a` shows `Created`-state debris and/or the load average is
+   above ~9.
+
+**Fix:**
+
+```bash
+docker ps -a --filter label=org.testcontainers.managed-by=testcontainers
+# remove Created-state containers older than ~30 minutes, then re-run
+```
+
+Recorded instances, all on the authoring host, all resolved without a code
+change:
+
+| Evidence                                                                                                     | Outcome                                                 |
+| ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------- |
+| 250 containers stuck in `Created`, accumulating for days; another agent running the same suite at load 13–24 | 240 removed, then **1290/1290 passed**                  |
+| load 19, `fs.inotify.max_user_instances` 128, 24 `created`-state containers                                  | debris removed, re-run **0**                            |
+| five consecutive failures at 1151/1151/1151/1225/1270 of 1696, load 25, another worktree's e2e stack up      | same suite **1696/1696 at load 3**, Rust byte-identical |
+| an abandoned `vpay-demo` compose stack crash-looping on the daemon                                           | stack torn down, suite green                            |
+
+**Report it, do not absorb it.** The house phrasing for a run that died this way
+is "an environment failure, not a code one… **Not counted as a result**", with
+the load average and container count stated. A reviewer who silently re-ran
+until green has hidden a signal.
+
+## `RootlessKit PortManager.AddPort(): bind: address already in use`
+
+**Cause:** testcontainers' random host-port mapping racing another container
+start under rootlesskit's port manager. Also seen as testcontainers' own
+"container port" error.
+
+**Fix: already structural — do not re-solve it.** `.config/nextest.toml` puts
+every container-starting package into a `postgres-containers` test group with
+`max-threads = 1`, serialising container _starts_ while each test keeps its own
+container and its own `Drop`-based cleanup.
+
+**If you add a package whose tests start a container, add it to that `filter`.**
+The current list is `vpay-tests-integration`, `vpay-tests-conformance`,
+`vpay-db`, `vpay-server`, `vpay-testkit`. The group is "our tests that ask
+Docker for a port", not "our tests that use Postgres" — WireMock starts count.
+A `package(...)` naming a package that does not exist is a **hard nextest
+config error, not a no-op**, so the list cannot silently rot.
+
+**Do not "optimise" this into a shared container.** That was tried and
+rejected, with evidence: a `ContainerAsync` held in a `static` never runs `Drop`
+at process exit (Rust does not drop statics), so a shared container leaks the
+underlying Docker container forever. Verified by running that version 8+ times
+and finding hundreds of orphaned `postgres:16-alpine` containers still `Up`,
+which drove the Docker VM into memory pressure and OOM-killed an unrelated
+container. `max-threads = 3` was also tried and still failed roughly 1 run in 14. The tradeoff taken is wall-clock, not correctness.
+
+## `OCI runtime exec failed: … current working directory is outside of container mount namespace root` / `possible container breakout detected`
+
+**Cause:** a known **rootless-Docker shim fault on the host**. It hits the
+container's `HEALTHCHECK` exec, so Docker reports the container `unhealthy`
+while the container itself keeps answering real requests correctly.
+
+**Symptoms it produces upstream:** `docker compose … up -d --wait` fails with
+`container <name> is unhealthy`; one recorded instance had **157 consecutive**
+such health-log entries while `/healthz` on the server that stack brought up
+answered `200` throughout.
+
+**Fix:** `docker restart <that one container>` (not the daemon) was enough to
+get the Orange-redirect e2e tests passing without retry. Or check the
+container's own logs and `/healthz` and proceed.
+
+**It is not a defect in the recipe or the stack.** Record it as a host fault.
+
+## Debris and teardown discipline
+
+Two habits the reviews enforce on themselves and you should copy:
+
+- If you kill a run, tear the stack down explicitly (`docker compose … down -v`)
+  and **confirm** containers, network, volume and every overridden port are
+  gone. Orphaned stacks are the cause of the next person's timeout.
+- `just demo-down` removes containers **and their volumes**. It is also the fix
+  for a stale `pgdata` — see
+  [migrations-database.md](migrations-database.md).
+
+## CI does not look like your machine
+
+`.github/workflows/ci.yml`'s `rust` job has **no WireMock services** and none
+should be added — the conformance suite starts its own containers via
+testcontainers. CI's `rust` job also installs Node and builds the Node SDK
+before running tests, which is why one Rust test fails on a fresh local worktree
+and never in CI (see [node-web.md](node-web.md)).
+
+### macOS has one loopback address; Linux has sixteen million (2026-09-18; ~~moot since 2026-10-27~~ live again since 2026-10-30)
+
+**Corrected 2026-10-30 (vaam-apps/vpay#390, VPA-3).** The note below was true
+from vpay#383 to #390. `staff_sign_in.rs` is restored with its rate limiter,
+and at `10f42747` the four cases named below are in it again, binding
+`127.0.0.2`, `.3`, `.4`, `.20` and `.30`–`.35` through
+`support::client_bound_to`, so **on macOS
+they fail with `EADDRNOTAVAIL` again**. The helper's error names the fix
+(`sudo ifconfig lo0 alias <addr> up`). **`just loopback-aliases` was not
+restored**: the helper's message and doc comment still name it, and a
+`CLAUDE.md` paragraph, and neither exists at `10f42747` (no `loopback` in
+`justfile`, `CLAUDE.md` or `AGENTS.md`). Alias each address by hand until
+vpay restores the recipe; the `just loopback-aliases` block further down is
+the pre-#383 fix.
+
+**Corrected 2026-10-27: the four cases below, their file and the
+`just loopback-aliases` recipe are deleted** (vaam-apps/vpay#383, which
+deleted staff sign-in and its rate limiter; ADR-0036). On a vpay at or after
+`f885170c` nothing in the suite binds `127.0.0.2`–`127.0.0.35`, so this
+symptom should not appear, and the fix below does not exist. The helper
+`support::client_bound_to` (`backends/tests/integration/tests/support/mod.rs`)
+survives with no caller, and its doc comment still points at
+`just loopback-aliases` and at a `CLAUDE.md` paragraph #383 removed. If a
+**new** test reaches for distinct source addresses, it inherits the macOS
+problem and needs a recipe again. The rest of this section is the record for
+an older tree:
+
+Four cases in `backends/tests/integration/tests/staff_sign_in.rs` simulate
+distinct client source addresses with `reqwest::ClientBuilder::local_address` —
+`the_sign_in_rate_limit_is_per_source_address`,
+`the_second_factor_is_rate_limited_and_not_only_the_password`,
+`a_forwarded_for_header_from_an_untrusted_peer_buys_no_fresh_budget` and
+`two_replicas_share_one_sign_in_budget`. They are the only coverage of the
+per-source-address half of the sign-in rate limit, and the address is the
+thing under test, so none of it can be faked with a header: two of the four
+exist precisely to prove `X-Forwarded-For` is **not** honoured from an
+untrusted peer.
+
+Linux assigns the whole `127.0.0.0/8` to `lo`, so those binds succeed and CI is
+green. macOS assigns only `127.0.0.1` to `lo0`, so `bind()` returns
+`EADDRNOTAVAIL` and all four fail — deterministically, not flakily, and
+identically whether run in the full workspace or alone. The bind happens at
+**connect** time rather than at `ClientBuilder::build()`, so before 2026-09-18
+this surfaced as an opaque reqwest transport error:
+
+```text
+error sending request for url (http://127.0.0.1:PORT/dash/v1/staff/login)
+  1: client error (Connect)
+  2: tcp bind local error
+  3: Can't assign requested address (os error 49)
+```
+
+The fix is host setup, once per boot, not a change to the tests:
+
+```bash
+just loopback-aliases
+```
+
+It aliases every address the suite uses (`127.0.0.2`, `.3`, `.4`, `.20` and
+`.30`–`.35`) onto `lo0` and is a no-op on Linux. The aliases do **not** survive
+a reboot. Since 2026-09-18 the suite preflights the bind through a shared
+helper, so an unaliased machine fails with a message naming this command
+instead of `os error 49`.
+
+~~**Do not "fix" this by ignoring or gating the four cases.**~~ _(On an older
+tree, still right: a green run that skipped them would claim the per-address
+limiter was covered when nothing measured it. From `f885170c` there is no
+limiter and no case.)_ **Right again from `623d659f` (2026-10-30,
+vaam-apps/vpay#390):** the limiter and the four cases are back; alias the
+addresses, do not skip the cases.
+
+### `/__admin/health` proves nothing about WireMock's stubs (2026-09-18)
+
+A conformance or integration case that reaches a WireMock host and gets a
+**404 from a live server** — e.g.
+`Config("orange_money: the token endpoint answered HTTP 404; check
+providers[].host.url")` — is not a misconfigured `host.url`. It is a readiness
+gap.
+
+`HealthCheckTask.execute()` at the pinned `wiremock/wiremock:3.9.2` tag never
+touches the `Admin` it is handed: it returns a hardcoded HTTP 200 on every
+call. A passing Docker healthcheck therefore proves the JVM started and
+`/__admin/*` is routed, and **nothing about whether the bind-mounted mappings
+are being served on the mapped host port**. `compose.yml`'s comment claimed
+otherwise until 2026-09-18 and is now struck through in place.
+
+`vpay_testkit::containers::start_wiremock` gained a second gate the same day:
+it polls `GET /__admin/mappings` on the mapped host port until WireMock's own
+`meta.total` is positive, bounded by a 5s deadline. Every caller gets it, so a
+rail request can no longer be issued against a host reporting zero mappings.
+If you add a `start_wiremock` caller, point it at a **non-empty** mappings
+directory or that gate will time out by design.
+
+### A bounded retry over `run_once` is a flake, not a test (2026-09-18)
+
+~~`vpay_worker::seed_singletons` stamps a job's `run_at` from the **test
+process's** clock (`OffsetDateTime::now_utc()`), while `Jobs::claim` selects
+`WHERE run_at <= now()` — evaluated by the **Postgres server** inside its own
+testcontainer. Those are two clocks. A container reading milliseconds behind
+the host makes a just-seeded job unclaimable, and `run_once` answers `None`.~~
+
+**Corrected 2026-09-29 — the "two clocks" cause is gone for the shipping
+enqueue, and the stale sentence is still in vpay.** Until 2026-09-23 the above
+was true: `seed_singletons` and most other `run_at` writers computed the instant
+in Rust. ADR-0026 (vaam-apps/vpay#256, merged 2026-09-24) removed it at the
+source, as of vpay `a33aac61`:
+
+- `TxRepositories::enqueue_in_tx` takes a **`Duration`** and the statement
+  computes `now() + delay`; `seed_singletons` enqueues all five singletons
+  (six since 2026-10-22: `ensure:callbacks`, RFC-0013) at `Duration::ZERO`, so a seeded job is due at the database's own `now()`. Its
+  doc comment says so ("until 2026-09-23 it was this host's
+  `OffsetDateTime::now_utc()`").
+- `WebhookDeliveries::record_attempt` takes the **retry rung**
+  (`retry_after: Option<Duration>`), not a `next_attempt_at`.
+- `Settlement::live_charges_stale_since` takes a **window back from `now()`**
+  (`stale_after: Duration`), not a cutoff instant.
+- `Jobs::oldest_runnable_run_at` became **`Jobs::oldest_runnable_age`**,
+  subtracted in SQL.
+- **Facts stay on the application's clock** (D6–D8): `checkout_sessions.created_at`
+  and `expires_at`, `customers.last_used_at`, invoice stamps, the signature's
+  `t=`, every `events` body. A fixture comparing one of those with `now()`
+  still has two clocks.
+- **Test fixtures read "now" off the database** (#254, `d08dafd`, 2026-09-23,
+  merged before the production change): `support::db_now(pool)` in the
+  integration suite and a private `db_now` in `vpay-db/tests/repositories.rs`,
+  both `SELECT now()`. A fixture that stamps `run_at` and then calls
+  `Jobs::claim` should use them. #254 found the flake after a Docker Desktop VM
+  restart (1 and then 5 `webhooks.rs` cases panicking `the fan-out job is
+claimable`); it demonstrated the mechanism with a +200 ms offset standing in
+  for skew and did **not** reproduce the flake itself.
+
+**The stale prose is in vpay, not here.** `checkout_sessions.rs`'s `run_until`
+doc comment still says "`seed_singletons` stamps a singleton's `run_at` from
+this **process's** clock" as of `a33aac61`. It is false of `seed_singletons`
+now. Trust the function.
+
+**What the advice below keeps.** `None` from `run_once` still means "nothing
+claimable _this instant_", and a job enqueued with a non-zero delay (a
+confirm's poll grace, a ladder rung, a webhook retry rung) is genuinely not due
+yet. A bounded retry loop around `run_once` is therefore still a poor test; it
+is just no longer explained by two clocks. And no test can run a _skewed_ host —
+a testcontainer's clock cannot be set apart from the machine's — so the
+single-clock guarantee rests on the method signatures, not on a test.
+
+`None` means "nothing claimable _this instant_", never "nothing left to
+claim". The shipping `run_loop` knows this — `Ok(None) => idle(…)` waits out
+`IDLE_SLEEP` and asks again — so this is invisible in production and shows up
+only in a test that gives up. A `for _ in 0..N { … else { break } }` loop
+around `run_once` will pass on a quiet machine and fail under a full-workspace
+run. **Poll on a wall-clock deadline instead**, re-entering `run_once` on
+`None`; `checkout_sessions.rs`'s `run_until` is the worked example, and
+`worker_kill9.rs`'s `wait_for_settlement` is the older one.

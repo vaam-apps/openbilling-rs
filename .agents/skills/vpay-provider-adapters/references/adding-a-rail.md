@@ -1,0 +1,377 @@
+# Adding a rail
+
+_Verified against vpay `a33aac61` (2026-09-29) for § 3b; the rest of this page was last read at `b747e5d5` (2026-09-23). Version-sensitive claims
+carry the date they became true — see [VERSIONING.md](https://github.com/vaam-apps/vpay-skills/blob/main/VERSIONING.md)._
+
+The canonical checklist is `docs/flows/provider-port.md` § "Adding a rail".
+**Two of its steps are wrong and are corrected in place there** — the
+corrections are dated 2026-09-06 and are reproduced below, because the wrong
+version is what a reader of an older checkout has.
+
+## 0. Answer the preconditions first — before writing code
+
+`docs/flows/provider-port.md` § "Preconditions, per flow shape". These are
+commercial questions, not engineering ones:
+
+**A push rail must satisfy both:**
+
+- you can supply your own idempotent reference on submit;
+- you can query final status by that reference, **indefinitely**.
+
+Both are load-bearing because the payer's phone starts buzzing before you
+learn whether your request succeeded.
+
+**A redirect rail must satisfy:**
+
+- the submit response is persistable before the payer can act;
+- status is queryable by material you hold after that persist.
+
+> Ask these **during commercial negotiation**, not after signing. If either
+> fails for a push rail, **stop and renegotiate** before writing code.
+
+## 1. A `providers[]` entry in the deployment's YAML — not an INSERT
+
+**CORRECTION (2026-09-06).** `docs/flows/provider-port.md` step 2 said
+`INSERT INTO providers`. In a running deployment nobody writes that table by
+hand: `providers` is reconciled from `config.yaml` at **boot step 4** by
+`vpay_db::ConfigReconcile::reconcile`, which is the **only writer**. So the
+real step is a `providers[]` entry in the deployment's YAML plus the adapter
+of step 3.
+
+The sentence still holds where it matters: **adding a rail needs no schema
+migration.** Providers are rows in a table, never enum variants (ADR-0002).
+
+A hand-written `INSERT` at a psql prompt is still possible, but since
+migration `0033` it must name **all eight** columns — the five capability
+booleans have no column default, so an omitted one is a `23502` rather than
+an invented capability. Pinned by
+`a_hand_written_provider_insert_must_now_name_every_capability_column` in
+`backends/tests/integration/tests/postgres_smoke.rs`.
+
+## 2. Hosts are configuration — there is no `provider_hosts` table
+
+**CORRECTION (2026-09-06).** `docs/flows/provider-port.md` step 3 said
+`INSERT INTO provider_hosts`. **There is no such table and there never has
+been** — no migration under `backends/migrations` creates one. The only
+other mention in the tree is a `vpay-testkit` doc comment that inherited the
+error from that page.
+
+A rail's hosts are `providers[].host.{url,label}` in the deployment's YAML
+(`vpay_config::ProviderHost`), one entry per deployment. That is what makes a
+sandbox, a production rail and a WireMock stub **three profiles rather than
+three rows** (ADR-0003: a profile selects a FILE, never a code path — same
+binary, same image, different YAML). See `docs/flows/configuration.md`.
+
+`ProviderHost::effective_callback_url` derives
+`{public_base_url}/provider/{code}/callback` unless the YAML overrides it.
+The adapter must send that value **verbatim**; the conformance suite asserts
+equality, not presence, because an adapter sending its `base_url`, an empty
+string or a hard-coded constant would satisfy a presence check and be exactly
+as broken.
+
+## 3. `backends/crates/vpay-adapter-<rail>/`
+
+Mirror the two existing crates' module split — it is not cosmetic:
+
+| module       | holds                                                  | rule                                                                                                                                                 |
+| ------------ | ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `lib.rs`     | the `Adapter` struct, the trait impl, the transport    | the outcome of each response is a **pure function** of `(status, body)`, so it is provable without a network                                         |
+| `wire.rs`    | only the JSON shapes the rail exchanges                | **never** `#[serde(rename_all = "snake_case")]` — that attribute is the workspace convention for _vpay's own_ wire; these types model the **rail's** |
+| `mapping.rs` | the rail's error vocabulary → `vpay_core::FailureCode` | a table a reviewer can diff against the rail's documentation                                                                                         |
+| `token.rs`   | the rail's half of the token cache                     | the endpoint, grant, body shape and refresh margin are the rail's alone                                                                              |
+
+**One exception to this table (2026-10-20).** RFC-0012 puts Notch Pay's
+wire in its own crate, `backends/crates/vpay-notchpay`, so
+`vpay-adapter-notchpay` holds `lib.rs` and `mapping.rs` (plus `tests.rs`) and
+**no `wire.rs`**, and no `token.rs`, since Notch Pay authenticates with
+static keys. The adapter, admitted under ADR-0031, is on `master` since `357c825`
+(vaam-apps/vpay#295, 2026-10-20). Before that, the client was linked by
+nothing. The `vpay-notchpay` skill is the briefing. MTN and Orange follow
+the table above as it stands.
+
+**A rail whose status read takes a key the provider calls public** is
+admissible only on ADR-0031's six conditions (2026-10-20). Two are code an
+agent writes: override `accepted_exposure` (see `vpay-provider-adapters` §
+"The methods"), and list the secret key in `REQUIRED_RAIL_KEYS`. A third
+is a row value: set the row's `livemode_acknowledgement`, so livemode refuses
+the rail until its block accepts the exposure (condition 4, amended
+2026-10-20). If your rail is one, read ADR-0031 before step 4.
+
+Required in `Cargo.toml`: add the crate to the workspace `members` list in
+the root `Cargo.toml` and to `[workspace.dependencies]`.
+
+The pure-function split matters because it is what the crate's own unit tests
+assert row by row, and the conformance suite then proves the same rows arrive
+over a real socket.
+
+**A URL that interpolates a value the caller chose is one of those pure
+functions too** (added 2026-10-20). Build it in a function that returns
+`Result<String, ProviderError>`, route the value through
+`vpay_provider::http::path_segment(x)?`, and call that function **before**
+`send_authorized` or any request, so a refused value costs no token fetch.
+`vpay-adapter-mtn-momo`'s `account_holder_url` is the only one so far (as of
+2026-10-20). `path_segment` refuses an empty or all-dots value as `Malformed`;
+do not write your own copy of that check, and assert the dot inputs on _your_
+URL function and on the method, not on the helper alone. The reasoning and the
+tests are in [SKILL.md](../SKILL.md), "What the port owns".
+
+## 3b. `payer_fields` — what the payer types, declared once
+
+Added 2026-09-16 (vpay#186). This page did not have the step until
+2026-09-23, and `docs/flows/provider-port.md`'s "Adding a rail" checklist still
+does not (its interface _table_ gained the `payer_fields` row on 2026-09-24,
+vaam-apps/vpay#255; the checklist did not move). If the payer
+types something vpay forwards to the rail, as a push rail's MSISDN is,
+override `ProviderAdapter::payer_fields` with a `const &[PayerField]`: name,
+kind, `required`, `label_key`. `vpay_adapter_mtn_momo`'s `PAYER_FIELDS` is
+the one example. A rail that collects nothing, as a redirect rail does, keeps
+the default `&[]`. Do not override it to return `&[]` explicitly.
+
+What reads it, so you know what a wrong declaration breaks:
+
+- `vpay_api::v1::payer_fields` validates every `confirm`'s
+  `payment_method_data[<code>][…]` against it. An undeclared key is a `400`
+  naming the key. A `Phone` field is parsed and canonicalised for its `region`
+  before `submit` runs. **Steering numbers in your integration tests and demo
+  mappings must therefore be valid numbers in that region**, or vpay refuses
+  them before your rail sees them. `requesttopay.json`'s move from
+  `237600000400` to `237670000400` is the precedent.
+- `vpay_api::browser::checkout_sessions::build_rails` puts it in the payer
+  surface's `RailSpec.fields`, beside `flow` and the deployment's optional
+  `providers[].display_name`.
+- The value is a fact about the rail's product, never read from
+  `ProviderConfig`. `PayerFieldKind::Phone`'s `region` doc says why.
+
+## 4. A mapping table into the failure taxonomy
+
+`docs/flows/failures.md` is the closed taxonomy (eleven `FailureCode`
+values). Your `mapping.rs` needs:
+
+- the reason→code table itself, case-insensitive, with an unmapped string
+  falling back to `FailureCode::ProviderError` **carrying the raw string**
+  (an unmapped reason is still a decline; `provider_error` is an alert, not a
+  resting place);
+- **`pub const PRODUCED_FAILURE_CODES: [FailureCode; N]`** — every code this
+  rail can emit. The conformance suite reads this from the adapter rather
+  than keeping its own copy, and asserts the declared list and the stubbed
+  decline rows agree. It cannot be derived from the table alone: codes that
+  arrive from HTTP 401/403 or from the fallback are not table rows.
+- if the rail publishes an error enum, snapshot it as a `#[cfg(test)]` const
+  and assert every published code is **either mapped or deliberately
+  unmapped**. That is the shape issue #59 established for
+  `vpay-adapter-mtn-momo`; it is what caught `payer_declined` being defined
+  by the core, promised in buyer copy, and produced by nothing.
+
+## 4b. A `Required` rail: `parse_destination`, and the rules around the number
+
+New on 2026-09-15 (RFC-0003 § 1 and open question 4). If your rail's refund
+is an outbound **transfer**, declare
+`Capabilities::refund_destination = RefundDestination::Required` and
+**override `parse_destination`** — a `Required` rail that takes the port's
+default is a bug in that adapter, and
+`a_required_rail_parses_its_own_destination` in the conformance suite refuses
+it on the adapter's own declaration rather than on a table in the test. A rail
+that returns money to the instrument that paid declares `Origin` and writes
+nothing; the default `Unsupported` is the permanent, correct answer there.
+
+An `Origin` rail writes no `parse_destination`, but its `refund` must know
+which payment it is unwinding, and since 2026-10-17 (RFC-0010 § 7, delivery
+step 1) the core hands it that: the refund `ChargeRef`'s `ref_extra` carries
+the charge's recorded `provider_txn_id` under
+`vpay_api::v1::refunds::REFUND_PROVIDER_TXN_ID_KEY` (the string
+`provider_txn_id`), or nothing when the charge recorded none. Read it there.
+When it is missing, answer `ProviderError::Config` — a settled charge whose
+rail id was never recorded is a case for a human, never an invented id and
+never a `Rejected` — and never read it on a `Required` rail, where it is
+ignored by design. The two integration cases that drive this arm,
+`an_origin_rail_refuses_a_destination_through_the_route` and
+`a_refund_without_a_destination_succeeds_on_an_origin_rail_and_names_the_payment`
+in `backends/tests/integration/tests/refunds.rs`, run on an `Origin` rail that
+exists only in that test binary; your rail joins the conformance suite by its
+own rows, not by editing that double.
+
+The merchant sends `destination[<rail_code>][…]`. The core strips its own
+envelope — the outer key is a `code()`, core knowledge by definition, and
+spelled the same way as the confirm path's `payment_method_data[<code>]` — so
+what reaches you is the **rail-scoped inner map**, and a `destination` naming
+no rail, or naming one as something that is not an object, has already been
+refused by the core. Everything inside is yours; both shipping adapters read
+the key `msisdn`.
+
+Four rules, each with a test behind it:
+
+- **You own the key; the port owns the number.** Trim the value and hand it to
+  `RefundTarget::mobile_money`, which is **fallible and canonicalising** since
+  the maintainer's decision of 2026-09-15 (it was infallible before, and both
+  adapters applied the confirm path's `payer_instrument` rule — any
+  non-whitespace string, passed to the rail as written). The field is private
+  and that constructor is the only way in, so no adapter can build an invalid
+  destination and none has to re-spell the rule. Out comes digits only, no
+  `+` — `237600000200`, the `partyId` shape both adapters already send on the
+  charge path.
+- **The `+` is required, and the asymmetry is deliberate.**
+  `GET /v1/account_holders` accepts a bare `600000200` because it knows it is
+  in Cameroon; `vpay-provider` carries no country code and must not acquire
+  one. Read internationally, `600000200` is country code `6` — Malaysia — so
+  accepting it would not be lenient, it would be a different payee in a
+  different country. A lookup that guesses wrong returns the wrong name; a
+  transfer that guesses wrong sends the money and it does not come back.
+- **A refusal names the rule, never the number.** Every `InvalidMsisdn`
+  variant is a unit variant so nothing can carry the input; `RefundTarget`'s
+  `Debug` prints `[redacted]`, including through an enclosing `Some(..)`; and
+  there is deliberately no `Serialize`/`Deserialize` derive, because retention
+  is RFC-0003 open question 2 and is **undecided** — a serde impl would put
+  "persist it" and "put it in an event payload" one derive away.
+  `an_invalid_msisdn_never_names_the_number_it_refused` holds the first of
+  those shut. One `{input}` in a format string undoes all three.
+- **Refuse, never silently succeed.** A missing key, a non-string value (a
+  JSON number has already lost a leading `+` or `0`), an empty or
+  whitespace-only string, and an empty sub-map are each
+  `ProviderError::Malformed`. It is never an `Ok` with no payee: a refund that
+  reached the rail with a silently dropped destination is money sent somewhere
+  nobody nominated.
+
+**And tell the handler author:** that `Malformed` must be **translated** by
+its caller, not forwarded. It is the only honest variant available here
+(RFC-0003 open question 5 left inventing one to the first adapter that makes a
+real transfer), but its classification is written for a rail that answered
+gibberish, and this is the one call site where no rail answered anything.
+Forwarded unchanged it becomes a **502** carrying "The payment rail is
+temporarily unavailable. The charge will be retried.", with
+`Retry::AfterBackoff` and `Severity::Warn`, counted against the rail's error
+budget — for a merchant's typo in their own parameters; and the parameter name
+you carefully put in `context` reaches the operator's log and never the
+integrator. `vpay_api::v1::refunds` maps it to `invalid_param("destination")`,
+a `400`, exactly as the confirm path already answers for
+`payment_method_data`. `a_malformed_destination_is_classified_as_a_rail_fault`
+pins the classification so the note cannot quietly stop being true.
+
+Finally, `refund`'s `destination` argument is `Some` **exactly when** you
+declare `Required` — the core has already refused both broken combinations on
+the capability value and never on a rail code, so do not re-check it. If it is
+ever `None` anyway, answer `ProviderError::Config` (RFC-0003 open question 6,
+settled 2026-09-15 by MTN's `refund`); the reasoning is in
+[SKILL.md](../SKILL.md).
+
+## 5. WireMock mappings under `backends/tests/conformance/wiremock/<rail>/mappings/`
+
+One directory per rail; **the shared suite is reused unchanged**. The
+contract each directory must satisfy is in
+[conformance.md](conformance.md). That same directory is what
+`compose.yml` bind-mounts, so a mapping fixed for CI is fixed for local
+development.
+
+## 6. Wire it into the binary and the suite
+
+Not in `docs/flows/provider-port.md`, but required:
+
+- `backends/apps/vpay-server/src/lib.rs` — add to **both** `adapters()` and
+  `adapter_codes()`. They are two lists on purpose (a boot log line must not
+  need an HTTP client), kept honest by
+  `the_codes_match_the_adapters_that_are_linked`.
+- `backends/tests/conformance/tests/adapter_conformance.rs` — a
+  `RailUnderTest` variant plus rows in the **eight** table functions (it was
+  seven until `refund_body_pattern` landed on 2026-09-15): `mappings_dir`,
+  `start` (adapter + `ProviderConfig` + the credentials the stub answers 401
+  to), `documented_declines`, `declared_failure_codes`,
+  `documented_callback_body`, `callback_url_pattern`, `refund_body_pattern`
+  (`None` for a rail with no transfer to assert on), `return_url_pattern`.
+  **Nothing else in that file may learn the rail's name** — the two
+  constructor sites, `adapters()` and
+  `a_required_rail_parses_its_own_destination`, build every adapter rather
+  than branching to one.
+- `compose.yml` — a `wiremock-<rail>` service on the next free host port,
+  bind-mounting the same mappings directory, with the
+  `curl -fsS /__admin/health` healthcheck the other two use.
+- The rail code must appear in the documented `payment_method_types` values
+  (`docs/api/`, both SDKs). A push rail also gets a confirm shape in both
+  SDKs (`ConfirmPaymentIntentParams::notchpay(msisdn)` in Rust, a
+  `NotchPayPaymentMethodData` in Node) and a `docs/sdks/parity.md` row.
+- **`Capabilities::callback_check`** (since 2026-10-23, RFC-0014): `None`
+  unless your adapter overrides `verify_callback`. A rail that signs its
+  callbacks declares `Signature` only once the check is written, reads its
+  secrets through `vpay_provider::callback::callback_signing_keys` (never a
+  key name of its own; each tagged `SigningKey::Current` or `Previous`),
+  compares with `hmac_sha256_hex_matches`, answers `key.verified()`
+  (`Verified`, or `VerifiedPrevious` for the previous secret, so a rotation's
+  end is visible), and adds a `documented_callback_signature` row to the
+  conformance suite. **Declaring a check and keeping the default
+  `verify_callback` fails closed**: the route answers `Unavailable` and logs
+  `error` (RFC-0014 security review, 2026-10-23), so a forgotten override
+  refuses every callback rather than admitting every forgery.
+- **`Capabilities::method_types`** (since 2026-10-23): the payment-method
+  types the rail serves, at least one. Add the rail's row to the conformance
+  suite's `every_adapter_declares_the_method_types_it_serves`, which pins
+  every rail's set exactly, and to `docs/plans/2026-10-23-method-type-routing.md`'s
+  vocabulary table. A rail serving a type another rail already serves joins
+  the router's candidates for it at once, at the default weight: say so in
+  the pull request, because payers of that network may start going through
+  it (ties go to the lower rail code). If it serves several types, read
+  `ChargeRef::method_type` the way `notchpay`'s `channel_for` does.
+- `vpay_config::config::REQUIRED_RAIL_KEYS` — a row for the rail. **Since
+  2026-10-20 a row has three more columns:** `setting_values` (a setting
+  that must be one of a closed list), `currencies` (empty is any), and
+  `test_marked_credentials` (keys whose test-key marker, one of
+  `TEST_KEY_MARKERS`, must agree with `deployment.livemode`; measure a real
+  test key's shape before writing the marker, as Notch Pay's documented
+  `test_` turned out wrong; corrected 2026-10-20, this said "`test_`
+  marker" until then, for a provider whose sandbox and production share a
+  host). MTN and Orange leave all three empty.
+- `justfile`'s `expected_suites`: a new adapter crate is one new test binary.
+  Count it from `cargo metadata --no-deps` against `master` before building
+  (51 → 52 for `notchpay`).
+
+## 7. Boot refuses the half-done states
+
+`vpay_api::v1::boot::boot_seeds` runs **before the database is touched**, so
+these fail in milliseconds rather than after a connection and a migration run:
+
+| condition                                                                                                            | error                                                | exit   |
+| -------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- | ------ |
+| a configured `providers[]` code the binary links no adapter for                                                      | `ConfigError::ProviderWithoutAdapter`                | **78** |
+| an adapter declaring `supports_partial_refunds` without `supports_refunds`                                           | `ConfigError::IncoherentCapabilities`                | **78** |
+| an adapter declaring `callback_url_mode: Registered` without `delivers_callbacks` (2026-10-22)                       | `ConfigError::IncoherentCallbackMode`                | **78** |
+| a `providers[].callbacks` block on a rail whose adapter declares `PerRequest` (2026-10-22)                           | `ConfigError::CallbacksOnPerRequestRail`             | **78** |
+| an adapter declaring a `callback_check` without `delivers_callbacks` (2026-10-23)                                    | `ConfigError::IncoherentCallbackCheck`               | **78** |
+| livemode, a `Signature` rail, no `credentials.callback_signing_secret`, no `callbacks.verify: off` (2026-10-23)      | `ConfigError::CallbackSigningSecretMissing`          | **78** |
+| a signing secret or `verify: off` on a rail whose adapter checks no signature (2026-10-23)                           | `ConfigError::CallbackSigningSettingUnread`          | **78** |
+| `verify: off` beside a configured signing secret (2026-10-23)                                                        | `ConfigError::CallbackVerifyOffWithSecret`           | **78** |
+| `callback_signing_secret_previous` without a non-blank `callback_signing_secret`, on a `Signature` rail (2026-10-23) | `ConfigError::CallbackSigningPreviousWithoutCurrent` | **78** |
+| a non-blank signing secret with surrounding whitespace, on a `Signature` rail (2026-10-23)                           | `ConfigError::CallbackSigningSecretWhitespace`       | **78** |
+
+Since 2026-10-20 `Config::validate_all` adds four per-row refusals
+(`ProviderSettingNotAllowed`, `ProviderCurrencyNotAllowed`,
+`RailKeyLivemodeMismatch`, and in livemode `PublicKeyExposureNotAcknowledged`),
+all exit 78. Each names the key and never prints a value. And right after the
+join, `vpay_api::boot::warn_about_accepted_exposures` logs a `WARN` for every
+configured rail whose adapter declares an `accepted_exposure`. The warning
+itself refuses nothing; the livemode refusal is the config row's.
+
+`a_provider_code_with_no_linked_adapter_is_exit_78` in
+`backends/apps/vpay-server/tests/cli.rs` needs no container precisely because
+of that ordering — moving the call below `vpay_db::connect` would break it.
+
+## 8. A flow doc recording its quirks
+
+`docs/flows/adapter-<rail>.md`, on the model of the two that exist. It must
+carry, explicitly:
+
+- what is **proven, and by what** (unit tests, conformance, a real call);
+- a **"To confirm"** list of everything still unverified against the real
+  rail, with what each item blocks;
+- the mapping table, so `mapping.rs` can be diffed against it by eye.
+
+If any operation lands as `NotImplemented`, it also needs a bullet in
+`docs/status.md` under the token heading, or `cargo xtask verify-status`
+fails the build. The gate fails in **three** directions since 2026-09-15 (it
+was two): a token with no bullet; a bullet naming a token no shipping code
+carries any more; and — the new one — **a token whose prefix names a rail
+this workspace ships an adapter for, carried by a different rail's crate.**
+Spell your tokens `<rail>::<fn>` (AGENTS.md § 2) with _your_ rail's code:
+the first two directions compare token strings and cannot tell which adapter
+answered one, so a copy-paste between adapters was invisible to both.
+
+## The test of whether you did it right
+
+> **Nothing in the core changes. If step 9 is "and also patch the
+> reconciler", the port leaked.**
