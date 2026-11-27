@@ -7,11 +7,12 @@
 mod support;
 
 use cratestack::axum::http::{Method, StatusCode};
+use openbilling_core::{AllowedPolicy, RefuseWhen};
 use openbilling_core::{Amount, CreditId, LedgerStore, RefundStatus};
 use openbilling_testkit::payments::{ProviderFixture, SignedWebhook};
 use openbilling_vpay::stand_in;
 use serde_json::{Value, json};
-use support::{OPERATOR, OWNER_1, OWNER_2, PRODUCER, app, call, fresh, procedure, raw};
+use support::{OPERATOR, OWNER_1, OWNER_2, PRODUCER, app, app_with, call, fresh, procedure, raw};
 
 fn ok(answer: &support::Answer) {
     assert!(
@@ -206,6 +207,15 @@ async fn credit_usage_and_the_reads_through_the_api() {
     .await;
     assert_eq!(broke.body["allowed"], false);
     assert_eq!(broke.body["refused"], "balance");
+    // The numbers the verdict was made from: nothing held, 1 owed (m1's usage this month), no limit, no cap.
+    assert_eq!(
+        broke.body,
+        json!({
+            "allowed": false, "refused": "balance", "balanceMicros": "-1000000", "availableMicros": "0",
+            "debtMicros": "1000000", "debtLimitMicros": null, "pastLimit": false,
+            "memberSpentMicros": "1000000", "memberCapMicros": null, "memberRemainingMicros": null
+        })
+    );
 
     let credits = procedure(
         &app,
@@ -690,4 +700,98 @@ async fn raw_usage_a_price_list_and_the_operators_settings_through_the_api() {
     assert_eq!(balance.body[0]["debtLimitMicros"], "1000");
     assert_eq!(balance.body[0]["debtMicros"], "10");
     assert_eq!(balance.body[0]["pastLimit"], false);
+}
+
+/// The owner's decision of 2026-11-27 (ADR 0001, amended, F1 to F4): the deployer's policy decides the verdict of
+/// `getAllowed`, a caller cannot choose it, and the numbers are the same whatever it is.
+#[tokio::test]
+async fn the_deployers_policy_decides_get_allowed_and_not_its_numbers() {
+    let Some((store, ledger)) = fresh().await else {
+        return;
+    };
+    let strict = app(ledger.clone(), None, store.pool().clone());
+    setup(&strict).await;
+    let lenient = app_with(
+        ledger.clone(),
+        None,
+        store.pool().clone(),
+        AllowedPolicy {
+            debt_limit: RefuseWhen::Above,
+            balance: RefuseWhen::Never,
+            member_cap: RefuseWhen::Never,
+        },
+    );
+    // o2 holds nothing, owes nothing, and has a limit of zero and a cap of zero for m1.
+    let limit = json!({"owner": "o2", "currency": "EUR", "limitMicros": "0"});
+    ok(&procedure(
+        &strict,
+        "setDebtLimit",
+        Some(OPERATOR),
+        Some("limit-o2"),
+        limit,
+    )
+    .await);
+    let cap = json!({"owner": "o2", "currency": "EUR", "member": "m1", "capMicros": "0"});
+    ok(&procedure(&strict, "setMemberCap", Some(OPERATOR), Some("cap-o2"), cap).await);
+
+    let ask = json!({"owner": "o2", "currency": "EUR", "member": "m1"});
+    let refused = procedure(&strict, "getAllowed", Some(PRODUCER), None, ask.clone()).await;
+    ok(&refused);
+    assert_eq!(
+        (&refused.body["allowed"], &refused.body["refused"]),
+        (&json!(false), &json!("debt_limit")),
+        "at_or_above: debt 0 >= limit 0, no special case"
+    );
+    let allowed = procedure(&lenient, "getAllowed", Some(PRODUCER), None, ask.clone()).await;
+    ok(&allowed);
+    assert_eq!(
+        (&allowed.body["allowed"], &allowed.body["refused"]),
+        (&json!(true), &Value::Null),
+        "above: 0 is not above 0; balance and member_cap: never"
+    );
+    // Each check alone, the others `never`: each mode reaches the check it names, and only that one.
+    use RefuseWhen::{AtOrAbove, Never};
+    for (policy, reason) in [
+        ((AtOrAbove, Never, Never), "debt_limit"),
+        ((Never, AtOrAbove, Never), "balance"),
+        ((Never, Never, AtOrAbove), "member_cap"),
+    ] {
+        let alone = app_with(
+            ledger.clone(),
+            None,
+            store.pool().clone(),
+            AllowedPolicy {
+                debt_limit: policy.0,
+                balance: policy.1,
+                member_cap: policy.2,
+            },
+        );
+        let answer = procedure(&alone, "getAllowed", Some(PRODUCER), None, ask.clone()).await;
+        ok(&answer);
+        assert_eq!(
+            answer.body["refused"], reason,
+            "{policy:?}: {}",
+            answer.text
+        );
+    }
+    let facts = |body: &Value| {
+        let mut body = body.clone();
+        body.as_object_mut().unwrap().remove("allowed");
+        body.as_object_mut().unwrap().remove("refused");
+        body
+    };
+    assert_eq!(facts(&refused.body), facts(&allowed.body));
+    assert_eq!(
+        facts(&allowed.body),
+        json!({
+            "balanceMicros": "0", "availableMicros": "0", "debtMicros": "0", "debtLimitMicros": "0",
+            "pastLimit": false, "memberSpentMicros": "0", "memberCapMicros": "0", "memberRemainingMicros": "0"
+        })
+    );
+    // A mode in the request is not an argument of the procedure: never obeyed.
+    let mut chosen = ask.clone();
+    chosen["debtLimitMode"] = json!("never");
+    let answer = procedure(&strict, "getAllowed", Some(PRODUCER), None, chosen).await;
+    ok(&answer);
+    assert_eq!(answer.body, refused.body, "the caller's choice is ignored");
 }

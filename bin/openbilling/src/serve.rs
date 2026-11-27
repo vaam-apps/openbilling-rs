@@ -137,9 +137,17 @@ pub async fn serve(settings: Settings) -> Result<()> {
             "{WARN}openbilling:{WARN:#} no payment provider configured; top-ups and webhooks answer 503"
         );
     }
+    let allowed = settings.allowed;
+    anstream::eprintln!(
+        "{ACCENT}openbilling:{ACCENT:#} getAllowed refuses on debt_limit {}, balance {}, member_cap {}",
+        allowed.debt_limit.as_str(),
+        allowed.balance.as_str(),
+        allowed.member_cap.as_str()
+    );
     let services = Arc::new(Services {
         ledger: ledger.clone(),
         provider,
+        allowed,
     });
     let app = match settings.auth {
         Some(config) => {

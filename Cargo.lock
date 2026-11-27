@@ -1560,6 +1560,8 @@ dependencies = [
  "openbilling-vpay",
  "reqwest",
  "rustls",
+ "serde",
+ "serde-saphyr",
  "serde_json",
  "sqlx",
  "tokio",

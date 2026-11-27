@@ -177,11 +177,11 @@ impl Balance {
 /// Why [`Allowed`] says no.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum NotAllowed {
-    /// The owner owes something in the currency and its debt is at or past its debt limit.
+    /// The owner's debt in the currency reached its debt limit, as the policy compares them.
     DebtLimit,
-    /// The owner's balance in the currency is zero or below.
+    /// The owner's debt in the currency reached what its drawable lots hold, as the policy compares them.
     Balance,
-    /// The member has spent their cap this month.
+    /// The member's applied usage this month reached their cap, as the policy compares them.
     MemberCap,
 }
 
@@ -197,16 +197,78 @@ impl NotAllowed {
     }
 }
 
+/// When one check of [`LedgerStore::allowed`] refuses: a plain comparison of what is used against its bound, with
+/// no special case (the owner's decision of 2026-11-27: "let the end developer decide how in the .yaml
+/// configuration"). The deployer chooses it; the store only compares.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum RefuseWhen {
+    /// Refuse when what is used is at or above the bound (`used >= bound`). The default.
+    #[default]
+    AtOrAbove,
+    /// Refuse when what is used is above the bound (`used > bound`).
+    Above,
+    /// Never refuse: report the numbers only.
+    Never,
+}
+
+impl RefuseWhen {
+    /// Every comparison, in a stable order.
+    pub const ALL: [Self; 3] = [Self::AtOrAbove, Self::Above, Self::Never];
+
+    /// The comparison's stable name, as the configuration file and the database name it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AtOrAbove => "at_or_above",
+            Self::Above => "above",
+            Self::Never => "never",
+        }
+    }
+
+    /// The comparison of a stable name.
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|mode| mode.as_str() == name)
+    }
+}
+
+/// How [`LedgerStore::allowed`] turns its numbers into a verdict: one [`RefuseWhen`] per check, compared in this
+/// order. The default is [`RefuseWhen::AtOrAbove`] for each.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct AllowedPolicy {
+    /// The owner's debt against its debt limit. With no limit, this check never refuses.
+    pub debt_limit: RefuseWhen,
+    /// The owner's debt against what its drawable lots hold: `at_or_above` refuses a net balance of zero or below,
+    /// `above` one below zero.
+    pub balance: RefuseWhen,
+    /// The member's applied usage in the UTC month against their cap. With no cap, this check never refuses.
+    pub member_cap: RefuseWhen,
+}
+
 /// May the member spend for the owner in this currency now? A read for whoever serves the usage; the ledger itself
-/// never refuses a debit for it. The store decides: an owner at or past its debt limit (and owing something) is
-/// refused, then a balance at zero or below, then a member at or past their cap.
+/// never refuses a debit for it. The store compares the numbers as the [`AllowedPolicy`] says, in its order: the
+/// debt limit, then the balance, then the member's cap.
+///
+/// The numbers are facts, whatever the policy: a caller with a rule of its own reads them and ignores `refused`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Allowed {
     /// Why not, or `None` when allowed.
     pub refused: Option<NotAllowed>,
     /// `available − debt`, signed: negative says the owner overshot.
     pub balance: Amount,
-    /// What the member may still spend this month, when they have a cap. Zero or below is refused.
+    /// What the owner's drawable lots in the currency hold, saturating.
+    pub available: Amount,
+    /// What the owner owes in the currency.
+    pub debt: Amount,
+    /// The owner's debt limit in the currency, if it has one.
+    pub debt_limit: Option<Amount>,
+    /// Whether the debt is above the limit (`debt > limit`): the flag of the reads, whatever the policy.
+    pub past_limit: bool,
+    /// The member's applied usage in the UTC month, saturating.
+    pub member_spent: Amount,
+    /// The member's cap this month, if they have one.
+    pub member_cap: Option<Amount>,
+    /// `cap − spent`, when the member has a cap.
     pub member_remaining: Option<Amount>,
 }
 
@@ -271,7 +333,7 @@ pub trait LedgerStore: Send + Sync {
     /// Sets, or with `None` removes, how much debt an owner may run up in a currency. With none, debt is unlimited.
     /// The limit never refuses a debit: usage that already happened is booked as debt even past it (the owner's
     /// decision of 2026-11-27, "Always book as debt"). It refuses new calls through [`LedgerStore::allowed`]
-    /// ([`NotAllowed::DebtLimit`]).
+    /// ([`NotAllowed::DebtLimit`]), as the deployer's [`AllowedPolicy`] compares it.
     fn set_debt_limit(
         &self,
         owner: &OwnerId,
@@ -325,13 +387,14 @@ pub trait LedgerStore: Send + Sync {
     ) -> impl Future<Output = Result<Balance, LedgerError>> + Send;
 
     /// Whether `member` may spend for `owner` in `currency` at `at`: the balance at `at` and the member's spend in
-    /// the UTC month of `at`.
+    /// the UTC month of `at`, compared as `policy` says. The numbers it answers do not depend on `policy`.
     fn allowed(
         &self,
         owner: &OwnerId,
         currency: &CurrencyCode,
         member: &MemberId,
         at: Timestamp,
+        policy: AllowedPolicy,
     ) -> impl Future<Output = Result<Allowed, LedgerError>> + Send;
 
     /// An account's lots, in draw order, drawable or not.
@@ -368,6 +431,12 @@ mod tests {
         let mut answer = Allowed {
             refused: None,
             balance: amount(1),
+            available: amount(1),
+            debt: Amount::ZERO,
+            debt_limit: None,
+            past_limit: false,
+            member_spent: Amount::ZERO,
+            member_cap: None,
             member_remaining: None,
         };
         assert!(answer.allowed());
@@ -376,6 +445,23 @@ mod tests {
         assert_eq!(NotAllowed::DebtLimit.as_str(), "debt_limit");
         assert_eq!(NotAllowed::Balance.as_str(), "balance");
         assert_eq!(NotAllowed::MemberCap.as_str(), "member_cap");
+    }
+
+    #[test]
+    fn a_comparison_has_a_stable_name_and_the_default_is_at_or_above() {
+        let names: Vec<&str> = RefuseWhen::ALL.iter().map(|m| m.as_str()).collect();
+        assert_eq!(names, ["at_or_above", "above", "never"]);
+        for mode in RefuseWhen::ALL {
+            assert_eq!(RefuseWhen::parse(mode.as_str()), Some(mode));
+        }
+        for bad in ["", "At_Or_Above", "at-or-above", "below", " above"] {
+            assert_eq!(RefuseWhen::parse(bad), None, "{bad:?}");
+        }
+        let policy = AllowedPolicy::default();
+        assert_eq!(
+            [policy.debt_limit, policy.balance, policy.member_cap],
+            [RefuseWhen::AtOrAbove; 3]
+        );
     }
 
     #[test]

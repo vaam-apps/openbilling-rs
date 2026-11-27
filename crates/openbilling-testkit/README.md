@@ -36,7 +36,8 @@ the port, with the store's own clock, and assume the default window (seven days,
 | `a_repeat_counts_once_and_a_differing_payload_is_refused` | A differing copy in a batch, or a stored id with another payload, refuses the batch naming it |
 | `the_same_id_on_another_day_is_refused_as_id_reused` | The first received wins, in one drain or a later one |
 | `an_owner_without_an_account_in_the_currency_is_refused` | `unknown_account`, and nothing moves |
-| `a_debit_past_the_debt_limit_is_booked_as_debt_and_flags_the_owner` | "Always book as debt": every debit applied, the debt past the limit; `allowed` answers `debt_limit` at or past it (and owing something), `balance` under it; credit repays and lifts it; none means unlimited |
+| `a_debit_past_the_debt_limit_is_booked_as_debt_and_flags_the_owner` | "Always book as debt": every debit applied, the debt past the limit; `allowed` answers `debt_limit` at or past it under the default policy, `balance` under it; credit repays and lifts it; none means unlimited |
+| `allowed_compares_as_the_policy_says` | Each check (debt limit, balance, member cap) under `at_or_above`, `above` and `never` at its boundaries: a bound of zero with nothing used, used equal to the bound, one over; the checks in their order; the numbers the same whatever the policy (the owner's decision of 2026-11-27, ADR 0001, amended, F1 to F3) |
 | `the_allowance_is_granted_once_per_account_and_month` | Once per account and month; another month is not spendable now; it repays debt first |
 | `adjustments_add_and_take_credit` | Positive opens a lot; negative takes from its account's lots in order, the rest is debt; both once-only |
 | `accounts_are_once_only_and_one_per_owner_currency_and_label` | Replay, conflicts, unknown currency and label, a credit to no account |

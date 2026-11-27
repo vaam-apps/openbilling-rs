@@ -1,8 +1,24 @@
 //! The service's configuration, read from the environment through a lookup function (so it can be tested
-//! without `std::env::set_var`, which is `unsafe` in edition 2024 and this workspace forbids `unsafe_code`).
+//! without `std::env::set_var`, which is `unsafe` in edition 2024 and this workspace forbids `unsafe_code`), and
+//! from one optional YAML file that `OPENBILLING_CONFIG` names.
+//!
+//! **Where a setting lives.** The file holds the deployer's policy; the environment holds the secrets and the
+//! endpoints (the database, the address, the token issuer, the payment provider). No setting is read from both, so
+//! neither overrides the other: a key the file does not know, such as a database URL, is refused, and the policy has
+//! no variable. With no file, the policy is its default.
 //!
 //! The database URL can carry a password: it is read from `OPENBILLING_DATABASE_URL` or from the file
 //! `OPENBILLING_DATABASE_URL_FILE` names, and no message, `Debug` or error ever holds it.
+//!
+//! The file, all of it optional (the owner's decision of 2026-11-27: the service reports, and the deployer decides
+//! how `getAllowed` judges):
+//!
+//! ```yaml
+//! allowed:
+//!   debt_limit: at_or_above   # refuse when debt >= limit; or above (debt > limit); or never (report only)
+//!   balance: at_or_above      # refuse when debt >= the drawable credit (net <= 0); or above (net < 0); or never
+//!   member_cap: at_or_above   # refuse when the member's usage this month >= cap; or above; or never
+//! ```
 
 use std::fmt;
 use std::net::SocketAddr;
@@ -10,7 +26,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use openbilling_core::CurrencyCode;
+use openbilling_core::{AllowedPolicy, CurrencyCode, RefuseWhen};
 use openbilling_jwt::{JwtConfig, RoleMap};
 use openbilling_vpay::{Credential, CurrencyUnit, VpayConfig, WebhookSecret, webhook};
 
@@ -40,6 +56,90 @@ pub struct Settings {
     pub vpay: Option<VpayConfig>,
     /// The issuer whose tokens the API accepts; `None`: every `/v1` call is refused (`RefuseAll`).
     pub auth: Option<JwtConfig>,
+    /// How `getAllowed` compares its numbers: the configuration file's `allowed`, or the default.
+    pub allowed: AllowedPolicy,
+}
+
+/// The largest configuration file read: it holds a few lines of policy.
+pub const MAX_CONFIG_BYTES: u64 = 64 * 1024;
+
+/// The configuration file. Every level refuses a key it does not know.
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct File {
+    #[serde(default)]
+    allowed: AllowedFile,
+}
+
+/// `allowed:`: one comparison per check of `getAllowed`, each `at_or_above` when left out.
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AllowedFile {
+    #[serde(default)]
+    debt_limit: Mode,
+    #[serde(default)]
+    balance: Mode,
+    #[serde(default)]
+    member_cap: Mode,
+}
+
+/// A comparison as the file names it; [`RefuseWhen`] in the core.
+#[derive(Clone, Copy, Debug, Default, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum Mode {
+    #[default]
+    AtOrAbove,
+    Above,
+    Never,
+}
+
+impl From<Mode> for RefuseWhen {
+    fn from(mode: Mode) -> Self {
+        match mode {
+            Mode::AtOrAbove => Self::AtOrAbove,
+            Mode::Above => Self::Above,
+            Mode::Never => Self::Never,
+        }
+    }
+}
+
+/// What the file says, refused whole when anything in it is not the configuration. The message names the line and
+/// column and the keys there are, never a value from the file (agent guide, rule 9).
+pub fn parse_config(yaml: &str) -> Result<AllowedPolicy> {
+    if yaml.trim().is_empty() {
+        bail!(
+            "OPENBILLING_CONFIG names an empty file; write `allowed: {{}}` for the defaults, or unset it"
+        );
+    }
+    let file: File = serde_saphyr::from_str(yaml).map_err(|error| {
+        let at = error.location().map_or_else(String::new, |at| {
+            format!(" at line {}, column {}", at.line(), at.column())
+        });
+        anyhow::anyhow!(
+            "OPENBILLING_CONFIG is not a valid configuration{at}: it holds only `allowed`, whose keys are \
+             debt_limit, balance and member_cap, each at_or_above, above or never"
+        )
+    })?;
+    Ok(AllowedPolicy {
+        debt_limit: file.allowed.debt_limit.into(),
+        balance: file.allowed.balance.into(),
+        member_cap: file.allowed.member_cap.into(),
+    })
+}
+
+/// The policy of the file `OPENBILLING_CONFIG` names, or the default when it names none.
+fn allowed(get: &impl Fn(&str) -> Option<String>) -> Result<AllowedPolicy> {
+    let Some(path) = get("OPENBILLING_CONFIG") else {
+        return Ok(AllowedPolicy::default());
+    };
+    let path = path.trim();
+    let size = std::fs::metadata(path)
+        .context("OPENBILLING_CONFIG could not be read")?
+        .len();
+    if size > MAX_CONFIG_BYTES {
+        bail!("OPENBILLING_CONFIG names a file larger than {MAX_CONFIG_BYTES} bytes");
+    }
+    parse_config(&read_file(path, "OPENBILLING_CONFIG")?)
 }
 
 fn read_file(path: &str, what: &str) -> Result<String> {
@@ -79,6 +179,7 @@ impl Settings {
             listen,
             vpay,
             auth: auth(&get)?,
+            allowed: allowed(&get)?,
         })
     }
 }
@@ -191,6 +292,7 @@ mod tests {
         assert_eq!(ok.listen.to_string(), DEFAULT_LISTEN);
         assert!(ok.vpay.is_none());
         assert!(ok.auth.is_none());
+        assert_eq!(ok.allowed, AllowedPolicy::default());
         assert!(!format!("{ok:?}").contains("hunter2"));
         assert!(settings(&[]).is_err());
         let both = settings(&[
@@ -283,6 +385,117 @@ mod tests {
         let mut bad = base.to_vec();
         bad[4] = ("OPENBILLING_VPAY_CURRENCIES", "EUR");
         assert!(settings(&bad).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn policy(
+        debt_limit: RefuseWhen,
+        balance: RefuseWhen,
+        member_cap: RefuseWhen,
+    ) -> AllowedPolicy {
+        AllowedPolicy {
+            debt_limit,
+            balance,
+            member_cap,
+        }
+    }
+
+    #[test]
+    fn the_file_sets_each_comparison_and_leaves_the_rest_at_or_above() {
+        use RefuseWhen::{Above, AtOrAbove, Never};
+        for (yaml, expected) in [
+            ("allowed: {}", AllowedPolicy::default()),
+            ("{}", AllowedPolicy::default()),
+            ("# only a comment\nallowed: {}\n", AllowedPolicy::default()),
+            (
+                "allowed:\n  debt_limit: at_or_above\n  balance: at_or_above\n  member_cap: at_or_above\n",
+                AllowedPolicy::default(),
+            ),
+            (
+                "allowed:\n  debt_limit: above\n",
+                policy(Above, AtOrAbove, AtOrAbove),
+            ),
+            (
+                "allowed:\n  balance: never\n  member_cap: above\n",
+                policy(AtOrAbove, Never, Above),
+            ),
+            (
+                "allowed: {debt_limit: never, balance: never, member_cap: never}",
+                policy(Never, Never, Never),
+            ),
+        ] {
+            assert_eq!(parse_config(yaml).unwrap(), expected, "{yaml:?}");
+        }
+    }
+
+    #[test]
+    fn the_file_refuses_what_it_does_not_know_without_quoting_it() {
+        for yaml in [
+            "",
+            "  \n",
+            "allowed:\n  debt_limit: below\n",
+            "allowed:\n  debt_limit: At_Or_Above\n",
+            "allowed:\n  debt_limit: \"\"\n",
+            "allowed:\n  debt_limit: 0\n",
+            "allowed:\n  debt_limit: [above]\n",
+            "allowed:\n  debt_limt: above\n",
+            "allowed:\n  debt_limit: above\n  debt_limit: never\n",
+            "allowed: never\n",
+            "database_url: postgres://user:hunter2@db/x\n",
+            "allowed: {}\nlisten: 0.0.0.0:8080\n",
+            "- allowed\n",
+            "allowed: {debt_limit: above",
+        ] {
+            let error = parse_config(yaml).expect_err(yaml);
+            let message = format!("{error:#}");
+            assert!(message.contains("OPENBILLING_CONFIG"), "{message}");
+            for quoted in ["hunter2", "below", "At_Or_Above", "debt_limt", "listen"] {
+                assert!(
+                    !yaml.contains(quoted) || !message.contains(quoted),
+                    "{yaml:?} quoted in {message}"
+                );
+            }
+        }
+        let located = format!(
+            "{:#}",
+            parse_config("allowed:\n  balance: none\n").unwrap_err()
+        );
+        assert!(located.contains("line 2"), "{located}");
+    }
+
+    #[test]
+    fn the_file_is_read_when_named_and_refused_when_it_cannot_be() {
+        let dir = std::env::temp_dir().join(format!("ob-config-file-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = ("OPENBILLING_DATABASE_URL", "postgres://db/x");
+        let file = dir.join("config.yaml");
+        std::fs::write(
+            &file,
+            "allowed:\n  debt_limit: above\n  member_cap: never\n",
+        )
+        .unwrap();
+        let named = settings(&[db, ("OPENBILLING_CONFIG", file.to_str().unwrap())]).unwrap();
+        assert_eq!(
+            named.allowed,
+            policy(RefuseWhen::Above, RefuseWhen::AtOrAbove, RefuseWhen::Never)
+        );
+        // Empty is unset, as for every variable the chart renders.
+        let unset = settings(&[db, ("OPENBILLING_CONFIG", " ")]).unwrap();
+        assert_eq!(unset.allowed, AllowedPolicy::default());
+        let missing = settings(&[db, ("OPENBILLING_CONFIG", "/nowhere/config.yaml")]).unwrap_err();
+        assert!(format!("{missing:#}").contains("OPENBILLING_CONFIG"));
+        let bad = dir.join("bad.yaml");
+        std::fs::write(&bad, "allowed:\n  debt_limit: hunter2\n").unwrap();
+        let refused = settings(&[db, ("OPENBILLING_CONFIG", bad.to_str().unwrap())]).unwrap_err();
+        let message = format!("{refused:#}");
+        assert!(
+            message.contains("OPENBILLING_CONFIG") && !message.contains("hunter2"),
+            "{message}"
+        );
+        let big = dir.join("big.yaml");
+        let padding = "#".repeat(usize::try_from(MAX_CONFIG_BYTES).unwrap());
+        std::fs::write(&big, format!("allowed: {{}}\n{padding}\n")).unwrap();
+        assert!(settings(&[db, ("OPENBILLING_CONFIG", big.to_str().unwrap())]).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -57,6 +57,7 @@ macro_rules! ledger_conformance {
             the_same_id_on_another_day_is_refused_as_id_reused,
             an_owner_without_an_account_in_the_currency_is_refused,
             a_debit_past_the_debt_limit_is_booked_as_debt_and_flags_the_owner,
+            allowed_compares_as_the_policy_says,
             the_allowance_is_granted_once_per_account_and_month,
             adjustments_add_and_take_credit,
             accounts_are_once_only_and_one_per_owner_currency_and_label,

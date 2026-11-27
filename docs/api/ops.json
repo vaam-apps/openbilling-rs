@@ -114,7 +114,7 @@
       ],
       "requires_principal": true,
       "unanalysed": [],
-      "contract_digest": "30ae36f7d09bb29dbb9974878295acb8c47bf7e904841b05393cade51e6de73f"
+      "contract_digest": "93ce51ec241f6a873d6513f90b2621c8f51452b7c23c505127bce406e098a2c8"
     },
     {
       "key": "POST /$procs/getBalance",

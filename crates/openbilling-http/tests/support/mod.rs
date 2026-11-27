@@ -11,10 +11,10 @@ use cratestack::axum::Router;
 use cratestack::axum::body::{Body, to_bytes};
 use cratestack::axum::http::{HeaderMap, Method, Request, StatusCode};
 use openbilling_core::{
-    AccountId, Allowed, Amount, Balance, Credited, CurrencyCode, DrainReport, ErrorClass, EventId,
-    IntakeReport, LedgerConfig, LedgerError, LedgerStore, Loaded, LotView, MemberId, NewAccount,
-    Opened, OutcomeView, OwnerId, PriceBook, PriceVersionView, Rated, RawEvent, Reversal,
-    Timestamp, UsageEvent, UtcDay, UtcMonth,
+    AccountId, Allowed, AllowedPolicy, Amount, Balance, Credited, CurrencyCode, DrainReport,
+    ErrorClass, EventId, IntakeReport, LedgerConfig, LedgerError, LedgerStore, Loaded, LotView,
+    MemberId, NewAccount, Opened, OutcomeView, OwnerId, PriceBook, PriceVersionView, Rated,
+    RawEvent, Reversal, Timestamp, UsageEvent, UtcDay, UtcMonth,
 };
 use openbilling_http::auth::{BearerAuth, Principal, StaticTokens};
 use openbilling_http::{Services, router};
@@ -126,6 +126,7 @@ impl LedgerStore for DownLedger {
         _: &CurrencyCode,
         _: &MemberId,
         _: Timestamp,
+        _: AllowedPolicy,
     ) -> Result<Allowed, LedgerError> {
         down()
     }
@@ -159,13 +160,31 @@ impl PriceBook for DownLedger {
     }
 }
 
-/// The router over `ledger`, `provider` and `pool`, with the test tokens.
+/// The router over `ledger`, `provider` and `pool`, with the test tokens and the default policy.
 pub fn app<L: PriceBook + 'static>(
     ledger: L,
     provider: Option<VpayProvider>,
     pool: sqlx::PgPool,
 ) -> Router {
-    router(Arc::new(Services { ledger, provider }), pool, tokens())
+    app_with(ledger, provider, pool, AllowedPolicy::default())
+}
+
+/// The router as [`app`] makes it, with `allowed` as the deployer's policy.
+pub fn app_with<L: PriceBook + 'static>(
+    ledger: L,
+    provider: Option<VpayProvider>,
+    pool: sqlx::PgPool,
+    allowed: AllowedPolicy,
+) -> Router {
+    router(
+        Arc::new(Services {
+            ledger,
+            provider,
+            allowed,
+        }),
+        pool,
+        tokens(),
+    )
 }
 
 /// An answer: its status, headers and JSON body (`Null` when it is not JSON).
