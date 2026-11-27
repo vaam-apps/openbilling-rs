@@ -44,8 +44,6 @@ impl fmt::Display for EventOutcome {
 /// Why a worker refused an event. Closed on purpose: a new reason must fail to compile wherever reasons are matched.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RefusalReason {
-    /// The debit would pass the account's limit (ADR 0001, point 23).
-    Limit,
     /// No price in the price book version in effect at the event's occurrence time. Reserved: rating happens at
     /// intake, which refuses an unpriced event (`unpriced_meter`, `unpriced_dimension`), so no drain decides it
     /// (ADR 0004).
@@ -54,25 +52,29 @@ pub enum RefusalReason {
     UnknownAccount,
     /// An outcome already exists for this event id, from an event on another occurrence day (ADR 0001, point 15).
     IdReused,
+    /// The debit would take the owner's debt past the largest amount. Not the debt limit: since the owner's decision
+    /// of 2026-11-27 ("Always book as debt") usage is booked as debt whatever the limit, which refuses only new calls
+    /// through `allowed` (ADR 0001, amended, E1).
+    Overflow,
 }
 
 impl RefusalReason {
     /// Every reason, in declaration order.
     pub const ALL: [Self; 4] = [
-        Self::Limit,
         Self::NoPrice,
         Self::UnknownAccount,
         Self::IdReused,
+        Self::Overflow,
     ];
 
     /// The reason's stable name, as ADR 0001 writes it.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Limit => "limit",
             Self::NoPrice => "no_price",
             Self::UnknownAccount => "unknown_account",
             Self::IdReused => "id_reused",
+            Self::Overflow => "overflow",
         }
     }
 
@@ -96,7 +98,15 @@ mod tests {
     #[test]
     fn names_are_those_of_adr_0001() {
         let names: Vec<_> = RefusalReason::ALL.iter().map(|r| r.as_str()).collect();
-        assert_eq!(names, ["limit", "no_price", "unknown_account", "id_reused"]);
+        assert_eq!(
+            names,
+            ["no_price", "unknown_account", "id_reused", "overflow"]
+        );
+        assert_eq!(
+            RefusalReason::parse("limit"),
+            None,
+            "no drain refuses for the limit"
+        );
         for reason in RefusalReason::ALL {
             assert_eq!(RefusalReason::parse(reason.as_str()), Some(reason));
         }

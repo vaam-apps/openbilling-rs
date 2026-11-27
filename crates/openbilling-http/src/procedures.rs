@@ -9,33 +9,36 @@ use std::sync::Arc;
 
 use cratestack::{BigInt, CratestackContext, CratestackError};
 use openbilling_core::{
-    AccountId, AccountLabel, Amount, CreditId, CreditSource, CreditTarget, Credited, CurrencyCode,
-    IdempotencyKey, LedgerConfig, LedgerStore, LotKind as CoreLotKind, LotOrder, NewAccount,
-    OwnerId, PaymentProvider, PaymentRequest, PaymentTarget, ReturnUrls, Settled, WithinKind,
-    settle_payment, settle_refund,
+    AccountId, AccountLabel, AllowedPolicy, Amount, CreditId, CreditSource, CreditTarget, Credited,
+    CurrencyCode, IdempotencyKey, LedgerConfig, LotKind as CoreLotKind, LotOrder, MemberId,
+    NewAccount, OwnerId, PaymentProvider, PaymentRequest, PaymentTarget, PriceBook, ReturnUrls,
+    Settled, WithinKind, settle_payment, settle_refund,
 };
 
 use crate::errors::{invalid, ledger, payment, settle};
 use crate::generated::cratestack_schema::{
-    AccountOpened, Cratestack, CreditBooked, Done, LotKind, OperatorCreditSource, Settlement,
-    TopUpStarted, procedures, queries,
+    AccountOpened, Cratestack, CreditBooked, Done, LotKind, OperatorCreditSource, PriceListLoaded,
+    Settlement, TopUpStarted, procedures, queries,
 };
 use crate::intake;
-use crate::time::timestamp;
+use crate::time::{date_time, timestamp};
 
-/// Counts a `getAllowed` verdict by the check that decided it. `refused` is the ledger's own word (`balance` or
-/// `member_cap`); anything else is `other`, so no value of the database becomes a label.
-fn verdict(allowed: bool, refused: Option<&str>) {
-    let check = match (allowed, refused) {
-        (true, _) => "none",
-        (false, Some("balance")) => "balance",
-        (false, Some("member_cap")) => "member_cap",
-        (false, _) => "other",
+/// Counts a `getAllowed` verdict by the check that decided it and the mode (the deployer's comparison) that check
+/// ran under. `refused` is the ledger's own word (`debt_limit`, `balance`, `member_cap`); anything else is `other`,
+/// so no value of the database becomes a label. An allowed answer has no deciding check: `none`.
+fn verdict(allowed: bool, refused: Option<&str>, policy: AllowedPolicy) {
+    let (check, mode) = match (allowed, refused) {
+        (true, _) => ("none", "none"),
+        (false, Some("debt_limit")) => ("debt_limit", policy.debt_limit.as_str()),
+        (false, Some("balance")) => ("balance", policy.balance.as_str()),
+        (false, Some("member_cap")) => ("member_cap", policy.member_cap.as_str()),
+        (false, _) => ("other", "none"),
     };
     openbilling_telemetry::global().add(
         openbilling_telemetry::Counter::AllowedChecks,
         &[
             ("check", check),
+            ("mode", mode),
             ("verdict", if allowed { "allowed" } else { "refused" }),
         ],
         1,
@@ -43,12 +46,14 @@ fn verdict(allowed: bool, refused: Option<&str>) {
 }
 
 /// What the procedures call: the ledger (in the service, [`PgLedger`](openbilling_pg::PgLedger)), and the
-/// payment provider when one is configured.
+/// payment provider when one is configured; and the deployer's policy for `getAllowed`.
 pub struct Services<L, P> {
     /// The ledger.
     pub ledger: L,
     /// The payment provider, or `None`: top-ups and reconciliation then answer `503`.
     pub provider: Option<P>,
+    /// How `getAllowed` compares its numbers (the service's configuration file). A caller cannot choose it.
+    pub allowed: AllowedPolicy,
 }
 
 /// The procedure registry.
@@ -109,7 +114,7 @@ impl<L, P> Procedures<L, P> {
 
 impl<L, P> procedures::ProcedureRegistry for Procedures<L, P>
 where
-    L: LedgerStore + 'static,
+    L: PriceBook + 'static,
     P: PaymentProvider + 'static,
 {
     async fn get_balance(
@@ -133,13 +138,17 @@ where
         args: procedures::get_allowed::Args,
         _authorized: procedures::get_allowed::Authorized,
     ) -> Result<procedures::get_allowed::Output, CratestackError> {
+        let policy = self.0.allowed;
         let args = queries::allowed_row::Args {
             owner: args.args.owner,
             currency: args.args.currency,
             member: args.args.member,
+            debtLimitMode: policy.debt_limit.as_str().to_owned(),
+            balanceMode: policy.balance.as_str().to_owned(),
+            memberCapMode: policy.member_cap.as_str().to_owned(),
         };
         let row = db.queries().allowed_row(&args, ctx).await?;
-        verdict(row.allowed, row.refused.as_deref());
+        verdict(row.allowed, row.refused.as_deref(), policy);
         Ok(row)
     }
 
@@ -314,6 +323,89 @@ where
             .await
             .map_err(|e| ledger(&e))?;
         Ok(intake::answer(&report))
+    }
+
+    async fn record_raw_usage(
+        &self,
+        _db: &Cratestack,
+        _ctx: &CratestackContext,
+        args: procedures::record_raw_usage::Args,
+        _authorized: procedures::record_raw_usage::Authorized,
+    ) -> Result<procedures::record_raw_usage::Output, CratestackError> {
+        let events = intake::raw_events(&args.args)?;
+        let report = self
+            .0
+            .ledger
+            .intake_raw(&events)
+            .await
+            .map_err(|e| ledger(&e))?;
+        Ok(intake::answer(&report))
+    }
+
+    async fn set_debt_limit(
+        &self,
+        _db: &Cratestack,
+        _ctx: &CratestackContext,
+        args: procedures::set_debt_limit::Args,
+        _authorized: procedures::set_debt_limit::Authorized,
+    ) -> Result<procedures::set_debt_limit::Output, CratestackError> {
+        let args = args.args;
+        let limit = args
+            .limitMicros
+            .map(|m| micros(m, "limitMicros"))
+            .transpose()?;
+        self.0
+            .ledger
+            .set_debt_limit(&owner(&args.owner)?, &currency(&args.currency)?, limit)
+            .await
+            .map_err(|e| ledger(&e))?;
+        Ok(Done { done: true })
+    }
+
+    async fn set_member_cap(
+        &self,
+        _db: &Cratestack,
+        _ctx: &CratestackContext,
+        args: procedures::set_member_cap::Args,
+        _authorized: procedures::set_member_cap::Authorized,
+    ) -> Result<procedures::set_member_cap::Output, CratestackError> {
+        let args = args.args;
+        let member = MemberId::new(args.member.as_str()).map_err(|e| invalid("member", &e))?;
+        let cap = args.capMicros.map(|m| micros(m, "capMicros")).transpose()?;
+        self.0
+            .ledger
+            .set_member_cap(
+                &owner(&args.owner)?,
+                &currency(&args.currency)?,
+                &member,
+                cap,
+            )
+            .await
+            .map_err(|e| ledger(&e))?;
+        Ok(Done { done: true })
+    }
+
+    async fn load_price_list(
+        &self,
+        _db: &Cratestack,
+        _ctx: &CratestackContext,
+        args: procedures::load_price_list::Args,
+        _authorized: procedures::load_price_list::Authorized,
+    ) -> Result<procedures::load_price_list::Output, CratestackError> {
+        let loaded = self
+            .0
+            .ledger
+            .load_price_list(&args.args.yaml)
+            .await
+            .map_err(|e| ledger(&e))?;
+        Ok(PriceListLoaded {
+            version: loaded.version.as_str().to_owned(),
+            effectiveFrom: date_time(loaded.effective_from).ok_or_else(|| {
+                CratestackError::Internal("a version's time is out of range".to_owned())
+            })?,
+            contentHash: loaded.content_hash,
+            replayed: loaded.replayed,
+        })
     }
 
     async fn start_top_up(

@@ -10,16 +10,18 @@ and a double-entry ledger. **Status: the ledger (slice 2) and the price book (sl
 [ADR 0004](docs/adr/0004-a-versioned-price-book-in-sql.md) are the design. Built: owners with several accounts
 (one currency and label each), credits by source (payment, promotion, adjustment), refunds and chargebacks capped at
 the payment, the monthly allowance, the partitioned usage queue with once-only intake, the drain into the ledger with
-the configured draw order, debt and debt limits, member caps, and the reads; a versioned price book loaded from YAML
+the configured draw order, debt and debt limits (usage is always booked as debt; the limit refuses new calls
+through `allowed` and flags the owner: the owner's decision of 2026-11-27), member caps, and the reads (`allowed`
+reports its numbers and compares them as the deployer's YAML configuration file says, `OPENBILLING_CONFIG`, with no
+special case: the owner's decision of 2026-11-27, ADR 0001 amended F1 to F4); a versioned price book loaded from YAML
 (once per content, never changed or back-dated), raw events rated at intake by the version in force at their time
 (half to even, once per event; unpriced meters and dimensions refused) and kept with their version. Every rule is SQL
 in `crates/openbilling-pg/migrations/`; `PgLedger` calls it through the `LedgerStore` and `PriceBook` ports, and
-`openbilling-testkit` holds the conformance suites. **The suites have not run against a PostgreSQL 19 outside CI**
-(none was available where they were written). **Slice ANR-1143** ([ADR 0003](docs/adr/0003-credits-from-a-payment-provider.md)): a `PaymentProvider` port with its
+`openbilling-testkit` holds the conformance suites. Every suite ran against PostgreSQL 19.0 (the image CI pins) outside CI on 2026-11-27. **Slice ANR-1143** ([ADR 0003](docs/adr/0003-credits-from-a-payment-provider.md)): a `PaymentProvider` port with its
 conformance suite and the vpay adapter; the external API in CrateStack (`openbilling-http`), with policies and
-bearer authentication that refuses everyone until a real token verifier is wired; `openbilling serve` with the drain.
-Not built: detaching and dropping old partitions, a JWT verifier, minting the vpay token, raw events through the
-API.
+bearer authentication; `openbilling serve` with the drain. **ANR-1142**: a JWT verifier against one issuer's keys
+(`openbilling-jwt`, ADR 0003 amended), raw usage, the price list, debt limits and member caps through the API, and
+the end-to-end suite (`e2e/`). Not built: detaching and dropping old partitions, minting the vpay token.
 **Slice ANR-1144** ([ADR 0005](docs/adr/0005-release-fixed-versions-image-and-chart.md)): the release pipeline,
 written and **not yet run**: release-please (versions from the commits, a GitHub App token), the image
 (`docker/openbilling`, cargo-chef, distroless, non-root, a smoke stage), the Helm chart (`deploy/openbilling`, the
@@ -35,14 +37,16 @@ bjw-s common library 5.3.0) and `release.yml` (`X.Y.Z` and `X.Y` on a tag, `sha-
 | `crates/openbilling-testkit` | The conformance suites: `ledger_conformance!(factory)` of `LedgerStore` (`src/cases.rs`) and `price_book_conformance!(factory)` of `PriceBook` (`src/price_cases.rs`), and fixtures; of `PaymentProvider`, `payment_conformance!(factory)` over a `ProviderFixture` (`src/payments.rs`) |
 | `crates/openbilling-vpay` | The vpay adapter of `PaymentProvider` (reqwest 0.13, rustls on ring); its webhook verifier is held to vpay's scheme and a vector; the feature `stand-in` is a stand-in for vpay's API, test code only. Every vpay fact is in ADR 0003's *Agent notes* |
 | `crates/openbilling-http` | The external API: `schema/openbilling.cstack` (CrateStack 0.20.6, REST, under `/v1`), its procedure bodies (writes call `PgLedger`), `BearerAuth` over the `TokenVerifier` port (`RefuseAll` ships), the webhook route, `schema/openbilling.contracts.lock`. Its models map onto the ledger's tables: never run `cratestack migrate` on this schema |
-| `bin/openbilling` | The service binary (`anyhow`, clap with `color` and `wrap_help`, `anstream`): `serve`, which migrates at start and stops on `SIGINT` or `SIGTERM` |
+| `crates/openbilling-jwt` | The `TokenVerifier` the service uses when an issuer is configured: a JWT against the issuer's JWKS (`RS256`, `ES256`, `EdDSA` only), claims by jsonwebtoken 11 with no backend of its own, signatures by a jsonwebtoken `CryptoProvider` on ring (`src/provider.rs`); never aws-lc-rs or `rsa`. The feature `test-issuer` is a test issuer on a loopback port, test code only |
+| `bin/openbilling` | The service binary (`anyhow`, clap with `color` and `wrap_help`, `anstream`): `serve`, which migrates at start and stops on `SIGINT` or `SIGTERM`. `src/config.rs` reads the environment (secrets, endpoints) and the optional YAML file `OPENBILLING_CONFIG` names (policy: `allowed.debt_limit`, `balance`, `member_cap`, each `at_or_above`, `above` or `never`), refusing an unknown key or value at start; no setting is read from both |
+| `e2e/` | The end-to-end suite: the `openbilling` package's `e2e` test target (it needs `CARGO_BIN_EXE_openbilling`), which starts `openbilling serve` as a process against a fresh database and drives only its HTTP API and webhook, with tokens of `openbilling-jwt`'s test issuer and the vpay stand-in; `compose.yaml` is a local PostgreSQL 19. A scenario never writes to the tables; it may read invariants from them, read-only |
 | `docker/openbilling/Dockerfile` | The image (ADR 0005): `chef`, `planner`, `builder` (`--locked`), `smoke` (`--version`, `--help` on the runtime base), `runtime` (the last, the default target). Bases pinned by tag and digest in its header: move both together, read the digest from the registry |
-| `deploy/openbilling/` | The Helm chart (ADR 0005): values for the bjw-s common library 5.3.0 (`Chart.yaml`, `Chart.lock`; `charts/` is built, not committed), `templates/common.yaml` (the loader) and `templates/_validate.tpl` (the refusals), `tests/check.sh` (everything CI checks), `tests/render-check.sh`, `tests/values/` (a `refused-*.yaml` says its message on `# expect:`), `tests/schemas/` (vendored; re-vendor, never edit). The digest line of `values.yaml` is rewritten by `release.yml`: keep its comment |
+| `deploy/openbilling/` | The Helm chart (ADR 0005): values for the bjw-s common library 5.3.0 (`Chart.yaml`, `Chart.lock`; `charts/` is built, not committed), `templates/common.yaml` (the loader) and `templates/_validate.tpl` (the refusals, the configuration file's among them; `openbilling.config` is that file, rendered into a ConfigMap and mounted), `tests/check.sh` (everything CI checks), `tests/render-check.sh`, `tests/values/` (a `refused-*.yaml` says its message on `# expect:`), `tests/schemas/` (vendored; re-vendor, never edit). The digest line of `values.yaml` is rewritten by `release.yml`: keep its comment |
 | `release-please-config.json`, `.release-please-manifest.json` | release-please's configuration and the last released version. The version lines it writes carry `# x-release-please-version`: never edit them by hand |
 | `docs/api/` | The API's contract as CrateStack states it: `ops.json` (`cratestack contract ops --json`), checked in CI |
 | `docs/adr/` | The decisions, with an index in `docs/adr/README.md` |
 | `Cargo.toml`, `clippy.toml`, `deny.toml` | Workspace (edition 2024, resolver 3, MSRV `rust-version`), lints (`unsafe_code` forbidden, `unwrap`/`expect` warn outside tests), dependency policy |
-| `.github/workflows/`, `.github/dependabot.yml` | `ci.yml` (format, clippy, tests with a PostgreSQL service, cargo deny, MSRV, the API contract, the image's smoke test on pull requests, the chart), `release-please.yml` (the release pull request and the tag, App token), `release.yml` (the image and the chart, signed), and weekly updates of crates and actions |
+| `.github/workflows/`, `.github/dependabot.yml` | `ci.yml` (format, clippy, tests with a PostgreSQL service, the end-to-end suite as a step of Test, cargo deny, MSRV, the API contract, the image's smoke test on pull requests, the chart), `release-please.yml` (the release pull request and the tag, App token), `release.yml` (the image and the chart, signed), and weekly updates of crates and actions |
 | `.agents/`, `.claude/`, `.goose/`, `.kiro/`, `skills-lock.json` | The pinned skills; never edited by hand |
 
 ## Rules
@@ -104,6 +108,7 @@ What CI runs (`.github/workflows/ci.yml`):
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked        # CI sets OPENBILLING_TEST_DATABASE_URL and OPENBILLING_TEST_REQUIRE_DB=1
+cargo test -p openbilling --test e2e   # the end-to-end suite alone (e2e/README.md; a database as below)
 cargo deny check                       # deny.toml: advisories, licences, bans, sources
 cargo +1.98 check --workspace --all-targets --locked   # MSRV: rust-version of Cargo.toml (CrateStack 0.20.6's)
 CRATESTACK_REQUIRE_VERSION=0.20.6 cratestack check --schema crates/openbilling-http/schema/openbilling.cstack

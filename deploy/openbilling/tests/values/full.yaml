@@ -1,9 +1,20 @@
-# Everything on: a pinned digest, two replicas, the NetworkPolicy and the ServiceMonitor. The digest is a test
+# Everything on: a pinned digest, two replicas, the token verifier, a configuration file that is not the defaults,
+# the NetworkPolicy and the ServiceMonitor. The digest is a test
 # fixture, not an image anyone pushed; render-check.sh then requires every image to carry one.
 openbilling:
   database:
     existingSecret: billing-db-app
     key: uri
+  auth:
+    issuer: https://idp.example/realms/billing
+    audience: billing
+    jwksUrl: https://idp.example/realms/billing/protocol/openid-connect/certs
+    rolesClaim: realm_access.roles
+    roleMap: billing-admin=operator,meter=producer
+  config:
+    allowed:
+      debt_limit: above
+      balance: never
 controllers:
   main:
     replicas: 2

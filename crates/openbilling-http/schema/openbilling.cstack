@@ -88,6 +88,11 @@ model UsageOutcome {
   reason     String?
   occurredAt DateTime
   decidedAt  DateTime
+  // A raw event's rating, kept on its outcome (ADR 0004); all four are null for a pre-priced event.
+  meter        String?
+  quantity     BigInt?
+  dimensions   Json?
+  priceVersion Uuid?
 
   @@map("ob_event_outcome")
   @@paged
@@ -107,17 +112,23 @@ type BalanceRow {
   ownerAvailableMicros BigInt
   debtMicros          BigInt
   netMicros           BigInt
+  debtLimitMicros     BigInt?
+  pastLimit           Boolean
 }
 
 // An owner's accounts in a currency, in draw order, now: what each one's drawable lots hold, and the owner's
-// total, debt and net. The rule is the ledger's read `ob_balance_of`.
+// total, debt and net. The rule is the ledger's read `ob_balance_of`. The owner's debt limit, if any, and
+// whether its debt is past it (the view `ob_past_debt_limit`): usage is booked as debt even past the limit (the
+// owner's decision of 2026-11-27, "Always book as debt"), so the limit flags the owner and refuses new calls.
 query balanceRows(owner: String, currency: String): BalanceRow[]
   @@sql("""
     SELECT b.o_account_id AS "accountId", b.o_label AS "label", $2::text AS "currency",
            b.o_available AS "availableMicros",
            ob_clamp(sum(b.o_available) OVER ()) AS "ownerAvailableMicros",
            b.o_debt AS "debtMicros",
-           ob_clamp(sum(b.o_available) OVER () - b.o_debt) AS "netMicros"
+           ob_clamp(sum(b.o_available) OVER () - b.o_debt) AS "netMicros",
+           (SELECT bl.debt_limit FROM ob_balance bl WHERE bl.owner = $1 AND bl.currency = $2) AS "debtLimitMicros",
+           EXISTS (SELECT 1 FROM ob_past_debt_limit p WHERE p.owner = $1 AND p.currency = $2) AS "pastLimit"
     FROM ob_balance_of($1, $2, ob_micros(now())) b
   """)
   @allow(owner == auth().sub || hasRole("operator"))
@@ -126,15 +137,29 @@ type AllowedRow {
   allowed               Boolean
   refused               String?
   balanceMicros         BigInt
+  availableMicros       BigInt
+  debtMicros            BigInt
+  debtLimitMicros       BigInt?
+  pastLimit             Boolean
+  memberSpentMicros     BigInt
+  memberCapMicros       BigInt?
   memberRemainingMicros BigInt?
 }
 
-// May the member spend for the owner in the currency now? The rule is the ledger's read `ob_allowed`.
-query allowedRow(owner: String, currency: String, member: String): AllowedRow
+// May the member spend for the owner in the currency now? The rule is the ledger's read `ob_allowed`, which compares
+// each check as the deployer's configuration file says (`allowed:` in OPENBILLING_CONFIG; the procedure passes it,
+// a caller never does): `refused` is `debt_limit` (the debt against the owner's limit), `balance` (the debt against
+// the drawable credit) or `member_cap` (the member's usage this month against their cap), in that order. The numbers
+// are facts whatever the policy: `balanceMicros` (credit less debt), `availableMicros`, `debtMicros`,
+// `debtLimitMicros`, `pastLimit` (debt > limit), `memberSpentMicros`, `memberCapMicros`, `memberRemainingMicros`. A
+// caller with a rule of its own reads them and ignores `allowed` and `refused` (the owner's decision of 2026-11-27).
+query allowedRow(owner: String, currency: String, member: String, debtLimitMode: String, balanceMode: String, memberCapMode: String): AllowedRow
   @@sql("""
     SELECT a.o_refused IS NULL AS "allowed", a.o_refused AS "refused", a.o_balance AS "balanceMicros",
-           a.o_member_remaining AS "memberRemainingMicros"
-    FROM ob_allowed($1, $2, $3, ob_micros(now())) a
+           a.o_available AS "availableMicros", a.o_debt AS "debtMicros", a.o_debt_limit AS "debtLimitMicros",
+           a.o_past_limit AS "pastLimit", a.o_member_spent AS "memberSpentMicros",
+           a.o_member_cap AS "memberCapMicros", a.o_member_remaining AS "memberRemainingMicros"
+    FROM ob_allowed($1, $2, $3, ob_micros(now()), $4, $5, $6) a
   """)
   @allow(owner == auth().sub || hasRole("operator") || hasRole("producer"))
 
@@ -168,7 +193,7 @@ type StatementLine {
 }
 
 // An owner's statement in a currency for one UTC month. Lines (`line` = "line"): `usage` per UTC day of
-// occurrence, negative; `payment`, `promotion`, `adjustment` per credit booked in the month, signed;
+// occurrence and meter, negative (`reference` is the meter of raw events, null for pre-priced ones); `payment`, `promotion`, `adjustment` per credit booked in the month, signed;
 // `refund`, `chargeback` per reversal booked in the month, negative; `allowance` per account granted the
 // month's allowance, on the first of the month. Then one total per kind (`line` = "total", no reference, no
 // day). Lines by day, kind and reference; totals by kind. Days are `YYYY-MM-DD`, UTC.
@@ -178,7 +203,7 @@ query statementLines(owner: String, currency: String, year: Int, month: Int): St
         SELECT make_date($3::integer, $4::integer, 1) AS first_day,
                (make_date($3::integer, $4::integer, 1) + interval '1 month')::date AS next_day
     ), lines AS (
-        SELECT 'usage'::text AS kind, NULL::text AS reference, o.occurred_on AS day, -o.amount::numeric AS amount
+        SELECT 'usage'::text AS kind, o.meter AS reference, o.occurred_on AS day, -o.amount::numeric AS amount
         FROM ob_event_outcome o CROSS JOIN bounds b
         WHERE o.state = 'applied' AND o.owner = $1 AND o.currency = $2
           AND o.occurred_on >= b.first_day AND o.occurred_on < b.next_day
@@ -354,6 +379,72 @@ type IntakeResult {
 // Takes pre-priced usage events in, all or nothing, once by each event's id and day (`ob_intake`).
 mutation procedure recordUsage(args: UsageBatch): IntakeResult
   @allow(hasRole("producer") || hasRole("operator"))
+
+type DimensionInput {
+  key   String @length(min: 1, max: 64)
+  value String @length(min: 1, max: 128)
+}
+
+type RawUsageEventInput {
+  eventId    String           @length(min: 1, max: 128)
+  owner      String           @length(min: 1, max: 255)
+  member     String           @length(min: 1, max: 128)
+  currency   String           @length(min: 1, max: 16)
+  meter      String           @length(min: 1, max: 64)
+  quantity   BigInt
+  dimensions DimensionInput[]
+  occurredAt DateTime
+}
+
+type RawUsageBatch {
+  events RawUsageEventInput[]
+}
+
+// Takes raw usage events in (a meter, a quantity and dimensions), all or nothing: each is rated by the price book
+// version in force at its occurrence time, then taken in once by its id and day (`ob_intake`, ADR 0004).
+mutation procedure recordRawUsage(args: RawUsageBatch): IntakeResult
+  @allow(hasRole("producer") || hasRole("operator"))
+
+// ---- The operator's settings: the debt limit, member caps, the price book ----
+
+type DebtLimitInput {
+  owner       String  @length(min: 1, max: 255)
+  currency    String  @length(min: 1, max: 16)
+  limitMicros BigInt?
+}
+
+// Sets, or with no `limitMicros` removes, an owner's debt limit in a currency (`ob_set_debt_limit`). Usage is
+// booked as debt even past it; `getAllowed` compares the debt with it as the deployer's configuration says, and the
+// reads flag an owner whose debt is above it.
+mutation procedure setDebtLimit(args: DebtLimitInput): Done
+  @allow(hasRole("operator"))
+
+type MemberCapInput {
+  owner     String  @length(min: 1, max: 255)
+  currency  String  @length(min: 1, max: 16)
+  member    String  @length(min: 1, max: 128)
+  capMicros BigInt?
+}
+
+// Sets, or with no `capMicros` removes, a member's monthly cap for an owner in a currency (`ob_set_member_cap`).
+mutation procedure setMemberCap(args: MemberCapInput): Done
+  @allow(hasRole("operator"))
+
+type PriceListInput {
+  yaml String @length(min: 1, max: 1048576)
+}
+
+type PriceListLoaded {
+  version       String
+  effectiveFrom DateTime
+  contentHash   String
+  replayed      Boolean
+}
+
+// Loads a YAML price list as a new price book version, or answers the version already loaded with the same
+// content (`ob_load_price_list`, ADR 0004). A version takes effect after the clock and every event already rated.
+mutation procedure loadPriceList(args: PriceListInput): PriceListLoaded
+  @allow(hasRole("operator"))
 
 type TopUpInput {
   key          String @length(min: 1, max: 128)

@@ -67,6 +67,8 @@ authenticated by a real issuer (ADR 0003).
 
 **The image** (`docker/openbilling/Dockerfile`).
 
+*Amended 2026-11-27: items 8 and 9 (the Debian builder and the glibc runtime) are replaced by [ADR 0006](0006-a-static-musl-binary-on-distroless-static.md): a static musl binary on distroless/static.*
+
 8. Multi-stage with cargo-chef, so the dependencies are a layer of their own; `cargo build --release --locked` of
    `bin/openbilling` on `rust:1.98.1-slim-trixie` (the toolchain CI uses; the MSRV is 1.98).
 9. The runtime is `gcr.io/distroless/cc-debian13:nonroot`: glibc, CA certificates (sqlx and reqwest read the
@@ -185,8 +187,8 @@ stateDiagram-v2
 |---|---|---|
 | bjw-s common | `5.3.0`, the newest of the 5.x line (tags `common-5.0.0` … `common-5.3.0`); OCI manifest `sha256:d1738ab79720d0369126df92adf6bbf32c20ea816edc4ab5cd377b2beba8f408`, archive `sha256:d373034b8f8d2d7c25d4028f8280a2112486a8b1a3deb1f4e690cd132ac20f80` | `git ls-remote --tags https://github.com/bjw-s-labs/helm-charts`; `helm pull oci://ghcr.io/bjw-s-labs/helm/common --version 5.3.0`; `https://bjw-s-labs.github.io/helm-charts/index.yaml` (the same archive digest) |
 | bjw-s app-template | `5.3.0` (not a dependency; read to confirm it is common 5.3.0 and one template); OCI manifest `sha256:0e13b145656490310ada364d8eb708e5f4f6384c7deb60d3f5f0fa56950ff63a` | `helm pull oci://ghcr.io/bjw-s-labs/helm/app-template --version 5.3.0` |
-| `rust:1.98.1-slim-trixie` | index `sha256:4cd829461bd5c4d511c32e269da9cb8929223b666519d8004e35fc8d1d771ab7` | `hub.docker.com/v2/repositories/library/rust/tags/1.98.1-slim-trixie` (the registry itself rate-limited the request) |
-| `gcr.io/distroless/cc-debian13:nonroot` | index `sha256:29ee70762214fe8190cea04ef1c0a84a8365879e047ce8f911ae5a5ab2355fa2` (amd64, arm64 among its platforms) | the manifest answer of `gcr.io/v2/distroless/cc-debian13/manifests/nonroot` |
+| `rust:1.98.1-slim-trixie` (superseded by ADR 0006: `rust:1.98.1-alpine3.24`, index `sha256:7cc1c22d77d9432f7fe012a70e6d3e555af54c2a6832700ed7d553f1769ae89f`) | index `sha256:4cd829461bd5c4d511c32e269da9cb8929223b666519d8004e35fc8d1d771ab7` | `hub.docker.com/v2/repositories/library/rust/tags/1.98.1-slim-trixie` (the registry itself rate-limited the request) |
+| `gcr.io/distroless/cc-debian13:nonroot` (superseded by ADR 0006: `static-debian12:nonroot`, index `sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab`) | index `sha256:29ee70762214fe8190cea04ef1c0a84a8365879e047ce8f911ae5a5ab2355fa2` (amd64, arm64 among its platforms) | the manifest answer of `gcr.io/v2/distroless/cc-debian13/manifests/nonroot` |
 | cargo-chef | `0.1.78` (2026-08-12), with `cook --package` | crates.io; its `src/main.rs` |
 | Helm | `v4.3.2` (CI and the local checks) | `get.helm.sh`, sha256 matched |
 | kubeconform | `v0.8.0`, linux-amd64 archive `sha256:9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883` | its release's `CHECKSUMS` |

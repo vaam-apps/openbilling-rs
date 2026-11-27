@@ -479,7 +479,7 @@
       "id": 11,
       "type": "timeseries",
       "title": "getAllowed verdicts",
-      "description": "getAllowed answers per second by verdict and the check that decided: a rise of balance or member_cap refusals is usage being stopped.",
+      "description": "getAllowed answers per second by verdict, the deciding check (debt_limit, balance, member_cap) and the mode it ran under: a rise of refusals is usage being stopped.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -493,7 +493,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (verdict, check) (rate(openbilling_allowed_checks_total{job=~\"$job\"}[$__rate_interval]))",
+          "expr": "sum by (verdict, check, mode) (rate(openbilling_allowed_checks_total{job=~\"$job\"}[$__rate_interval]))",
           "legendFormat": "__auto",
           "datasource": {
             "type": "prometheus",

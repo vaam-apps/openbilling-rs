@@ -1,4 +1,4 @@
-# The openbilling image: `bin/openbilling` on a distroless runtime, non-root (ADR 0005).
+# The openbilling image: a static musl binary, `bin/openbilling`, on distroless/static, non-root (ADR 0005, ADR 0006).
 #
 # Built from the repository root (the context is `.`):
 #
@@ -6,27 +6,43 @@
 #   docker build -f docker/openbilling/Dockerfile .                    # the image (the last stage, `runtime`)
 #
 # Stages: `chef` (the toolchain and cargo-chef), `planner` (the dependency recipe), `builder` (dependencies in a
-# layer of their own, then the binary, `--locked`), `smoke` (the binary run on the runtime base) and `runtime`.
+# layer of their own, then the binary, `--locked`, for the musl target, and a check that it is static), `smoke` (the
+# binary run on the runtime base) and `runtime`.
+#
+# One build per architecture, on a runner of that architecture (release.yml): the builder is Alpine, whose Rust
+# toolchain is musl-native, so `x86_64-unknown-linux-musl` is built on amd64 and `aarch64-unknown-linux-musl` on
+# arm64. `--target` is passed even though it is the host's triple: with it, `RUSTFLAGS` (`+crt-static`) does not
+# reach build scripts and proc-macros, which must stay dynamic to be loaded by the compiler.
 #
 # Pins, by tag and digest (the digest wins; the tag says what it is). Move both together; dependabot does not see
 # these lines.
-#   - rust:1.98.1-slim-trixie, the multi-arch index digest, read from Docker Hub on 2026-11-27 (*verified*:
-#     hub.docker.com/v2/repositories/library/rust/tags/1.98.1-slim-trixie). The toolchain CI builds with
-#     (ci.yml, RUST_TOOLCHAIN); the MSRV is 1.98 (Cargo.toml).
-#   - gcr.io/distroless/cc-debian13:nonroot, the multi-arch index digest, read from gcr.io on 2026-11-27 (*verified*:
-#     the registry's manifest answer). glibc, libgcc and CA certificates, no shell, uid 65532. Debian 13 (trixie),
-#     the release the builder links against.
+#   - rust:1.98.1-alpine3.24, the multi-arch index digest, read from Docker Hub on 2026-11-27 (*verified*:
+#     hub.docker.com/v2/repositories/library/rust/tags/1.98.1-alpine3.24). The toolchain CI builds with (ci.yml,
+#     RUST_TOOLCHAIN); the MSRV is 1.98 (Cargo.toml).
+#   - gcr.io/distroless/static-debian12:nonroot, the multi-arch index digest, read from gcr.io on 2026-11-27
+#     (*verified*: the registry's manifest answer, anonymously). No libc, no shell: CA certificates, /etc/passwd with
+#     uid 65532, tzdata. Debian 12 because that is the static image's release the owner named (ANR-1173).
 #   - cargo-chef 0.1.78, the newest on crates.io on 2026-11-27 (*verified*, published 2026-08-12).
 #
 # The migrations are compiled into the binary (`openbilling-pg`, `include_str!`), and `openbilling serve` applies
 # them at start, under sqlx's advisory lock: the image carries no SQL file.
 
-ARG RUST_IMAGE=rust:1.98.1-slim-trixie@sha256:4cd829461bd5c4d511c32e269da9cb8929223b666519d8004e35fc8d1d771ab7
-ARG RUNTIME_IMAGE=gcr.io/distroless/cc-debian13:nonroot@sha256:29ee70762214fe8190cea04ef1c0a84a8365879e047ce8f911ae5a5ab2355fa2
+ARG RUST_IMAGE=rust:1.98.1-alpine3.24@sha256:7cc1c22d77d9432f7fe012a70e6d3e555af54c2a6832700ed7d553f1769ae89f
+ARG RUNTIME_IMAGE=gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
 
 FROM ${RUST_IMAGE} AS chef
 ARG CARGO_CHEF_VERSION=0.1.78
-RUN cargo install cargo-chef --locked --version "${CARGO_CHEF_VERSION}"
+ARG TARGETARCH
+# The image already has gcc and musl-dev, which `ring` needs to compile its C and assembly. `file`: the static check.
+RUN apk add --no-cache file \
+    && cargo install cargo-chef --locked --version "${CARGO_CHEF_VERSION}" \
+    && case "${TARGETARCH}" in \
+         amd64) echo x86_64-unknown-linux-musl ;; \
+         arm64) echo aarch64-unknown-linux-musl ;; \
+         *) echo "unsupported architecture: ${TARGETARCH}" >&2; exit 1 ;; \
+       esac > /rust-target \
+    && rustup target add "$(cat /rust-target)"
+ENV RUSTFLAGS="-C target-feature=+crt-static"
 WORKDIR /src
 
 # The recipe is the workspace's manifests and lockfile with the sources stripped, so the next stage's dependency
@@ -37,10 +53,14 @@ RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS builder
 COPY --from=planner /src/recipe.json recipe.json
-RUN cargo chef cook --release --locked --package openbilling --recipe-path recipe.json
+RUN cargo chef cook --release --locked --target "$(cat /rust-target)" --package openbilling --recipe-path recipe.json
 COPY . .
-RUN cargo build --release --locked --package openbilling --bin openbilling \
-    && install -D -m 0755 target/release/openbilling /out/openbilling
+RUN cargo build --release --locked --target "$(cat /rust-target)" --package openbilling --bin openbilling \
+    && install -D -m 0755 "target/$(cat /rust-target)/release/openbilling" /out/openbilling
+# A static executable has no interpreter and no shared library: `file` says "statically linked" (or "static-pie
+# linked") and never "dynamically linked". A build step, so a dependency that starts to need libc fails here.
+RUN out="$(file -b /out/openbilling)"; echo "${out}" \
+    && case "${out}" in *"dynamically linked"*) echo "not static" >&2; exit 1 ;; *"static"*) ;; *) echo "cannot tell if it is static" >&2; exit 1 ;; esac
 
 # The binary, run where it will run: the runtime base, as the runtime user. Exec form, since distroless has no
 # shell. A binary that cannot start (a missing library, the wrong architecture) fails the build here.

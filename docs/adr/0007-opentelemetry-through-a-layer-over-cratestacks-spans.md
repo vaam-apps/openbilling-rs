@@ -54,7 +54,7 @@ belong.
 5. **Spans:** one `http.server.request` per request (the probes are metrics only), CrateStack's three route and
    procedure spans as its children, one `db.query` span per ledger operation, `drain.cycle` and `partitions.run`
    for the loops. **Metrics:** events at intake and decided by the drain by result and reason, ledger postings by
-   kind, `getAllowed` verdicts by check, errors by class and source, request and database durations, the drain's
+   kind, `getAllowed` verdicts by check and mode, errors by class and source, request and database durations, the drain's
    duration and lag, the queue's backlog and oldest age, and the pool. **Logs:** `INFO`-and-above events of this
    repository, whose messages are static text.
 6. **Dashboards are Grafana JSON** in `deploy/dashboards/` (the format ANR-1165 left to the first card; Grafana reads

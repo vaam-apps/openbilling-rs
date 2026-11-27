@@ -1,0 +1,5 @@
+# expect: openbilling.auth.issuer: https, or http to a loopback address
+openbilling:
+  auth:
+    issuer: http://idp.example/realms/billing
+    audience: billing

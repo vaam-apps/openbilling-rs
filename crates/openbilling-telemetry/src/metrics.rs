@@ -31,8 +31,9 @@ pub enum Counter {
     /// Ledger postings, one per transaction booked, replays not counted: `kind` is `usage_debit`, `credit`,
     /// `allowance` or `reversal`.
     LedgerPostings,
-    /// `getAllowed` verdicts: `check` is the check that decided (`balance`, `member_cap`, or `none` when allowed)
-    /// and `verdict` is `allowed` or `refused`.
+    /// `getAllowed` verdicts: `check` is the check that decided (`debt_limit`, `balance`, `member_cap`, or `none`
+    /// when allowed), `mode` the deployer's comparison it ran under (`at_or_above`, `above`, `never`) and `verdict`
+    /// is `allowed` or `refused`.
     AllowedChecks,
     /// Errors by class: `class` is `invalid`, `conflict`, `unavailable` or `internal`; `source` is where.
     Errors,

@@ -22,7 +22,7 @@ use support::{OPERATOR, OWNER_1, PRODUCER, app, call, fresh, procedure};
 const OWNER: &str = "owner-sentinel-1";
 const ACCOUNT: &str = "acct-sentinel-1";
 const MEMBER: &str = "member-sentinel";
-const AMOUNT: &str = "7771234";
+const AMOUNT: &str = "987654321";
 
 fn now_text() -> String {
     let micros = std::time::SystemTime::now()
@@ -144,7 +144,7 @@ async fn one_flow_gives_spans_metrics_and_a_log_and_leaks_nothing() {
         Some(OPERATOR),
         Some("key-sentinel-grant"),
         json!({"creditId": "credit-sentinel", "source": "promotion", "owner": OWNER,
-               "currency": "EUR", "label": "main", "amountMicros": "50000000"}),
+               "currency": "EUR", "label": "main", "amountMicros": "2000000011"}),
     )
     .await);
 
@@ -351,7 +351,11 @@ async fn one_flow_gives_spans_metrics_and_a_log_and_leaks_nothing() {
         counter(
             &collector,
             "openbilling.allowed.checks",
-            &[("verdict", "refused"), ("check", "balance")]
+            &[
+                ("verdict", "refused"),
+                ("check", "balance"),
+                ("mode", "at_or_above")
+            ]
         ),
         1
     );
@@ -430,8 +434,7 @@ async fn one_flow_gives_spans_metrics_and_a_log_and_leaks_nothing() {
         "token-nobody",
         "Bearer",
         "idempotency",
-        "1777",
-        "50000000",
+        "2000000011",
     ] {
         assert!(
             !everything.contains(forbidden),

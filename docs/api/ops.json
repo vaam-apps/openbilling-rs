@@ -71,7 +71,7 @@
       ],
       "requires_principal": true,
       "unanalysed": [],
-      "contract_digest": "4c556258dbda9355f764799dcc8e6d97b515d55fdd07dbc34eaef8eccadba2a6"
+      "contract_digest": "90e29abaa7467468fe25a70d9734cb70809e86b28846b1a0f3145e75f87e90e1"
     },
     {
       "key": "GET /usage_outcomes/{id}",
@@ -85,7 +85,7 @@
       ],
       "requires_principal": true,
       "unanalysed": [],
-      "contract_digest": "fb9de9b7d5c149de35b760844e42167ef55559105aeb43a0e06b6b8e3fefd966"
+      "contract_digest": "4dba030c4e4b77a04b9975f6a22b5d6a33cbb09f198ee7ab3bc2eb538ac994ca"
     },
     {
       "key": "POST /$procs/configure",
@@ -114,7 +114,7 @@
       ],
       "requires_principal": true,
       "unanalysed": [],
-      "contract_digest": "30ae36f7d09bb29dbb9974878295acb8c47bf7e904841b05393cade51e6de73f"
+      "contract_digest": "93ce51ec241f6a873d6513f90b2621c8f51452b7c23c505127bce406e098a2c8"
     },
     {
       "key": "POST /$procs/getBalance",
@@ -128,7 +128,7 @@
       ],
       "requires_principal": true,
       "unanalysed": [],
-      "contract_digest": "638cd03a325311e9905cbac6cd44ac30094b9ecfe4825130d88ec99c384cc1e0"
+      "contract_digest": "37be8392b8a2578c288d7753d2ef611e664e403588691c45996589e1e9a99bc1"
     },
     {
       "key": "POST /$procs/getStatement",
@@ -187,6 +187,20 @@
       "contract_digest": "5c4ddfaf28017049b8972a6fc1c42f1214b40d7a47935c43469f2a6a3ed51601"
     },
     {
+      "key": "POST /$procs/loadPriceList",
+      "kind": "procedure",
+      "allow": [
+        "hasRole(\"operator\")"
+      ],
+      "deny": [],
+      "roles": [
+        "operator"
+      ],
+      "requires_principal": true,
+      "unanalysed": [],
+      "contract_digest": "7a2017ea53a65b710b03da9bcc56827bafe33c63b1992737a12df35469a9519d"
+    },
+    {
       "key": "POST /$procs/openAccount",
       "kind": "procedure",
       "allow": [
@@ -229,6 +243,21 @@
       "contract_digest": "a13abe1675434d57d4e63232e493a29876334b50fe985e90ecb069e6c7a6973a"
     },
     {
+      "key": "POST /$procs/recordRawUsage",
+      "kind": "procedure",
+      "allow": [
+        "hasRole(\"producer\") || hasRole(\"operator\")"
+      ],
+      "deny": [],
+      "roles": [
+        "operator",
+        "producer"
+      ],
+      "requires_principal": true,
+      "unanalysed": [],
+      "contract_digest": "5a5ca7895853d230d1f5e7c3dd069cbda6c4109786253167d9954235dcfbea1a"
+    },
+    {
       "key": "POST /$procs/recordUsage",
       "kind": "procedure",
       "allow": [
@@ -242,6 +271,34 @@
       "requires_principal": true,
       "unanalysed": [],
       "contract_digest": "02bb5d84c66a32f30cc472a50b6a942cbde5b12c074fc71986d3441caf996e40"
+    },
+    {
+      "key": "POST /$procs/setDebtLimit",
+      "kind": "procedure",
+      "allow": [
+        "hasRole(\"operator\")"
+      ],
+      "deny": [],
+      "roles": [
+        "operator"
+      ],
+      "requires_principal": true,
+      "unanalysed": [],
+      "contract_digest": "ce52473d48e835ecb95b6b87230311fbd886f49461f5f09d270c799998901666"
+    },
+    {
+      "key": "POST /$procs/setMemberCap",
+      "kind": "procedure",
+      "allow": [
+        "hasRole(\"operator\")"
+      ],
+      "deny": [],
+      "roles": [
+        "operator"
+      ],
+      "requires_principal": true,
+      "unanalysed": [],
+      "contract_digest": "6d53a5ba7a668d1fccb3a09d6620274f5c2a9677024d43bf19994570bd2af590"
     },
     {
       "key": "POST /$procs/startTopUp",

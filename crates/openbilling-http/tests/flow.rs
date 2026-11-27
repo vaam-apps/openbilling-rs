@@ -7,11 +7,12 @@
 mod support;
 
 use cratestack::axum::http::{Method, StatusCode};
+use openbilling_core::{AllowedPolicy, RefuseWhen};
 use openbilling_core::{Amount, CreditId, LedgerStore, RefundStatus};
 use openbilling_testkit::payments::{ProviderFixture, SignedWebhook};
 use openbilling_vpay::stand_in;
 use serde_json::{Value, json};
-use support::{OPERATOR, OWNER_1, OWNER_2, PRODUCER, app, call, fresh, procedure, raw};
+use support::{OPERATOR, OWNER_1, OWNER_2, PRODUCER, app, app_with, call, fresh, procedure, raw};
 
 fn ok(answer: &support::Answer) {
     assert!(
@@ -174,6 +175,8 @@ async fn credit_usage_and_the_reads_through_the_api() {
     assert_eq!(rows[0]["accountId"], "b1");
     assert_eq!(rows[0]["availableMicros"], "30000000");
     assert_eq!(rows[0]["netMicros"], "30000000");
+    assert_eq!(rows[0]["debtLimitMicros"], Value::Null);
+    assert_eq!(rows[0]["pastLimit"], false);
     let operator = procedure(
         &app,
         "getBalance",
@@ -204,6 +207,15 @@ async fn credit_usage_and_the_reads_through_the_api() {
     .await;
     assert_eq!(broke.body["allowed"], false);
     assert_eq!(broke.body["refused"], "balance");
+    // The numbers the verdict was made from: nothing held, 1 owed (m1's usage this month), no limit, no cap.
+    assert_eq!(
+        broke.body,
+        json!({
+            "allowed": false, "refused": "balance", "balanceMicros": "-1000000", "availableMicros": "0",
+            "debtMicros": "1000000", "debtLimitMicros": null, "pastLimit": false,
+            "memberSpentMicros": "1000000", "memberCapMicros": null, "memberRemainingMicros": null
+        })
+    );
 
     let credits = procedure(
         &app,
@@ -527,4 +539,259 @@ async fn a_top_up_through_vpay_credits_once_and_a_refund_reverses_it() {
     .await;
     assert_eq!(credits.body[0]["source"], "payment");
     assert_eq!(credits.body[0]["creditId"], payment.as_str());
+}
+
+fn at_offset(secs: i64) -> String {
+    let micros = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_micros();
+    let base = i64::try_from(micros).unwrap() + secs * 1_000_000;
+    openbilling_core::Timestamp::from_unix_micros(base)
+        .unwrap()
+        .to_rfc3339_micros()
+}
+
+#[tokio::test]
+async fn raw_usage_a_price_list_and_the_operators_settings_through_the_api() {
+    let Some((store, ledger)) = fresh().await else {
+        return;
+    };
+    let app = app(ledger.clone(), None, store.pool().clone());
+    setup(&app).await;
+
+    // Only the operator sets limits, caps and prices.
+    let limit = json!({"owner": "o1", "currency": "EUR", "limitMicros": "1000"});
+    let as_producer = procedure(
+        &app,
+        "setDebtLimit",
+        Some(PRODUCER),
+        Some("l0"),
+        limit.clone(),
+    )
+    .await;
+    assert_eq!(as_producer.status, StatusCode::FORBIDDEN);
+    ok(&procedure(&app, "setDebtLimit", Some(OPERATOR), Some("l1"), limit).await);
+    let cap = json!({"owner": "o1", "currency": "EUR", "member": "m1", "capMicros": "500"});
+    ok(&procedure(&app, "setMemberCap", Some(OPERATOR), Some("c1"), cap).await);
+    let unknown = json!({"owner": "nobody", "currency": "EUR", "limitMicros": null});
+    let refused = procedure(&app, "setDebtLimit", Some(OPERATOR), Some("l2"), unknown).await;
+    assert!(refused.text.contains("unknown_account"), "{}", refused.text);
+
+    let from = at_offset(60);
+    let yaml = format!(
+        "effective_from: \"{from}\"\nmeters:\n  - name: tokens.input\n    unit: token\n    dimensions: [model]\n\
+         prices:\n  - meter: tokens.input\n    currency: EUR\n    dimensions: {{ model: example-small }}\n    \
+         price_micros: 3\n    per: 2\n"
+    );
+    let loaded = procedure(
+        &app,
+        "loadPriceList",
+        Some(OPERATOR),
+        Some("p1"),
+        json!({"yaml": yaml}),
+    )
+    .await;
+    ok(&loaded);
+    assert_eq!(loaded.body["replayed"], false);
+    let version = loaded.body["version"].as_str().unwrap().to_owned();
+    let again = procedure(
+        &app,
+        "loadPriceList",
+        Some(OPERATOR),
+        Some("p2"),
+        json!({"yaml": yaml}),
+    )
+    .await;
+    assert_eq!(
+        (
+            again.body["version"].as_str(),
+            again.body["replayed"].as_bool()
+        ),
+        (Some(version.as_str()), Some(true))
+    );
+    let malformed = procedure(
+        &app,
+        "loadPriceList",
+        Some(OPERATOR),
+        Some("p3"),
+        json!({"yaml": "prices: ["}),
+    )
+    .await;
+    assert_eq!(
+        malformed.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        malformed.text
+    );
+    assert!(
+        malformed.text.contains("malformed_price_list"),
+        "{}",
+        malformed.text
+    );
+
+    let raw = |id: &str, at: &str, dims: Value| {
+        json!({"eventId": id, "owner": "o1", "member": "m1", "currency": "EUR", "meter": "tokens.input",
+               "quantity": "7", "dimensions": dims, "occurredAt": at})
+    };
+    let small = json!([{"key": "model", "value": "example-small"}]);
+    let before = procedure(
+        &app,
+        "recordRawUsage",
+        Some(PRODUCER),
+        Some("r0"),
+        json!({"events": [raw("r-early", &at_offset(0), small.clone())]}),
+    )
+    .await;
+    assert!(
+        before.text.contains("unpriced_meter") && before.text.contains("r-early"),
+        "{}",
+        before.text
+    );
+    let twice = json!([{"key": "model", "value": "example-small"}, {"key": "model", "value": "x"}]);
+    let dup = procedure(
+        &app,
+        "recordRawUsage",
+        Some(PRODUCER),
+        Some("r1"),
+        json!({"events": [raw("r-dup", &at_offset(90), twice)]}),
+    )
+    .await;
+    assert_eq!(dup.status, StatusCode::UNPROCESSABLE_ENTITY, "{}", dup.text);
+    let taken = procedure(
+        &app,
+        "recordRawUsage",
+        Some(PRODUCER),
+        Some("r2"),
+        json!({"events": [raw("r1", &at_offset(90), small)]}),
+    )
+    .await;
+    ok(&taken);
+    assert_eq!(taken.body["accepted"], 1);
+    while !ledger.drain(100).await.unwrap().decided.is_empty() {}
+
+    // 7 × 3 ÷ 2 = 10.5, half to even: 10. The outcome keeps the rating.
+    let outcome = call(
+        &app,
+        Method::GET,
+        "/v1/usage_outcomes/r1",
+        Some(OWNER_1),
+        None,
+        None,
+    )
+    .await;
+    ok(&outcome);
+    assert_eq!(outcome.body["amount"], "10");
+    assert_eq!(outcome.body["meter"], "tokens.input");
+    assert_eq!(outcome.body["quantity"], "7");
+    assert_eq!(outcome.body["priceVersion"], version.as_str());
+    assert_eq!(
+        outcome.body["dimensions"],
+        json!({"model": "example-small"})
+    );
+    let balance = procedure(
+        &app,
+        "getBalance",
+        Some(OWNER_1),
+        None,
+        json!({"owner": "o1", "currency": "EUR"}),
+    )
+    .await;
+    assert_eq!(balance.body[0]["debtLimitMicros"], "1000");
+    assert_eq!(balance.body[0]["debtMicros"], "10");
+    assert_eq!(balance.body[0]["pastLimit"], false);
+}
+
+/// The owner's decision of 2026-11-27 (ADR 0001, amended, F1 to F4): the deployer's policy decides the verdict of
+/// `getAllowed`, a caller cannot choose it, and the numbers are the same whatever it is.
+#[tokio::test]
+async fn the_deployers_policy_decides_get_allowed_and_not_its_numbers() {
+    let Some((store, ledger)) = fresh().await else {
+        return;
+    };
+    let strict = app(ledger.clone(), None, store.pool().clone());
+    setup(&strict).await;
+    let lenient = app_with(
+        ledger.clone(),
+        None,
+        store.pool().clone(),
+        AllowedPolicy {
+            debt_limit: RefuseWhen::Above,
+            balance: RefuseWhen::Never,
+            member_cap: RefuseWhen::Never,
+        },
+    );
+    // o2 holds nothing, owes nothing, and has a limit of zero and a cap of zero for m1.
+    let limit = json!({"owner": "o2", "currency": "EUR", "limitMicros": "0"});
+    ok(&procedure(
+        &strict,
+        "setDebtLimit",
+        Some(OPERATOR),
+        Some("limit-o2"),
+        limit,
+    )
+    .await);
+    let cap = json!({"owner": "o2", "currency": "EUR", "member": "m1", "capMicros": "0"});
+    ok(&procedure(&strict, "setMemberCap", Some(OPERATOR), Some("cap-o2"), cap).await);
+
+    let ask = json!({"owner": "o2", "currency": "EUR", "member": "m1"});
+    let refused = procedure(&strict, "getAllowed", Some(PRODUCER), None, ask.clone()).await;
+    ok(&refused);
+    assert_eq!(
+        (&refused.body["allowed"], &refused.body["refused"]),
+        (&json!(false), &json!("debt_limit")),
+        "at_or_above: debt 0 >= limit 0, no special case"
+    );
+    let allowed = procedure(&lenient, "getAllowed", Some(PRODUCER), None, ask.clone()).await;
+    ok(&allowed);
+    assert_eq!(
+        (&allowed.body["allowed"], &allowed.body["refused"]),
+        (&json!(true), &Value::Null),
+        "above: 0 is not above 0; balance and member_cap: never"
+    );
+    // Each check alone, the others `never`: each mode reaches the check it names, and only that one.
+    use RefuseWhen::{AtOrAbove, Never};
+    for (policy, reason) in [
+        ((AtOrAbove, Never, Never), "debt_limit"),
+        ((Never, AtOrAbove, Never), "balance"),
+        ((Never, Never, AtOrAbove), "member_cap"),
+    ] {
+        let alone = app_with(
+            ledger.clone(),
+            None,
+            store.pool().clone(),
+            AllowedPolicy {
+                debt_limit: policy.0,
+                balance: policy.1,
+                member_cap: policy.2,
+            },
+        );
+        let answer = procedure(&alone, "getAllowed", Some(PRODUCER), None, ask.clone()).await;
+        ok(&answer);
+        assert_eq!(
+            answer.body["refused"], reason,
+            "{policy:?}: {}",
+            answer.text
+        );
+    }
+    let facts = |body: &Value| {
+        let mut body = body.clone();
+        body.as_object_mut().unwrap().remove("allowed");
+        body.as_object_mut().unwrap().remove("refused");
+        body
+    };
+    assert_eq!(facts(&refused.body), facts(&allowed.body));
+    assert_eq!(
+        facts(&allowed.body),
+        json!({
+            "balanceMicros": "0", "availableMicros": "0", "debtMicros": "0", "debtLimitMicros": "0",
+            "pastLimit": false, "memberSpentMicros": "0", "memberCapMicros": "0", "memberRemainingMicros": "0"
+        })
+    );
+    // A mode in the request is not an argument of the procedure: never obeyed.
+    let mut chosen = ask.clone();
+    chosen["debtLimitMode"] = json!("never");
+    let answer = procedure(&strict, "getAllowed", Some(PRODUCER), None, chosen).await;
+    ok(&answer);
+    assert_eq!(answer.body, refused.body, "the caller's choice is ignored");
 }

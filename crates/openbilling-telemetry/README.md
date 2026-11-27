@@ -81,7 +81,7 @@ Names below are OTLP names; a Prometheus-compatible store has them as `openbilli
 | `openbilling.queue.backlog` | gauge | none | Events received and not yet decided |
 | `openbilling.queue.oldest_age` | gauge, s | none | Age of the oldest of them |
 | `openbilling.ledger.postings` | counter | `kind` (`usage_debit`, `credit`, `allowance`, `reversal`) | Transactions booked; replays not counted |
-| `openbilling.allowed.checks` | counter | `verdict` (`allowed`, `refused`), `check` (`balance`, `member_cap`, `none`, `other`) | `getAllowed` verdicts. The service has one mode; "mode" is not a label |
+| `openbilling.allowed.checks` | counter | `verdict` (`allowed`, `refused`), `check` (`debt_limit`, `balance`, `member_cap`, `none`, `other`), `mode` (`at_or_above`, `above`, `never`: the deployer's comparison for that check; `none` when allowed) | `getAllowed` verdicts |
 | `openbilling.errors` | counter | `class` (`invalid`, `conflict`, `unavailable`, `internal`), `source` (`api`, `drain`, `partitions`) | Errors by class |
 | `http.server.request.duration` | histogram, s | `method`, `route`, `procedure`, `status` (`2xx` …) | Requests |
 | `db.client.operation.duration` | histogram, s | `operation` (a closed list, else `other`) | Ledger database operations |

@@ -73,9 +73,18 @@ holds both the data and the rules that keep it right, and a second implementatio
     configuration: labels `promo` then `main`; lots `allowance`, then `promotion` by expiry, then `adjustment` and
     `payment` oldest first.
 13. **What finds no credit is debt**, unless it would pass the owner's debt limit in the currency, or the largest
-    amount: then the event is refused `limit` and moves nothing.
+    amount: then the event is refused `limit` and moves nothing. *Amended 2026-11-27, the owner's decision "Always
+    book as debt" (ADR 0001, amended, E1 to E3): what finds no credit is debt whatever the limit; only a debt past
+    the largest amount is refused, as `overflow`. The limit refuses new calls (`allowed` answers `debt_limit`) and
+    flags the owner (`ob_past_debt_limit`).* *Amended 2026-11-27, the owner's decision "Its not the role of this
+    service to judge that" (ADR 0001, amended, F1 to F4): `allowed` compares the debt with the limit as the
+    deployer's configuration file says (`at_or_above` by default, `above` or `never`), with no special case for a
+    limit of zero, and answers the debt, the limit and the flag whatever it decides.*
 14. **A member cap** applies per owner, currency, member and calendar month (UTC). It is a read for whoever serves the
-    usage (`allowed`), not a refusal of the debit: the usage already happened.
+    usage (`allowed`), not a refusal of the debit: the usage already happened. *(Amended 2026-11-27: the debt limit
+    now works the same way, point 13.)* *Amended 2026-11-27 (ADR 0001, F1 to F3): the cap is compared as the
+    deployer's configuration file says, as the limit is, and `allowed` answers the member's usage this month, the cap
+    and what is left whatever it decides; so is the balance check (the debt against the drawable credit).*
 
 ### Where the rules live
 
@@ -120,8 +129,8 @@ sequenceDiagram
     loop each claimed event, owner by owner
         alt no account in its currency
             DB->>DB: outcome refused, unknown_account
-        else the debt would pass its limit
-            DB->>DB: outcome refused, limit
+        else the debt would pass the largest amount
+            DB->>DB: outcome refused, overflow
         else
             DB->>DB: draw accounts by label rank, lots by kind rank, expiry, age
             DB->>DB: the rest is debt; revenue gets the whole amount
@@ -174,6 +183,8 @@ is the sum of its entries.
 - **A promotion may reuse a payment's id** (ids are once-only within a source). A caller that wants one namespace
   must keep it.
 - **The member cap is not enforced by the ledger.** It is a read; whoever serves the usage must ask.
+- **The verdict of `allowed` is a deployment's choice** (amended 2026-11-27, ADR 0001, F2): two deployments of the
+  same release may answer the same numbers differently. A caller that needs one rule everywhere reads the numbers.
 
 ## Alternatives rejected
 

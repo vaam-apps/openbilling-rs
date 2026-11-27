@@ -10,6 +10,52 @@ The refusals values cannot say. Each names the value to change. Run before the c
     {{- fail "openbilling.database.key: name the key of that Secret that holds the URL" -}}
   {{- end -}}
 
+  {{- /* The token verifier: the issuer and the audience together, or neither (as the binary refuses at start). */ -}}
+  {{- $auth := dig "auth" dict (.Values.openbilling | default dict) -}}
+  {{- $issuer := trim (toString (dig "issuer" "" $auth)) -}}
+  {{- $audience := trim (toString (dig "audience" "" $auth)) -}}
+  {{- if and $issuer (not $audience) -}}
+    {{- fail "openbilling.auth.audience: set it with openbilling.auth.issuer, or set neither" -}}
+  {{- end -}}
+  {{- if and $audience (not $issuer) -}}
+    {{- fail "openbilling.auth.issuer: set it with openbilling.auth.audience, or set neither" -}}
+  {{- end -}}
+  {{- if not $issuer -}}
+    {{- range $name := list "jwksUrl" "rolesClaim" "roleMap" -}}
+      {{- if trim (toString (dig $name "" $auth)) -}}
+        {{- fail (printf "openbilling.auth.%s: needs openbilling.auth.issuer and openbilling.auth.audience" $name) -}}
+      {{- end -}}
+    {{- end -}}
+  {{- end -}}
+  {{- if and $issuer (not (regexMatch "^https://|^http://(127\\.[0-9.]+|localhost|\\[::1\\])([:/]|$)" $issuer)) -}}
+    {{- fail "openbilling.auth.issuer: https, or http to a loopback address" -}}
+  {{- end -}}
+
+  {{- /* The configuration file (OPENBILLING_CONFIG): what the binary takes, refused here as it refuses it at start.
+  The file holds policy only; secrets and endpoints are environment variables. */ -}}
+  {{- $config := dig "config" dict (.Values.openbilling | default dict) -}}
+  {{- if not (kindIs "map" $config) -}}
+    {{- fail "openbilling.config: a map; it holds only `allowed`" -}}
+  {{- end -}}
+  {{- range $key, $_ := $config -}}
+    {{- if ne $key "allowed" -}}
+      {{- fail (printf "openbilling.config.%s: not a key of the configuration file, which holds only `allowed`; secrets and endpoints are environment variables" $key) -}}
+    {{- end -}}
+  {{- end -}}
+  {{- $allowed := dig "allowed" dict $config -}}
+  {{- if not (kindIs "map" $allowed) -}}
+    {{- fail "openbilling.config.allowed: a map of debt_limit, balance and member_cap" -}}
+  {{- end -}}
+  {{- $checks := list "debt_limit" "balance" "member_cap" -}}
+  {{- range $key, $mode := $allowed -}}
+    {{- if not (has $key $checks) -}}
+      {{- fail (printf "openbilling.config.allowed.%s: not a check; the checks are debt_limit, balance and member_cap" $key) -}}
+    {{- end -}}
+    {{- if not (has (toString $mode) (list "at_or_above" "above" "never")) -}}
+      {{- fail (printf "openbilling.config.allowed.%s: at_or_above, above or never" $key) -}}
+    {{- end -}}
+  {{- end -}}
+
   {{- $otel := dig "otel" dict (.Values.openbilling | default dict) -}}
   {{- $endpoint := toString (dig "endpoint" "" $otel) -}}
   {{- if and $endpoint (not (regexMatch "^https?://[^/@ ]+(/[^ ]*)?$" $endpoint)) -}}

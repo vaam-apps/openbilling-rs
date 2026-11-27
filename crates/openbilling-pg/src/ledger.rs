@@ -8,11 +8,12 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use openbilling_core::{
-    AccountBalance, AccountId, AccountLabel, Allowed, Amount, Balance, CreditId, CreditTarget,
-    Credited, CurrencyCode, Decided, DrainReport, EventId, EventOutcome, Intake, IntakeReport,
-    LedgerConfig, LedgerError, LedgerStore, Loaded, LotKind, LotView, MemberId, NewAccount,
-    NotAllowed, Opened, OutcomeView, OwnerId, PriceBook, PriceVersionId, PriceVersionView, Rated,
-    RawEvent, RefusalReason, Reversal, Timestamp, UsageEvent, UtcDay, UtcMonth, Window, WithinKind,
+    AccountBalance, AccountId, AccountLabel, Allowed, AllowedPolicy, Amount, Balance, CreditId,
+    CreditTarget, Credited, CurrencyCode, Decided, DrainReport, EventId, EventOutcome, Intake,
+    IntakeReport, LedgerConfig, LedgerError, LedgerStore, Loaded, LotKind, LotView, MemberId,
+    NewAccount, NotAllowed, Opened, OutcomeView, OwnerId, PriceBook, PriceVersionId,
+    PriceVersionView, Rated, RawEvent, RefusalReason, Reversal, Timestamp, UsageEvent, UtcDay,
+    UtcMonth, Window, WithinKind,
 };
 use openbilling_telemetry::{Counter, Gauge, Histogram, global};
 use sqlx::PgPool;
@@ -225,6 +226,20 @@ type DrainRow = (String, i32, String, Option<String>, i64, Option<String>);
 
 /// An outcome as `PgLedger::outcome` reads it: occurrence day, state, reason, amount, price book version.
 type OutcomeRow = (i32, String, Option<String>, i64, Option<String>);
+
+/// A row of `ob_allowed`: the verdict, the net balance, what the lots hold, the debt, the limit, the flag, the
+/// member's usage, cap and remainder.
+type AllowedRow = (
+    Option<String>,
+    i64,
+    i64,
+    i64,
+    Option<i64>,
+    bool,
+    i64,
+    Option<i64>,
+    Option<i64>,
+);
 
 fn amount(micros: i64) -> Result<Amount, LedgerError> {
     Amount::from_micros(micros).map_err(|_| corrupt())
@@ -677,19 +692,28 @@ impl LedgerStore for PgLedger {
         currency: &CurrencyCode,
         member: &MemberId,
         at: Timestamp,
+        policy: AllowedPolicy,
     ) -> Result<Allowed, LedgerError> {
-        let (refused, balance, remaining): (Option<String>, i64, Option<i64>) = sqlx::query_as(
-            "SELECT o_refused, o_balance, o_member_remaining FROM ob_allowed($1, $2, $3, $4)",
+        let row: AllowedRow = sqlx::query_as(
+            "SELECT o_refused, o_balance, o_available, o_debt, o_debt_limit, o_past_limit, o_member_spent, \
+                    o_member_cap, o_member_remaining \
+                 FROM ob_allowed($1, $2, $3, $4, $5, $6, $7)",
         )
         .bind(owner.as_str())
         .bind(currency.as_str())
         .bind(member.as_str())
         .bind(at.unix_micros())
+        .bind(policy.debt_limit.as_str())
+        .bind(policy.balance.as_str())
+        .bind(policy.member_cap.as_str())
         .fetch_one(&self.pool)
         .await
         .map_err(ledger_error)?;
+        let (refused, balance, available, debt, debt_limit, past_limit, spent, cap, remaining) =
+            row;
         let refused = match refused.as_deref() {
             None => None,
+            Some("debt_limit") => Some(NotAllowed::DebtLimit),
             Some("balance") => Some(NotAllowed::Balance),
             Some("member_cap") => Some(NotAllowed::MemberCap),
             Some(_) => return Err(corrupt()),
@@ -697,6 +721,12 @@ impl LedgerStore for PgLedger {
         Ok(Allowed {
             refused,
             balance: amount(balance)?,
+            available: amount(available)?,
+            debt: amount(debt)?,
+            debt_limit: debt_limit.map(amount).transpose()?,
+            past_limit,
+            member_spent: amount(spent)?,
+            member_cap: cap.map(amount).transpose()?,
             member_remaining: remaining.map(amount).transpose()?,
         })
     }

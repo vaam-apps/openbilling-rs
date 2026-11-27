@@ -20,6 +20,8 @@ is a plain parameterized query (the owner's decision of 2026-11-27). It implemen
 | `…004_ledger_functions.sql` | The payload hash, `ob_configure`, `ob_open_account`, `ob_set_debt_limit`, `ob_set_member_cap`, `ob_draw`, `ob_add_debt`, `ob_repay_from_lot`, `ob_credit`, `ob_reverse`, `ob_grant_allowance`, `ob_intake`, `ob_drain`, and the reads `ob_balance_of`, `ob_allowed`, `ob_lots_of`, `ob_outcome_of` (dropped by `…006`), `ob_daily_usage` |
 | `…005_rated_events.sql` | Raw events ([ADR 0004](../../docs/adr/0004-a-versioned-price-book-in-sql.md)): `meter`, `quantity`, `dimensions` and `price_version` on the event and its outcome, the partial index of rated events that occurred after they were received, the guards again, and the raw payload hash (`ob_raw_payload_canonical`, `ob_raw_payload_hash`) |
 | `…006_price_book.sql` | The price book: `ob_price_version`, `ob_price_meter`, `ob_price_dimension`, `ob_price`; the content hash, the seal and append-only triggers, `ob_price_back_dated`; `ob_load_price_list`; `ob_round_half_even`, `ob_price_of`, `ob_rate`; `ob_intake` and `ob_drain` again, with raw events |
+| `…007_always_book_debt.sql` | The owner's decision of 2026-11-27, "Always book as debt": `ob_drain` again, with no `limit` refusal (what finds no credit is debt whatever the limit; a debt past the largest amount is `overflow`); `ob_allowed` again, refusing `debt_limit` first; the view `ob_past_debt_limit`, the owners flagged |
+| `…008_allowed_policy.sql` | The owner's decision of 2026-11-27, "Its not the role of this service to judge that" (ADR 0001, amended, F1 to F4): the domain `ob_comparison` (`at_or_above`, `above`, `never`; anything else, or nothing, fails at the call), `ob_reached`, a plain comparison with no special case, and `ob_allowed` again, taking one mode per check (debt limit, balance, member cap) and answering the numbers beside the verdict: net balance, drawable credit, debt, limit, `past_limit`, the member's usage this month, cap and remainder |
 
 **Telemetry.** Every `LedgerStore` and `PriceBook` method, `prepare_partitions` and `queue_stats` runs in a
 `db.query` span (`db.operation`, never a parameter), and records into `openbilling-telemetry`'s registry: events at
@@ -35,7 +37,7 @@ class `OB`; `src/sqlstate.rs` maps each one, in one table, to a refusal or an er
 
 - `PgStore::connect(url)` and `connect_with(options, max_connections)` open a pool and check the server version;
   `migrate()` applies `migrator()`; `server_version_num()`, `ping()`, `pool()`, `close()`.
-- `migrator()`: the four migrations, embedded. sqlx sends each file whole as one simple-protocol query, so no
+- `migrator()`: the eight migrations, embedded. sqlx sends each file whole as one simple-protocol query, so no
   `BEGIN ATOMIC` body is split on `;`.
 - `PgLedger::new(&store, LedgerSettings)` implements `openbilling_core::LedgerStore` and `openbilling_core::PriceBook`.
   `load_price_list` parses the YAML (`src/price_list.rs`) and calls `ob_load_price_list`; `rate` calls `ob_rate`;
@@ -66,9 +68,9 @@ cannot build two semver-compatible versions of one crate. Move them together.
 |---|---|
 | Unit tests in `src/` (error classes, every SQLSTATE's meaning, the table and the migrations naming the same codes, DETAIL parsing of events and of positions, a malformed URL, the YAML parser's lines and refusals, a refusal that quotes nothing of the list) | nothing |
 | `tests/connect.rs` (connect, the server version, ping, close) | `OPENBILLING_TEST_DATABASE_URL`, a PostgreSQL 19 or later |
-| `tests/ledger.rs`: the whole conformance suite of `openbilling-testkit`, 26 cases, each on a fresh database | the same, and a user that may create databases |
+| `tests/ledger.rs`: the whole conformance suite of `openbilling-testkit`, 27 cases, each on a fresh database | the same, and a user that may create databases |
 | `tests/price_book.rs`: the price book's conformance suite, 9 cases, each on a fresh database | the same |
-| `tests/sql.rs`: migrations apply once and every function answers (and none is untested), the payload hash test vector, append-only tables, an unbalanced transaction cannot commit, the cap whoever writes, a drain that dies books nothing, a replay is not blocked by a held row, a missing partition is unavailable, a closed pool is unavailable, intake wakes a listener, refusals reach the caller with their class; the raw payload hash test vector, half-to-even rounding in SQL, a version cannot be modified (append-only, sealed, its hash, back-dated even when written directly), a load waits for an intake that is rating, the price book's refusals reach the caller with their rule, class and position | the same |
+| `tests/sql.rs`: migrations apply once and every function answers (and none is untested), the payload hash test vector, append-only tables, an unbalanced transaction cannot commit, the cap whoever writes, a drain that dies books nothing, a replay is not blocked by a held row, a missing partition is unavailable, a closed pool is unavailable, each comparison of `ob_reached` at its boundaries and an unknown or missing mode failing at the call of `ob_allowed`, intake wakes a listener, refusals reach the caller with their class; the raw payload hash test vector, half-to-even rounding in SQL, a version cannot be modified (append-only, sealed, its hash, back-dated even when written directly), a load waits for an intake that is rating, the price book's refusals reach the caller with their rule, class and position | the same |
 
 The database tests skip (passing, with `skipped:` on stderr) when `OPENBILLING_TEST_DATABASE_URL` is unset. Under
 `OPENBILLING_TEST_REQUIRE_DB=1` an unset variable is a failure instead; CI sets it. Each test creates its own database,

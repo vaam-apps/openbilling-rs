@@ -43,7 +43,7 @@ use cratestack::axum::response::{IntoResponse, Response};
 use cratestack::axum::routing::{get, post};
 use cratestack::idempotency::IdempotencyLayer;
 use cratestack::{CratestackError, JsonCodec, SqlxIdempotencyStore};
-use openbilling_core::{LedgerStore, PaymentProvider};
+use openbilling_core::{LedgerStore, PaymentProvider, PriceBook};
 
 pub use procedures::{Procedures, Services};
 
@@ -56,7 +56,7 @@ pub const API_PREFIX: &str = "/v1";
 pub const WEBHOOK_PATH: &str = "/webhooks/payments";
 
 /// The mutation procedures: each needs an `Idempotency-Key` header. Held equal to the schema by a test.
-pub const MUTATIONS: [&str; 7] = [
+pub const MUTATIONS: [&str; 11] = [
     "configure",
     "openAccount",
     "grantCredit",
@@ -64,6 +64,10 @@ pub const MUTATIONS: [&str; 7] = [
     "startTopUp",
     "reconcilePayment",
     "reconcileRefund",
+    "recordRawUsage",
+    "setDebtLimit",
+    "setMemberCap",
+    "loadPriceList",
 ];
 
 /// The read procedures, which need none.
@@ -222,7 +226,7 @@ pub fn router<L, P, A>(
     auth: A,
 ) -> Router
 where
-    L: LedgerStore + 'static,
+    L: PriceBook + 'static,
     P: PaymentProvider + 'static,
     A: cratestack::AuthProvider,
 {
