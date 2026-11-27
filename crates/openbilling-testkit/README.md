@@ -32,15 +32,16 @@ the port, with the store's own clock, and assume the default window (seven days,
 | `allowed_refuses_at_zero_or_below` | Zero and below are refused, above is allowed; an unknown owner reads zero; an expired lot is not spendable |
 | `the_member_cap_is_per_owner_currency_member_and_month` | The cap counts a member's applied usage in a UTC month, per currency; it can be removed |
 | `an_event_outside_the_window_refuses_the_batch_naming_it` | Too old and too far ahead refuse the batch naming only that event; just inside both edges is accepted |
-| `sums_that_overflow_are_refused_and_a_debt_never_overflows` | An owner's sum past the largest amount refuses the batch naming its events; a debit that would overflow the debt is `limit` |
+| `sums_that_overflow_are_refused_and_a_debt_never_overflows` | An owner's sum past the largest amount refuses the batch naming its events; a debit that would overflow the debt is `overflow` |
 | `a_repeat_counts_once_and_a_differing_payload_is_refused` | A differing copy in a batch, or a stored id with another payload, refuses the batch naming it |
 | `the_same_id_on_another_day_is_refused_as_id_reused` | The first received wins, in one drain or a later one |
 | `an_owner_without_an_account_in_the_currency_is_refused` | `unknown_account`, and nothing moves |
-| `a_debit_past_the_debt_limit_is_refused` | `limit` when the debt would pass the limit; none means unlimited |
+| `a_debit_past_the_debt_limit_is_booked_as_debt_and_flags_the_owner` | "Always book as debt": every debit applied, the debt past the limit; `allowed` answers `debt_limit` at or past it under the default policy, `balance` under it; credit repays and lifts it; none means unlimited |
+| `allowed_compares_as_the_policy_says` | Each check (debt limit, balance, member cap) under `at_or_above`, `above` and `never` at its boundaries: a bound of zero with nothing used, used equal to the bound, one over; the checks in their order; the numbers the same whatever the policy (the owner's decision of 2026-11-27, ADR 0001, amended, F1 to F3) |
 | `the_allowance_is_granted_once_per_account_and_month` | Once per account and month; another month is not spendable now; it repays debt first |
 | `adjustments_add_and_take_credit` | Positive opens a lot; negative takes from its account's lots in order, the rest is debt; both once-only |
 | `accounts_are_once_only_and_one_per_owner_currency_and_label` | Replay, conflicts, unknown currency and label, a credit to no account |
-| `daily_usage_sums_applied_debits_per_utc_day` | Per UTC day of occurrence; refused events not counted |
+| `daily_usage_sums_applied_debits_per_utc_day` | Per UTC day of occurrence; a refused event (`id_reused`) not counted |
 | `invalid_amounts_and_configurations_are_refused` | Wrong signs per source and kind, malformed configurations, more than 1 000 events |
 
 ## The price book's cases

@@ -1,0 +1,4 @@
+# expect: openbilling.config.listen: not a key of the configuration file, which holds only `allowed`
+openbilling:
+  config:
+    listen: 0.0.0.0:8080

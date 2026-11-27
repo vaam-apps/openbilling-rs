@@ -1,0 +1,4 @@
+# expect: openbilling.auth.audience: set it with openbilling.auth.issuer, or set neither
+openbilling:
+  auth:
+    issuer: https://idp.example/realms/billing

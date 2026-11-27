@@ -78,7 +78,12 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - run: cargo test --workspace --locked
+      - run: cargo test --workspace --locked --exclude openbilling
+      # The service binary's tests apart, so the end-to-end suite (`e2e/`, the `openbilling` package's `e2e`
+      # target) is a step of its own in the log: the real `openbilling serve` as a process against this job's
+      # PostgreSQL 19, driven only through its HTTP API and webhook. Like every step, it gates the merge.
+      - name: The service binary's tests and the end-to-end suite
+        run: cargo test -p openbilling --locked
 
   api-contract:
     name: API contract (CrateStack)
@@ -163,7 +168,7 @@ jobs:
       # The `smoke` stage builds the static binary `--locked` (and fails if it is not static) and runs `--version` and
       # `--help` on the runtime base, distroless/static, as the runtime user. Read-only cache: main's builds (release.yml) write it.
       - name: Smoke test
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: docker/openbilling/Dockerfile
@@ -171,15 +176,45 @@ jobs:
           platforms: ${{ matrix.docker }}
           push: false
           cache-from: type=gha,scope=openbilling-${{ matrix.arch }}
+      # The runtime stage, loaded into the runner's Docker so the next step can run it.
       - name: The runtime stage builds
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: docker/openbilling/Dockerfile
           target: runtime
           platforms: ${{ matrix.docker }}
+          load: true
+          tags: openbilling:ci
           push: false
           cache-from: type=gha,scope=openbilling-${{ matrix.arch }}
+      # `--version` and `--help` never touch the network or a database. This runs `serve` itself from the static image:
+      # it connects, applies the migrations, listens, and answers its health routes, on this runner's architecture
+      # (the musl binary is otherwise never run against a database: the end-to-end suite runs the glibc host build).
+      - name: Serve from the image against PostgreSQL 19
+        env:
+          # The same pin as the `test` job's service: tag and digest, the multi-arch index of `19.0`.
+          POSTGRES_IMAGE: postgres:19.0@sha256:4ea94de574c17f0372722806c949757050fbb1cd7648410fe45d6bba275cc00e
+        run: |
+          set -euo pipefail
+          # A throwaway database for this job only, on the loopback; the service shares the host's network to reach it.
+          docker run -d --name pg --network host -e POSTGRES_HOST_AUTH_METHOD=trust "$POSTGRES_IMAGE"
+          for _ in $(seq 1 60); do docker exec pg pg_isready -U postgres -h 127.0.0.1 && break; sleep 1; done
+          docker run -d --name ob --network host \
+            -e OPENBILLING_DATABASE_URL=postgres://postgres@127.0.0.1:5432/postgres \
+            -e OPENBILLING_LISTEN=127.0.0.1:8080 \
+            openbilling:ci serve
+          ok=0
+          for _ in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8080/readyz > /dev/null 2>&1; then ok=1; break; fi
+            sleep 1
+          done
+          docker logs ob
+          [ "$ok" = 1 ] || { echo "::error::the static image's serve never answered /readyz"; exit 1; }
+          curl -fsS http://127.0.0.1:8080/healthz
+          # SIGTERM is how Kubernetes stops a pod: the service must exit 0.
+          docker stop -t 20 ob > /dev/null
+          [ "$(docker inspect -f '{{.State.ExitCode}}' ob)" = 0 ] || { echo "::error::serve did not exit 0 on SIGTERM"; exit 1; }
 
   chart:
     name: Helm chart
@@ -193,7 +228,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+      - uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5.1.0
         with:
           version: v4.3.2
       - name: Install kubeconform

@@ -8,6 +8,7 @@ use anyhow::{Context, Result};
 use openbilling_core::{Classify, LedgerStore};
 use openbilling_http::auth::{BearerAuth, RefuseAll};
 use openbilling_http::{Services, prepare, router};
+use openbilling_jwt::JwtVerifier;
 use openbilling_pg::{LedgerSettings, PgLedger, PgStore, Woken};
 use openbilling_vpay::VpayProvider;
 
@@ -136,14 +137,37 @@ pub async fn serve(settings: Settings) -> Result<()> {
             "{WARN}openbilling:{WARN:#} no payment provider configured; top-ups and webhooks answer 503"
         );
     }
+    let allowed = settings.allowed;
     anstream::eprintln!(
-        "{WARN}openbilling:{WARN:#} no token verifier configured; every /v1 call answers 401 (ADR 0003, still open)"
+        "{ACCENT}openbilling:{ACCENT:#} getAllowed refuses on debt_limit {}, balance {}, member_cap {}",
+        allowed.debt_limit.as_str(),
+        allowed.balance.as_str(),
+        allowed.member_cap.as_str()
     );
     let services = Arc::new(Services {
         ledger: ledger.clone(),
         provider,
+        allowed,
     });
-    let app = router(services, store.pool().clone(), BearerAuth::new(RefuseAll));
+    let app = match settings.auth {
+        Some(config) => {
+            let verifier =
+                JwtVerifier::new(config).context("the token verifier's configuration")?;
+            anstream::eprintln!(
+                "{ACCENT}openbilling:{ACCENT:#} /v1 accepts the bearer tokens of {} for the audience {}",
+                verifier.config().issuer,
+                verifier.config().audience
+            );
+            router(services, store.pool().clone(), BearerAuth::new(verifier))
+        }
+        None => {
+            anstream::eprintln!(
+                "{WARN}openbilling:{WARN:#} no token issuer configured; every /v1 call answers 401 \
+                 (set OPENBILLING_AUTH_ISSUER and OPENBILLING_AUTH_AUDIENCE)"
+            );
+            router(services, store.pool().clone(), BearerAuth::new(RefuseAll))
+        }
+    };
 
     let stop = StopSignals::register();
     let drain = tokio::spawn(drain_forever(ledger.clone()));

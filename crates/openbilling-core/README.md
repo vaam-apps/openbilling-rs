@@ -24,8 +24,9 @@ in and out of them; its constructors only hold what a type is (an id's alphabet,
 | `RawEvent`, `Quantity`, `Dimensions` | A raw usage event: a quantity (a whole number, zero or more) of a meter, with its dimensions, rated at intake (ADR 0004) |
 | `Rated`, `Loaded`, `PriceVersionId`, `PriceVersionView` | What the price book answers: an amount and the version that priced it; a loaded version, its time and content hash, and whether it was a replay |
 | `Opened`, `Credited`, `IntakeReport`, `DrainReport`, `Balance`, `Allowed`, `LotView`, `OutcomeView` | What it answers. A decision and an outcome name the price book version of a raw event |
-| `EventOutcome`, `RefusalReason` | What a drain decided: `applied`, or `refused` with `limit`, `no_price`, `unknown_account` or `id_reused` |
-| `LedgerStore` | The storage port: a trait whose methods return `Send` futures. `openbilling-pg` implements it; `openbilling-testkit` holds its conformance suite |
+| `EventOutcome`, `RefusalReason` | What a drain decided: `applied`, or `refused` with `no_price` (reserved), `unknown_account`, `id_reused` or `overflow`. No `limit`: usage is booked as debt past the limit (ADR 0001, amended 2026-11-27, E1) |
+| `AllowedPolicy`, `RefuseWhen`, `NotAllowed` | How `LedgerStore::allowed` turns its numbers into a verdict: one `RefuseWhen` per check (`debt_limit`, `balance`, `member_cap`), each `AtOrAbove` (the default), `Above` or `Never`; the deployer's choice, which the store only compares by (the owner's decision of 2026-11-27, ADR 0001, amended, F1 to F4). `Allowed` carries the numbers whatever the verdict |
+| `LedgerStore` | The storage port: a trait whose methods return `Send` futures. `openbilling-pg` implements it; `openbilling-testkit` holds its conformance suite. `allowed` takes an `AllowedPolicy` (since 2026-11-27: a change every implementation must follow) |
 | `PriceBook` | The price book's port, an extension of `LedgerStore`: `load_price_list` (YAML), `price_versions`, `rate`, `intake_raw` |
 | `LedgerError`, `Refusal`, `Rule`, `ListPosition` | The port's error: a refusal by a named rule (which, for a batch, names the offending events, and for a price list its line, column and key) or a fault of the store with its class |
 | `PaymentProvider` | The payment provider port ([ADR 0003](../../docs/adr/0003-credits-from-a-payment-provider.md)): create a payment, read a payment, read a refund, verify a webhook. `openbilling-vpay` implements it; `openbilling-testkit` holds its conformance suite |
@@ -50,6 +51,6 @@ between them.
 
 `cargo test -p openbilling-core`: unit tests next to each module (ids and their alphabets, the price book's names,
 amounts, quantities, dimensions, version ids, the calendar, the default lot order and window, refusal messages,
-positions and classes, the answer types, idempotency keys, payment refusals and their classes, webhook headers, a
+positions and classes, the answer types, the comparisons' names and the default policy, idempotency keys, payment refusals and their classes, webhook headers, a
 hidden checkout URL). No database, no environment variable. `settle_*` is tested where both ports have an
 implementation: `openbilling-vpay`'s `tests/settle.rs` and `openbilling-http`'s `tests/flow.rs`.

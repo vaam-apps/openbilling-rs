@@ -11,7 +11,8 @@
 //! - the configuration: [`LedgerConfig`], [`LotOrder`], [`Window`], [`CreditSource`], [`LotKind`];
 //! - [`UsageEvent`], [`Credit`], [`Reversal`] and what the ledger answers for them;
 //! - [`EventOutcome`] and [`RefusalReason`], what a drain decided about an event;
-//! - the storage port, [`LedgerStore`], with [`LedgerError`] and its [`Refusal`]s;
+//! - the storage port, [`LedgerStore`], with [`LedgerError`] and its [`Refusal`]s, and [`AllowedPolicy`] and
+//!   [`RefuseWhen`], the deployer's choice of how [`LedgerStore::allowed`] compares;
 //! - the payment provider port, [`PaymentProvider`] (ADR 0003), with [`PaymentError`], and [`settle_payment`] and
 //!   [`settle_refund`], which book what a provider, read back, says succeeded;
 //! - the price book (ADR 0004): [`RawEvent`], [`Quantity`], [`Dimensions`], [`MeterId`], [`Rated`], [`Loaded`],
@@ -54,8 +55,9 @@ pub use price::{
 pub use refusal::{LedgerError, ListPosition, NAMED_IN_MESSAGE, Refusal, Rule};
 pub use settle::{SettleError, Settled, settle_hint, settle_payment, settle_refund};
 pub use store::{
-    AccountBalance, Allowed, Balance, Credit, CreditTarget, Credited, Decided, DrainReport,
-    LedgerStore, LotView, NewAccount, NotAllowed, Opened, OutcomeView, Reversal,
+    AccountBalance, Allowed, AllowedPolicy, Balance, Credit, CreditTarget, Credited, Decided,
+    DrainReport, LedgerStore, LotView, NewAccount, NotAllowed, Opened, OutcomeView, RefuseWhen,
+    Reversal,
 };
 pub use time::{Timestamp, UtcDay, UtcMonth};
 pub use usage::{Intake, IntakeReport, UsageEvent};

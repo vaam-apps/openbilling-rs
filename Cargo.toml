@@ -6,11 +6,12 @@ members = [
     "crates/openbilling-testkit",
     "crates/openbilling-vpay",
     "crates/openbilling-http",
+    "crates/openbilling-jwt",
     "bin/openbilling",
 ]
 
 [workspace.package]
-version = "0.1.1" # x-release-please-version
+version = "0.3.0" # x-release-please-version
 edition = "2024"
 # The MSRV: CrateStack 0.20.6 declares rust-version 1.98.0 (sqlx 0.9 needs 1.94). CI's MSRV job checks it.
 rust-version = "1.98"
@@ -24,6 +25,7 @@ openbilling-testkit = { path = "crates/openbilling-testkit" }
 openbilling-pg = { path = "crates/openbilling-pg" }
 openbilling-vpay = { path = "crates/openbilling-vpay" }
 openbilling-http = { path = "crates/openbilling-http" }
+openbilling-jwt = { path = "crates/openbilling-jwt" }
 
 anstream = "1.0.0"
 anstyle = "1.0.14"
@@ -33,12 +35,22 @@ clap = { version = "4.6.7", default-features = false, features = ["std", "derive
 # CrateStack, the external API (ADR 0003). Its crates require each other exactly; it pins sqlx `=0.9.0`.
 cratestack = { package = "cratestack-pg", version = "=0.20.6", default-features = false, features = ["postgres", "codec-json"] }
 axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "tokio", "query"] }
+# base64url for JOSE: the version jsonwebtoken 11 uses, already in the lockfile.
+base64 = "0.22.1"
 hex = "0.4.3"
+# JWT claims validation (ADR 0003, amended 2026-11-27), with no crypto backend of its own: `openbilling-jwt` installs
+# one on ring, the crypto rustls already uses here. Its `aws_lc_rs` backend would bring aws-lc-rs beside ring; its
+# `rust_crypto` backend brings `rsa` 0.9, under RUSTSEC-2023-0071 (patched only in 0.10; *verified 2026-11-27*,
+# rustsec/advisory-db `crates/rsa/RUSTSEC-2023-0071.md`), which `cargo deny` refuses. authkestra-resource 0.15.3
+# depends on exactly that backend, so it is not used.
+jsonwebtoken = { version = "11.1.0", default-features = false }
 # hmac 0.13 and sha2 0.11: the digest 0.11 line, which the lockfile already holds.
 hmac = "0.13.0"
 # reqwest 0.13 as CrateStack's client builds it: rustls with no provider of its own, so rustls uses the one the
 # workspace already holds (ring, through sqlx). One reqwest, and no aws-lc-rs.
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider"] }
+# ring: the provider rustls uses here, and the signature verifier of `openbilling-jwt`. Already in the lockfile.
+ring = "0.17.14"
 # rustls on ring: the provider the reqwest above uses, installed process-wide by `openbilling-vpay`.
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std"] }
 serde = { version = "1.0.229", default-features = false, features = ["std", "derive"] }

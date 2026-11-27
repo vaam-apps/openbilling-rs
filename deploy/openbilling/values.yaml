@@ -12,6 +12,40 @@ openbilling:
     existingSecret: openbilling-database
     # -- The key of that Secret that holds the URL.
     key: uri
+  # -- The token verifier (ADR 0003, amended 2026-11-27, D1 to D6): a JWT against one issuer's keys. Unset by
+  # default, and then every /v1 call answers 401 (`RefuseAll`): nothing is ever open by default. Set `issuer` and
+  # `audience` together, or neither; the other three need both. None of them is a secret.
+  auth:
+    # -- The issuer, exactly as tokens name it in `iss`; its keys are found through its discovery document
+    # (`<issuer>/.well-known/openid-configuration`). `https`, or `http` to a loopback address. OPENBILLING_AUTH_ISSUER.
+    issuer: ""
+    # -- The audience a token's `aud` must hold. OPENBILLING_AUTH_AUDIENCE.
+    audience: ""
+    # -- The issuer's JWKS URL, when its discovery document is not to be used. OPENBILLING_AUTH_JWKS_URL.
+    jwksUrl: ""
+    # -- The claim that holds the roles, a dotted path (`realm_access.roles` for Keycloak); empty is `roles`.
+    # OPENBILLING_AUTH_ROLES_CLAIM.
+    rolesClaim: ""
+    # -- How the issuer's role values map to openbilling's two roles: `value=operator,value=producer`; empty is
+    # each value as itself. OPENBILLING_AUTH_ROLE_MAP.
+    roleMap: ""
+  # -- The service's configuration file: the deployer's policy, never a secret or an endpoint (those are the
+  # environment's). Rendered as YAML into the ConfigMap `config`, mounted read-only at /etc/openbilling/config.yaml
+  # and named by OPENBILLING_CONFIG; a change rolls the pods. Refused when wrong by templates/_validate.tpl, as the
+  # binary refuses it at start. The owner's decision of 2026-11-27: the service reports the numbers, and the
+  # deployer decides here how `getAllowed` judges them.
+  config:
+    # -- One comparison per check of `getAllowed`, in the order they run: `at_or_above` refuses when what is used
+    # is at or above its bound, `above` when it is above it, `never` never (the numbers are reported either way).
+    allowed:
+      # -- The owner's debt against its debt limit. A limit of 0 refuses an owner who owes nothing under
+      # `at_or_above` (0 >= 0); `above` lets debt reach the limit.
+      debt_limit: at_or_above
+      # -- The owner's debt against its drawable credit: `at_or_above` refuses a net balance of 0 or below, `above`
+      # one below 0, `never` lets the debt limit alone decide.
+      balance: at_or_above
+      # -- A member's applied usage this month against their cap.
+      member_cap: at_or_above
 
 controllers:
   main:
@@ -38,9 +72,18 @@ controllers:
           - serve
         env:
           # The binary's own default is 127.0.0.1:8080, this machine only; a pod must listen on its address for the
-          # Service and the probes to reach it. Until a token verifier ships every /v1 call answers 401
-          # (ADR 0003); enable the NetworkPolicy below to choose who may connect.
+          # Service and the probes to reach it. Without `openbilling.auth` every /v1 call answers 401 (ADR 0003);
+          # enable the NetworkPolicy below to choose who may connect.
           OPENBILLING_LISTEN: "0.0.0.0:8080"
+          # The token verifier, from `openbilling.auth`. An empty value is unset to the binary, so the defaults
+          # render these empty and the service keeps refusing every /v1 call.
+          OPENBILLING_AUTH_ISSUER: "{{ .Values.openbilling.auth.issuer }}"
+          OPENBILLING_AUTH_AUDIENCE: "{{ .Values.openbilling.auth.audience }}"
+          OPENBILLING_AUTH_JWKS_URL: "{{ .Values.openbilling.auth.jwksUrl }}"
+          OPENBILLING_AUTH_ROLES_CLAIM: "{{ .Values.openbilling.auth.rolesClaim }}"
+          OPENBILLING_AUTH_ROLE_MAP: "{{ .Values.openbilling.auth.roleMap }}"
+          # The configuration file, from `openbilling.config` (the ConfigMap `config`, mounted below).
+          OPENBILLING_CONFIG: /etc/openbilling/config.yaml
           OPENBILLING_DATABASE_URL:
             valueFrom:
               secretKeyRef:
@@ -98,6 +141,22 @@ controllers:
           limits:
             memory: 256Mi
 
+# The configuration file: `openbilling.config` as YAML. Its checksum is on the pod, so a change rolls the pods.
+configMaps:
+  config:
+    enabled: true
+    data:
+      config.yaml: "{{ toYaml .Values.openbilling.config }}"
+
+persistence:
+  config:
+    type: configMap
+    identifier: config
+    globalMounts:
+      - path: /etc/openbilling/config.yaml
+        subPath: config.yaml
+        readOnly: true
+
 defaultPodOptions:
   # The image's user: distroless `nonroot`, uid and gid 65532.
   securityContext:
@@ -143,6 +202,7 @@ networkpolicies:
         - ports:
             - port: 5432
               protocol: TCP
+        # HTTPS: the payment provider, and the token issuer's discovery document and keys.
         - ports:
             - port: 443
               protocol: TCP
