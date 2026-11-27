@@ -19,7 +19,7 @@ does not answer) is exit 1, printed as `error: …`.
 **Configuration** is the environment, listed in `--help`: `OPENBILLING_DATABASE_URL` or
 `OPENBILLING_DATABASE_URL_FILE` (never printed), `OPENBILLING_LISTEN` (default `127.0.0.1:8080`, this machine
 only), the token verifier's `OPENBILLING_AUTH_ISSUER` and `OPENBILLING_AUTH_AUDIENCE` (both or neither; neither:
-every `/v1` call is a `401`, and `serve` says so on start) with the optional `OPENBILLING_AUTH_JWKS_URL`,
+every `/v1` call is a `401`, and `serve` says so on start; an empty value is unset) with the optional `OPENBILLING_AUTH_JWKS_URL`,
 `OPENBILLING_AUTH_ROLES_CLAIM` and `OPENBILLING_AUTH_ROLE_MAP` ([`openbilling-jwt`](../../crates/openbilling-jwt/README.md)),
 and the vpay adapter's `OPENBILLING_VPAY_*` (all of them, or none: without them top-ups and webhooks answer `503`).
 

@@ -47,9 +47,10 @@ From a clone (development), build the dependency first: `helm dependency build d
 | ServiceMonitor | Off, and of no use yet: openbilling serves no `/metrics`, so it would scrape a 404. Needs the Prometheus Operator's CRDs |
 
 There is no migration Job: the binary has no command that only migrates, and `serve` does it safely at start with any
-number of replicas. Every `/v1` call answers `401` until a token verifier ships
-([ADR 0003](../../docs/adr/0003-credits-from-a-payment-provider.md)); `/healthz`, `/readyz` and the payment
-provider's webhook answer.
+number of replicas. Without `openbilling.auth` every `/v1` call answers `401` (`RefuseAll`,
+[ADR 0003](../../docs/adr/0003-credits-from-a-payment-provider.md)); with an issuer and an audience, `/v1` takes the
+bearer JWTs that issuer signs for that audience. `/healthz`, `/readyz` and the payment provider's webhook answer
+either way.
 
 ## Values
 
@@ -60,13 +61,20 @@ see [values.yaml](values.yaml)), plus:
 |---|---|---|
 | `openbilling.database.existingSecret` | `openbilling-database` | The existing Secret with the database URL. Required |
 | `openbilling.database.key` | `uri` | Its key |
+| `openbilling.auth.issuer` | empty | The token issuer, exactly as `iss` names it (`https`, or `http` to a loopback address). Empty: every `/v1` call is a `401` |
+| `openbilling.auth.audience` | empty | The audience a token's `aud` must hold. Set with `issuer`, or neither |
+| `openbilling.auth.jwksUrl` | empty | The issuer's JWKS URL, in place of its discovery document |
+| `openbilling.auth.rolesClaim` | empty (`roles`) | The claim with the roles, a dotted path (`realm_access.roles`) |
+| `openbilling.auth.roleMap` | empty | `value=operator,value=producer`: the issuer's role values for openbilling's two roles |
 | `controllers.main.containers.main.image.tag` | `{{ .Chart.AppVersion }}` | A fixed version |
 | `controllers.main.containers.main.image.digest` | empty in git; the release's digest in a published chart | `sha256:…` |
 
 The vpay adapter's settings (`OPENBILLING_VPAY_*`, `bin/openbilling/README.md`) go under
 `controllers.main.containers.main.env`, the files they name mounted with `persistence` from Secrets of your own.
 
-**Refused** (the render fails, naming the value): an empty `existingSecret` or `key`; an image tagged `latest`; a tag
+**Refused** (the render fails, naming the value): an empty `existingSecret` or `key`; an `auth.issuer` without an
+`auth.audience` or the reverse, `jwksUrl`, `rolesClaim` or `roleMap` without both, an issuer that is not `https` or
+loopback `http`; an image tagged `latest`; a tag
 that is not a fixed version (`X.Y.Z`, a pre-release of one, or `sha-<7>`) without a digest; a digest that is not
 `sha256:` and 64 hex digits.
 
@@ -78,9 +86,10 @@ sh deploy/openbilling/tests/check.sh    # helm (v4) and kubeconform on PATH; the
 
 | File | What |
 |---|---|
-| `tests/check.sh` | The versions of `Cargo.toml` and `Chart.yaml` agree; the common library's archive is the pinned sha256; `helm lint --strict`; `helm template` of each accepted values file, then `render-check.sh` and kubeconform (strict, Kubernetes 1.35.0) on it; each refused file refused with its message. CI's `chart` job runs it |
+| `tests/check.sh` | The versions of `Cargo.toml` and `Chart.yaml` agree; the common library's archive is the pinned sha256; `helm lint --strict`; `helm template` of each accepted values file, then `render-check.sh` and kubeconform (strict, Kubernetes 1.35.0) on it; the defaults render the issuer and the audience empty (the service refuses every `/v1` call); each refused file
+refused with its message. CI's `chart` job runs it |
 | `tests/render-check.sh` | On a render: no Secret, no credential in a URL, `OPENBILLING_DATABASE_URL` from a Secret, every image a fixed version or a digest, `--require-digest` for a digest on every image |
-| `tests/values/` | `full.yaml` (everything on), `edge-with-digest.yaml`, and `refused-*.yaml`, each with the message it must be refused with on its `# expect:` line |
+| `tests/values/` | `full.yaml` (everything on, the token verifier included), `edge-with-digest.yaml`, and `refused-*.yaml`, each with the message it must be refused with on its `# expect:` line |
 | `tests/schemas/` | The ServiceMonitor JSON schema, vendored from datreeio/CRDs-catalog at `b50f3fb` (ADR 0005, *Agent notes*) |
 
 `Chart.yaml`'s `version` and `appVersion` are written by release-please. Never edit them by hand.

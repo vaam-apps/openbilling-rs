@@ -215,6 +215,17 @@ mod tests {
         assert_eq!(auth.roles_claim, "roles");
         assert!(auth.jwks_url.is_none());
         assert!(settings(&[db, issuer]).is_err());
+        // The chart renders the five variables empty when unset: empty is unset, so RefuseAll stays.
+        let empty = settings(&[
+            db,
+            ("OPENBILLING_AUTH_ISSUER", ""),
+            ("OPENBILLING_AUTH_AUDIENCE", " "),
+            ("OPENBILLING_AUTH_JWKS_URL", ""),
+            ("OPENBILLING_AUTH_ROLES_CLAIM", ""),
+            ("OPENBILLING_AUTH_ROLE_MAP", ""),
+        ])
+        .unwrap();
+        assert!(empty.auth.is_none());
         assert!(settings(&[db, audience]).is_err());
         assert!(settings(&[db, ("OPENBILLING_AUTH_ROLE_MAP", "a=operator")]).is_err());
         let full = settings(&[

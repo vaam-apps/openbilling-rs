@@ -83,6 +83,20 @@ printf '%s\n' "$accepted" | while IFS='|' read -r name values flags; do
         "$work/$name.yaml"
 done
 
+step "the defaults keep every /v1 call refused"
+# Without `openbilling.auth` the issuer and the audience render empty, which the binary reads as unset: RefuseAll.
+helm template openbilling "$chart" --namespace billing > "$work/defaults-auth.yaml"
+for name in OPENBILLING_AUTH_ISSUER OPENBILLING_AUTH_AUDIENCE; do
+    awk -v want="$name" '
+        $0 ~ ("-[[:space:]]+name:[[:space:]]+" want "[[:space:]]*$") {
+            seen = 1
+            if ((getline line) <= 0 || line !~ /^[[:space:]]+value:[[:space:]]*""[[:space:]]*$/) bad = 1
+        }
+        END { exit (seen && !bad) ? 0 : 1 }
+    ' "$work/defaults-auth.yaml" || die "the defaults set $name; they must leave it empty (RefuseAll)"
+done
+printf 'OPENBILLING_AUTH_ISSUER and OPENBILLING_AUTH_AUDIENCE are empty by default\n'
+
 for values in "$here"/values/refused-*.yaml; do
     name=$(basename "$values" .yaml)
     step "refused: $name"
