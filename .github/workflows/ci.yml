@@ -151,7 +151,7 @@ jobs:
       # The `smoke` stage builds the binary `--locked` and runs `--version` and `--help` on the runtime base, as the
       # runtime user. Read-only cache: main's builds (release.yml) write it.
       - name: Smoke test
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: docker/openbilling/Dockerfile
@@ -160,7 +160,7 @@ jobs:
           push: false
           cache-from: type=gha,scope=openbilling-amd64
       - name: The runtime stage builds
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: docker/openbilling/Dockerfile
