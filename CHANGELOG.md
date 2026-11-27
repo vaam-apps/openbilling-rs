@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.4.0](https://github.com/vaam-apps/openbilling-rs/compare/v0.3.0...v0.4.0) (2026-11-27)
+
+
+### Features
+
+* **telemetry:** export OTel through a layer over CrateStack's spans, and ship dashboards ([#22](https://github.com/vaam-apps/openbilling-rs/issues/22)) ([8bdaf52](https://github.com/vaam-apps/openbilling-rs/commit/8bdaf5229178c90372a0a0d9a22f8f553401efc3))
+* **telemetry:** export through the OpenTelemetry SDK, and generate the dashboards with Python ([#23](https://github.com/vaam-apps/openbilling-rs/issues/23)) ([9499c5c](https://github.com/vaam-apps/openbilling-rs/commit/9499c5c8a5482718e98a1baa282f4a6d6956f054))
+
+
+### Build System
+
+* **image:** a static musl binary on distroless/static ([#20](https://github.com/vaam-apps/openbilling-rs/issues/20)) ([04667c8](https://github.com/vaam-apps/openbilling-rs/commit/04667c8b24edfec10d88a109c533bbf35aaaa6bb))
+
 ## [0.3.0](https://github.com/vaam-apps/openbilling-rs/compare/v0.2.0...v0.3.0) (2026-11-27)
 
 

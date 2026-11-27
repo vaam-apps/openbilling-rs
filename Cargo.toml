@@ -13,7 +13,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.3.0" # x-release-please-version
+version = "0.4.0" # x-release-please-version
 edition = "2024"
 # The MSRV: CrateStack 0.20.6 declares rust-version 1.98.0 (sqlx 0.9 needs 1.94). CI's MSRV job checks it.
 rust-version = "1.98"
