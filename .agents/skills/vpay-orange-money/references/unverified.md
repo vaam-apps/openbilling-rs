@@ -1,0 +1,221 @@
+# What is still unverified about Orange, and what each item blocks
+
+_Verified against vpay `d3a8810b` (2026-09-16). Version-sensitive claims
+carry the date they became true — see [VERSIONING.md](https://github.com/vaam-apps/vpay-skills/blob/main/VERSIONING.md)._
+
+**As of 2026-09-16, no request from this repository has ever reached Orange
+Money.** This page is the list of assumptions that sit underneath
+`vpay-adapter-orange-money`, taken from
+`docs/flows/adapter-orange-money.md` § "To confirm" and § "Still unverified
+against the real rail". Read it before you change anything in that crate, and
+**date anything you resolve**.
+
+Nothing here is a bug report. Each item is a question with a stated default,
+and the default is written into the code so the uncertainty is visible — with
+**one exception, new on 2026-09-15**, which has no default at all because
+writing one would mean inventing a money-path wire call.
+
+## The one item that blocks a shipping token: Orange's transfer product
+
+> **Item 5 of the flow doc's "To confirm with Orange Cameroun" list**, and
+> since 2026-09-15 it is not one assumption among ~~ten~~ the others — it is
+> the thing `orange_money::refund` waits on.
+
+_(This said "among ten" until 2026-10-22. The list has had **eleven** items
+since 2026-10-21, when vaam-apps/vpay#319 added item 11 below, whether the
+notification carries `order_id`. vpay's `docs/flows/adapter-orange-money.md`
+made the same slip in its Status, "All **ten**", until vaam-apps/vpay#333
+corrected it to eleven on 2026-10-22.)_
+
+**No Orange transfer API is documented anywhere in vpay — not even
+reconstructed — and none has been invented.** The three calls this adapter
+makes were rebuilt from Orange Developer's public overview plus community SDKs
+that agree with each other. For transfers there is no such source in this
+repository, so an endpoint path and a request body would be _guessed_, in the
+money path, on a rail nobody has ever called.
+
+That item used to read "Refund/disbursement availability" — a question about
+whether Orange refunds at all. RFC-0003 § 5 settled it on 2026-09-15: an
+Orange refund **is** a transfer back to a payee, so the rail can refund,
+`supports_refunds` is `true`, and the refusal stopped being a fact about the
+rail and became work vpay owes. What is open is now the **specification**:
+which product, on what endpoint, with what request body, under which
+credential, and with what amount rules. **It is not answerable from anything
+in this repository.** More reading does not close it; Orange does.
+
+Three things hang off the answer:
+
+| waiting on it                     | why                                                                                                                                    |
+| --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `orange_money::refund`            | the token stays until there is a specification to write the call against — the workspace's only `NotImplemented` as of 2026-09-16      |
+| `supports_partial_refunds: false` | "any amount up to the charge" is a property of a transfer product, and this repository has never seen Orange's                         |
+| `Refunded::fee`                   | whether that product reports a fee is not merely unverified, it is **unasked**. `None` and `Some(0)` must not be collapsed (issue #46) |
+
+`parse_destination` is deliberately **not** waiting on it and is built:
+_who_ a refund is addressed to is vpay's own merchant-facing parameter and is
+fully known; _how_ an Orange transfer body would carry that payee is not known
+here at all.
+
+## The assumptions in the wire path
+
+| #   | Assumption                                                                                                                                                                                                                                         | What it blocks / costs if wrong                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | **The error-body vocabulary for `webpayment`.** Orange documents none, so a 4xx that is not a 401/404 becomes `Rejected{provider_error}` carrying the raw body                                                                                     | Every such failure lands in the "unmapped, alert on it" bucket of `docs/flows/failures.md`. It is **not a settled mapping**                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| 2   | **The sub-reasons of `FAILED`.** Same bucket, same reason — the status string is the whole of the rail's word                                                                                                                                      | Decides whether the eight codes under "what this rail cannot say" stay unreachable. If sub-reasons exist they become `STATUS_TABLE` rows, `PRODUCED_FAILURE_CODES` grows, and the shop's `cannotExpress` list shrinks                                                                                                                                                                                                                                                                                                                                                                                      |
+| 3   | **Whether a repeated `order_id` really is idempotent.** The stub returns the same `pay_token`, and the port _requires_ a duplicate to be `Submitted` rather than an error                                                                          | If Orange charges twice for a repeat, crash recovery is a double charge. This is an assumption about Orange, not an observation                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| 4   | **Whether the notification carries `pay_token`.** The adapter carries it through _when present_ and never requires it                                                                                                                              | `ref_extra` repair from a callback — already unavailable for a second reason (below)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| 5   | **The 401 → re-mint → retry path is unproven.** No mapping returns 401 from `webpayment` or `transactionstatus` _after_ a good token; only the 401 on the token endpoint itself is covered (`bad_credentials_are_not_reported_as_a_payer_problem`) | A token expiring in flight is the commonest real-world 401, and nothing exercises it                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| 6   | **`lang` defaults to `fr`** when a deployment configures none                                                                                                                                                                                      | The one defaulted field in the request body; wrong wording on Orange's page, nothing worse                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| 7   | Transaction and daily limits for XAF                                                                                                                                                                                                               | Unknown failure modes at volume                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| 8   | **Whether Orange exposes an account-holder lookup at all**, and under which product and credential (issue #47). Orange has a KYC/customer product; **its route is not confirmed from this repository and is not being claimed**                    | While unknown, `supports_account_holder_lookup: false` and the port's `Unsupported` is correct — this is the shape `refund` had until 2026-09-15 and **the refund correction must not be carried across to it**. One live consequence since 2026-09-16: `vpay_api::v1::refunds` skips `verify_registered_holder` on this rail, so an Orange refund destination is accepted **unverified** (RFC-0003 § 1). If the answer is "yes, here", the flag becomes `true`, the adapter overrides `account_holder_name` with its **own `NotImplemented` token** until it is written, and `docs/status.md` grows a row |
+| 9   | **How long the real hosted page gives a payer**, and what `transactionstatus` answers while they are on it                                                                                                                                         | Nothing is blocked: `INITIATED` and `PENDING` both map to `Pending` and the poll ladder is indifferent to how many rungs it spends there. It is written down because the _stub_ now has an answer and a reader must not mistake it for a measurement of Orange                                                                                                                                                                                                                                                                                                                                             |
+| 10  | **Whether `FAILED` carries a sub-reason under any field name**                                                                                                                                                                                     | Item 2 restated from the other side. MTN's equivalent question has a published answer — a seventeen-value `ErrorReason.code` enum — and comparing the adapter against it is what closed `payer_declined` on that rail                                                                                                                                                                                                                                                                                                                                                                                      |
+| 11  | **Whether the notification carries `order_id` at all** (added 2026-10-21, RFC-0013 § 11 item 3). `parse_callback` requires it; third-party sources say the body is `status`, `notif_token` and `txnid` only                                        | If so, every real Orange callback is a `400` and a `warn`, and the poll ladder settles the charge anyway: latency, not money. The repair is a design decision (the `notif_token` already kept in `ref_extra`, which nothing can look a charge up by today, or a reference in `notif_url`), not relaxing the check. `docs/flows/adapter-orange-money.md` item 11 has the sources; none that was read is Orange Cameroun                                                                                                                                                                                     |
+
+_Row 1, and what an error may print (pending in vpay#406, issue #147,
+2026-11-17):_ the raw body of that `Rejected{provider_error}` still reaches
+`charges.failure_raw`, but no longer the error's `Display`, which every log line
+and `jobs.last_error` render. Where a submit 5xx/404 or a status-query 5xx/4xx
+becomes `Transport`/`Config`/`Malformed`, the adapter parses
+`wire::ErrorEnvelope` (`code` and `message` only — `description`, the free
+text, is deliberately not a field) and prints the status, the body's length, a
+`code` only if `vpay_provider::http::rail_token` admits it, and `message` only
+if it is an HTTP reason phrase. `token_url` prints `base_url` through `SafeUrl`.
+Since row 1 is unknown, this envelope shape is the stubs' shape, not Orange's
+documented one.
+
+## `notif_token` verification is unbuilt — in two places
+
+The adapter returns the received `notif_token` in `ref_extra` and **fails
+closed** when there is none. That is the only thing it can do: it holds no
+state, so it cannot compare.
+
+Since Step 8 (2026-09-04) **the callback route does not compare it either**.
+`vpay_api::provider_callback` **discards the returned `ref_extra`** rather
+than merging unverified rail material onto the charge.
+
+`docs/flows/adapter-orange-money.md` carries this as a struck-through
+sentence — it said the comparison "is the callback route's job, and that
+route is not built yet", which was true until Step 8 and is wrong in a second
+way now. **The current text on that page wins**: the route exists and
+discards the material.
+
+Consequence, and it is the reason this is on this page rather than in a
+backlog: the adapter's fail-closed check is **load-bearing in production, not
+only in tests**. It is the only thing between an unauthenticated POST and a
+queued poll.
+
+## The stub's hosted page is not Orange's
+
+`backends/tests/conformance/wiremock/orange/mappings/stub-hosted-page.json`
+serves `/stub-hosted-page/{pay_token}` with a Pay link and a Cancel link so a
+browser can finish the redirect leg — and since Step 9 a browser does
+(`shop-hosted.cy.ts`).
+
+**The real rail stores `return_url` and `cancel_url` against the `pay_token`
+at submit and renders them from its own state.** The stub does not.
+
+### The payer window (2026-09-10, issue #58)
+
+The stub gives **one unconditional `PENDING`, four more while a payer is on
+the page, then `EXPIRED`.** Four conformance cases cover that chain:
+
+- `a_charge_no_payer_has_looked_at_is_pending_once_and_then_settles`
+- `the_hosted_pages_pending_chain_is_bounded_and_ends_in_an_expiry`
+- `the_payers_exit_from_the_hosted_page_decides_the_charge` — two cases:
+  `#pay` → `SUCCESS`, `#cancel` → `EXPIRED`, each **following the link the
+  page rendered** rather than one the test built, so a link pointed back at
+  the merchant fails them.
+
+**These are cases about the stub, not about this adapter.** The
+`Pending`/`Succeeded`/`Failed(payer_timeout)` mapping did not change a line
+when they landed. They exist because the stub's _old_ timing made the demo's
+Orange test numbers unreachable from a browser, which was a false green on
+the shop's own checkout panel.
+
+How many seconds the chain is worth against the worker's own ladder is
+`the_pending_chain_gives_a_payer_at_least_thirty_seconds` in
+`backends/tests/integration`, which reads the mapping file and
+`vpay_worker::poll_delay` and multiplies.
+
+If the real page's window turns out to be minutes rather than seconds, **the
+thing that changes is the escalation in `docs/flows/reconciler.md`, not this
+adapter.**
+
+### Two stub fixes, 2026-11-17 (issue #106, vpay#402)
+
+Again about the stub, and not this adapter — no adapter, handler or ladder
+moved:
+
+- **The test-number form's hidden inputs are percent-encoded.**
+  `stub-hosted-page.json` wrote `value="{{request.query.return}}"`, and
+  WireMock 3.9.2 escapes no stache, so a `return_url` carrying `"` — which
+  `/v1`'s `checked_return_url` accepts — closed the attribute and injected into
+  the page. Both inputs are now `{{{urlEncode …}}}`, like the links, and `/pay`
+  is split on the presence of `msisdn` (only the form sends it): the links' arm
+  is unchanged, and the form's arm and `demo-outcomes.json`'s two test-number
+  arms answer `{{{urlEncode request.query.return decode=true}}}`, undoing the
+  layer a GET form adds. `a_hostile_return_url_survives_the_form_on_the_rails_page`
+  submits a URL with `"`, `<`, `&` and a space through the page's own form and
+  links and asserts each `302` lands on it byte for byte.
+- **Every payer action is priority 5** — `/pay` (both arms), `/cancel` (was 3)
+  and the `SUCCESS`/`EXPIRED` answers they arm — below every mapping in
+  `demo-outcomes.json` (3 and 4), so a click on one charge's page no longer
+  pays or expires a charge whose amount the demo steers (`5001`/`5002`).
+  `the_payers_actions_on_the_hosted_page_sit_below_every_demo_mapping` reads
+  both files and pins the ladder without a container;
+  `a_click_on_one_charges_page_does_not_decide_a_demo_amounts_charge` drives
+  the overlap against one. **If you add a payer-action mapping, give it
+  priority 5 or the first test fails.**
+- **Not fixable by a priority, and still open:** one scenario per container.
+  Two overlapping Orange charges share it, and a click on one page still
+  decides a charge steered by a test number typed on another. Nothing drives
+  two at once. No Cypress spec touches the form (they click `#pay`/`#cancel`),
+  so the browser half of the encoding fix is the conformance case.
+
+## What _is_ proven, and by what
+
+Worth knowing so you do not re-prove it, and so you do not over-claim it.
+
+**Unit tests** (57 in the crate, 57 passed, 0 skipped, measured 2026-09-03):
+token-URL derivation, the status table, the request body's shape (`amount` as
+a JSON number), callback parsing, `ref_extra`'s shape, payment-URL
+validation. All pure — no socket.
+
+**Conformance, against a real `wiremock/wiremock` container** (all 13 port
+cases pass for this rail; 51 tests in the suite as measured 2026-09-10, 54 as
+of 2026-09-15): redirects returned rather than followed
+(`redirects_are_refused_and_never_followed`), bodies capped
+(`an_oversized_rail_body_is_refused_at_the_cap`,
+`a_long_rail_body_is_bounded_before_it_reaches_a_log_line`), per-request
+deadlines, payment-URL validation
+(`a_payment_url_that_is_not_an_http_url_is_refused`,
+`a_payment_url_over_the_column_limit_is_refused`,
+`refusing_a_payment_url_does_not_quote_it`), and the bearer cache
+(`rotating_only_the_secret_evicts_the_cached_bearer`,
+`a_field_boundary_cannot_be_shifted_into_a_collision`,
+`the_lifetime_is_measured_from_the_send_not_from_the_answer`).
+
+**One correction worth carrying**, because it shows what the suite's own
+seeding can hide: an earlier draft of that flow doc said five of nine
+conformance cases passed and four failed on `query_status` for want of a
+`pay_token` in the suite's `ChargeRef`. That was fixed **in the suite, where
+it belonged** — a `ProviderFlow::Redirect` rail is now seeded with the
+`pay_token` its previous `submit` returned, mirroring how a `Push` rail is
+seeded with `payer_ref`. The adapter's behaviour did not change: a
+`query_status` with no `pay_token` is still `ProviderError::Config` and never
+`NotFound`.
+
+## The honest summary to put in a commit message
+
+> Orange's redirect rail has never been called. This change is proven against
+> a WireMock host answering the way a reconstructed flow doc says Orange
+> answers.
+
+For anything touching refunds, that sentence is not enough and the second one
+is the load-bearing half:
+
+> There is no Orange transfer specification in this repository at all, so
+> `orange_money::refund` stays a `NotImplemented` token rather than a guessed
+> endpoint. `supports_refunds: true` is a claim about the rail; the token is
+> the admission about us.

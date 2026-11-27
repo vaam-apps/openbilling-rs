@@ -1,0 +1,363 @@
+---
+name: vpay-reconciler
+description: The vpay worker — the job loop, the poll and delivery ladders, lease reaping, crash recovery, SIGTERM draining, and the worker-concurrency bound. Load this when changing anything in vpay-worker, adding a job kind, touching the retry ladders, debugging a stuck or re-run job, reasoning about what happens when a worker is killed mid-charge, or working on settlement and crash safety.
+---
+
+# The vpay worker
+
+> **Verified against vpay `87166eaf` (2026-10-09).** The 2026-11-17 `requires_review`
+> paragraph was re-read at `c3358352` (vpay#403 on `master`). Version-sensitive claims below
+> carry the date they became true — a feature in vpay's `master` may be absent
+> from the tree you are editing. On an older or newer vpay, trust the
+> repository over this page. See [VERSIONING.md](https://github.com/vaam-apps/vpay-skills/blob/main/VERSIONING.md).
+
+`vpay-server worker` runs the job loop. It is what actually moves money: the
+API's confirm submits a charge and queues a job; **the worker's authenticated
+status query is the only thing that settles it.**
+
+Crate: `backends/crates/vpay-worker/`. Binary entry:
+`backends/apps/vpay-server/src/worker.rs`. Flow docs:
+`docs/flows/reconciler.md`, `docs/flows/crash-safety.md`.
+
+## The rule everything else follows from
+
+> **Never let a payer act on a transaction you cannot name.**
+
+Push rails: persist the reference _before_ submitting. Redirect rails: persist
+the rail's token _before_ redirecting. A payer who has been debited against a
+reference we never wrote down is a reconciliation we cannot perform.
+
+And its corollary: **callbacks are hints.** `parse_callback` returns identifiers
+only — the port has nowhere to put a status, deliberately. A callback can do
+exactly one thing: bring the charge's `poll_charge` job to now. It never writes
+charge or intent state. ~~A callback can do exactly one thing: pull an
+already-queued `poll_charge` job forward.~~ **Corrected 2026-09-29:** it has
+also _enqueued_ that job when none was queued since the route was mounted
+(2026-09-04): `enqueue_in_tx` (`ON CONFLICT DO NOTHING` on `poll:<charge>`)
+then `pull_forward_in_tx`, one transaction. vpay's own `provider_callback.rs`
+header said "only … an already-queued job" until 2026-09-23. **Since
+2026-10-23 (RFC-0014) a rail that signs gets a say first:** the route asks
+its adapter's `verify_callback`, and `Invalid` or `Unavailable` moves nothing
+(the ladder still runs). Only `notchpay` checks. Even `Verified` moves no
+money.
+
+## `vpay-worker` cannot reach the database directly
+
+It has **no `sqlx` dependency and cannot grow one**. Every statement goes
+through `&dyn Repositories`; two writes that must commit together go through
+`UnitOfWork::transaction`. No `sqlx` type is nameable from here, so "forgot to
+commit" is not expressible.
+
+The handlers are deliberately **not** unit-tested. Their proofs are the
+integration suites (`worker_kill9.rs`, `worker_recovery.rs`,
+`worker_claim_latency.rs`, `worker_e2e.rs`).
+
+## Two ladders, and they are not the same ladder
+
+|       | `poll_delay` — charge polling                                                       | `delivery_delay` — webhook delivery   |
+| ----- | ----------------------------------------------------------------------------------- | ------------------------------------- |
+| Shape | 10, 20, 30, 45, 60, 90 s, then 120 s to the 30-minute mark, then **15 min forever** | 10 s, 30 s, 2 m, 10 m, 1 h, 6 h, 24 h |
+| Ends? | **Never runs out**                                                                  | Seven rungs, then `None` = exhausted  |
+
+The asymmetry is the point. A charge's true status is knowable indefinitely and
+giving up on it means losing a payer's money, so polling never stops. A webhook
+has a receiver that may simply be gone, so delivery does. Do not "unify" them.
+
+`UNRESOLVED_POLL_INTERVAL` is 1 h and is deliberately _not_ the last rung of
+`poll_delay`.
+
+Fan-out has its own ceiling: `FANOUT_MAX_ATTEMPTS = 5`, after which the event is
+`fanout_state = 'failed'` and **nothing retries it**.
+
+## Lease discipline — the part that bites
+
+Every write that ends a lease is **guarded on `locked_by`**. A worker whose
+lease was reaped mid-run therefore _discards its answer_ rather than stamping it
+over whoever holds the job now.
+
+That outcome has its own name and its own counter: `Disposition::Lost` — "not an
+error; the honest name for 'we were too slow'". It is counted separately from
+`Finished`, `Rescheduled` and `DeadLettered` because any `Lost` means a lease
+shorter than a handler, which is a real defect and invisible if folded into
+either neighbour. **If you see `Lost` climbing, the lease is too short — do not
+widen it away by folding the counter.**
+
+Only `Retry::Never` reaches `DeadLettered` (parked at `run_at = 'infinity'`).
+
+## Crash recovery
+
+`recover_and_seed` **reaps before it seeds, unconditionally.** A SIGKILLed
+worker leaves every held job with `locked_at` set, and `Jobs::claim` matches
+only `locked_at IS NULL`. If the dead worker held `sweep:expired`, the job that
+would have reaped it is itself stranded — a deadlock the queue cannot leave on
+its own. The reap uses `policy.lease`, so a co-running worker's fresh leases are
+untouched. There are **two lease reapers on purpose**: the hourly `sweep_expired`
+job and the in-process `reaper_loop`.
+
+`recovery_step` is `docs/flows/crash-safety.md`'s recovery table as one pure
+function. It disambiguates "we crashed before the POST" from "the POST went out
+and the answer was lost", using `provider_requests` as the only evidence. Two
+properties to preserve if you touch it:
+
+- **Every duration is measured by Postgres, never the worker's host clock** —
+  there is no `Instant` in the signature.
+- **It branches on `ProviderFlow`, a capability value, never a rail code.**
+
+**What a `provider_requests` row says after an error is chosen by whoever writes
+it, not derived from the error** (as of 2026-10-21, vaam-apps/vpay#314 and
+vaam-apps/vpay#316). `recovery_step` reads `submit` rows only, and turns any
+recorded status into `Advance` — "the rail accepted it". So for a `submit` the
+worker writes `status_code IS NULL` for every `ProviderError` **except a
+decline**: a `Malformed` submit (MTN's unfollowed `307`) and a
+`NeedsReconciliation` submit (Notch Pay's unresolvable `409`, `Malformed` until
+2026-10-23; since ADR-0032 the same day it is raised by `prepare`, and only
+for a charge that has a `submit` row) have an _unknown_ fate on purpose. A `Rejected` resubmit **fails the charge
+first** (`settle_failed_with`: charge `failed`, intent back to the payer, one
+`payment_intent.payment_failed`) and only then records its row answered
+(`0` + `charge_declined`) — settlement first, so no worker path leaves a
+`submitting` charge beside an answered row. ~~`vpay-api`'s confirm does the
+opposite order (row, then `persist_decline`, two commits), so a crash between
+them can.~~ **Corrected later on 2026-10-21 (vaam-apps/vpay#322):**
+`vpay-api`'s `finish_confirm` uses the same order on a decline. It calls
+`persist_decline` first and completes the row second. If that second write
+fails, it logs `tracing::error!` and still answers `409` `charge_declined`,
+leaving the row pending. The decline is committed and webhooked, and nothing
+reads a `submit` row for a terminal charge. Its **accepted** arm keeps the
+row first, then `persist_submitted`, on purpose: there `submitting` + answered
+is `Advance`'s own input. The order follows what recovery should do with the
+pair, so it differs by outcome. **Do not make the two arms match.** Before #316
+nothing failed a declined resubmit: the charge stayed `submitting` and was
+resent after every third poll until the 24-hour horizon. A
+`Rejected` on a status _read_ does not fail the charge (Notch Pay raises it for
+our own refused keys). For a `query_status` the worker writes the `0` sentinel for
+`Malformed`, `NeedsReconciliation` and `Rejected` (the rail answered; the one
+over-claim is a charge with no rail key material, refused before any request)
+and `NULL` for `Transport`,
+`Config`, `Unsupported` and `NotImplemented`; nothing reads those rows. **Do not
+make the submit side match the read side** — recording a refused submit as
+answered, without failing the charge, advances a charge the rail never accepted.
+The port cannot say whether a `Transport` or `Config` error followed an answer, so
+those stay `NULL` on a read and under-claim. See `docs/reference/vpay-worker.md`
+§ "What a refused answer is recorded as".
+
+`RecoveryPolicy`: `not_found_streak: 3`, `not_found_window: 60 s`,
+`lease: ≥ 4 × DEFAULT_REQUEST_TIMEOUT`, `unresolved_after: 24 h`.
+
+**`unresolved` does not always wait 24 hours** (vaam-apps/vpay#313,
+2026-10-23). A `ProviderError::NeedsReconciliation` means the adapter
+understood the rail and asking again cannot change the answer. When
+`query_status` raises it, `rail_did_not_answer` calls
+`escalate_to_unresolved` at once, through `needs_an_operator`. When `submit`
+raises it, `resubmit_charge` does the same. The result is the horizon's
+escalation:
+
+- `unresolved`;
+- `JobError::Exhausted`, hourly, `alert: true`;
+- never parked and never terminal, the reference unchanged;
+- a later terminal answer settles it the ordinary way.
+
+The resubmit job's hourly re-run finds the charge outside `submitting` and
+finishes without calling the rail, so the poll job carries the alert from
+there.
+
+**A paid answer on a canceled intent is parked, not retried (issue #96,
+vpay#403, 2026-11-17).** When the poll's `succeeded`
+lands on an intent a racing cancel already moved to `canceled`,
+`vpay_db::settlement` commits the charge as `requires_review` — terminal, not
+live — and has already counted the transition and written the `alert = true`
+line by the time the handler sees the answer. The poll handler recognises the
+state (`ChargeState::RequiresReview` on the returned charge), logs a `warn` with
+the job, charge and intent ids, and **finishes the job**. Before #96 the same
+answer rolled the settlement back with `WriteMatchedNoRow` and the job retried
+until it dead-lettered. Do not make the state live to "let the ladder resolve
+it": the rail's answer is already recorded, and a live parked charge parks and
+alerts twice (a test fails on exactly that). The decline twin — a `failed`
+answer on a canceled intent — still rolls back and pages, `Retry::Never`; it is
+an open hole, not a design. See the `vpay-payments` skill.
+
+It is the second arm of the one place a composite replaces a leaf's
+classification, and it matches the **variant**. Do not widen it to
+`Malformed`, which is an answer a later read may fix. Do not match on the
+error's text or code. `worker_recovery.rs` proves it with
+`a_short_collection_is_unresolved_on_the_first_poll_and_an_unreadable_answer_is_not`
+and two neighbours.
+
+**A two-step rail's resubmit prepares first** (2026-10-23, ADR-0032, a
+Proposed ADR built on the maintainer's instruction). On a rail declaring
+`SubmitSteps::PrepareThenSubmit` (`notchpay`), `resubmit_charge` calls
+`prepare_again` before `submit_again` when the charge holds no key material
+(`needs_prepare`): a `prepare` row, the call, `Charges::record_prepared`
+commits the reference, then the row is answered and `submit` follows. A
+charge that already holds key material skips it: a previous run prepared it
+and crashed before the prompt. `next_submit_attempt` returns `PriorSubmits`
+from the same read as the attempt number — no `submit` row is `None`, proof
+that nothing asked the rail to prompt, because every build writes that row
+before every submit call, and on a two-step rail only after the reference is
+committed. On Notch Pay a `409` from `prepare` with `None` is `Rejected
+{ provider_unavailable }` and fails the charge through `settle_failed_with`,
+then the `prepare` row is answered `charge_declined`; with `Some` it is
+`NeedsReconciliation` and escalates as above. **`recovery_step` reads
+`submit` rows only, and a `prepare` row is never one**: do not make it read
+them, or a lost `prepare` would look like a lost prompt. A one-call rail
+never reaches `prepare_again`. Proven against WireMock's Notch Pay and a
+real Postgres by six cases in `worker_recovery.rs`, among them
+`a_prepare_whose_answer_was_lost_fails_the_charge_and_never_prompts` (no
+process call in the stub's journal) and the two `a_one_call_charge_…` cases
+for charges a one-call build left in flight. Never run against Notch Pay.
+
+The `not_found_window` predicate is load-bearing and was added for a measured
+defect — see `references/the-confirm-poll-race.md`.
+
+## SIGTERM, and the race that was actually there
+
+`ShutdownSignals::install()` is **the very first thing in `main`**, right after
+CLI parsing and before subcommand dispatch. This is not tidiness.
+
+`tokio::signal::unix::signal(kind)` registers the OS handler _synchronously
+inside the call_. `tokio::signal::ctrl_c()` is an `async fn` that registers on
+**first poll**. Both binaries used to build their shutdown future as an argument
+to `with_graceful_shutdown(..)` — so until that future was first polled, SIGTERM
+kept its default disposition: immediate termination, in-flight requests dropped.
+The window was tens of milliseconds, longer under load. SIGINT is handled the
+same way to get the same guarantee.
+
+**The grace clock starts when shutdown is signalled, not at boot.** Racing
+`timeout(grace, …)` from process start would abort every in-flight job `grace`
+seconds after startup, forever. A clean drain hands back no lease by
+construction; a timed-out drain aborts the tasks and releases their leases, and
+`LoopReport::drain` distinguishes the two so the binary can log and exit
+differently.
+
+Note `--shutdown-grace-seconds` is honoured by the **serve** mode only. The
+worker accepts it, logs it, and does nothing with it. Neither binary's timeout
+case is covered by a test.
+
+## The concurrency bound
+
+```text
+pool_max = vpay_db::MAX_CONNECTIONS   // 10, not configurable anywhere
+max_safe = pool_max / 2               // 5
+concurrency > max_safe  =>  StartupError::WorkerConcurrencyExceedsPoolSize
+```
+
+Checked **at boot, before the pool is opened and before the database is
+touched** — so a bad knob costs milliseconds rather than a connection and a
+migration run.
+
+~~Why halved: `create_in_tx` on the already-exists branch holds **two**
+connections at once — its own transaction's, and the one CrateStack's
+update-policy re-check takes from the same pool.~~ **That is a cratestack 0.12.0
+reason.** Since 0.15.0 (2026-09-29, vaam-apps/vpay#259; cratestack #1117) the
+re-check runs on the transaction's own connection, so the branch holds **one**
+and `MAX_CONNECTIONS / 2` is a _conservative_ ceiling, not a tight one. vpay left
+the boot guard, its integration test and the chart's `"worker-concurrency-pool"`
+literal alone on purpose — loosening them is a behaviour change for its own PR.
+Do not loosen the ceiling in passing; do not cite the two-connection reason
+for it either.
+
+Raising `MAX_CONNECTIONS` is a code change that moves this ceiling with it.
+
+## One clock for the queue: Postgres' (ADR-0026, 2026-09-23)
+
+_Added 2026-09-29._ `Jobs::claim` judges `run_at <= now()` with **Postgres'**
+clock, so since vaam-apps/vpay#256 (merged 2026-09-24) every job's first `run_at`
+is Postgres' too. `TxRepositories::enqueue_in_tx` takes a `Duration` and the
+statement computes `now() + delay`. Until 2026-09-23 most writers stamped it with
+the worker's or API host's `OffsetDateTime::now_utc()`, so every such job ran
+early or late by the skew between the two hosts. Concretely, as of vpay
+`a33aac61`:
+
+- `seed_singletons` enqueues its five singletons at `Duration::ZERO` (one
+  transaction, unchanged; **six** since 2026-10-22, when RFC-0013 added
+  `ensure_callbacks` on dedupe key `ensure:callbacks`, migration `0051`); the callback route's enqueue is `ZERO`; the confirm's
+  poll is `POLL_AFTER_CONFIRM_GRACE` out, added to _the database's_ `now()` (an
+  API host a few seconds behind used to eat that much of the grace);
+  `resubmit_charge`, its follow-up poll and every fan-out's `deliver_webhook`
+  jobs are `ZERO`.
+- The live-charge backstop's staleness is `live_charges_stale_since(stale_after:
+Duration, …)`, measured back from `now()`, because `charges.updated_at` is
+  written by `now()`.
+- The queue-age gauge is subtracted in SQL: `Jobs::oldest_runnable_age()`
+  replaced `oldest_runnable_run_at()`, and the worker's `queue_age` lost its
+  `now` parameter. The sign convention is unchanged (negative when the next job
+  is in the future).
+- **No rung, interval or ordering changed**, and no kill point in
+  `docs/flows/crash-safety.md` moved.
+- **Facts keep the application's clock** (ADR-0026 D6–D8): session
+  `created_at`/`expires_at`, `customers.last_used_at`, the signature's `t=`.
+  Their sweeps still take an instant. ~~The ADR is `Accepted in part` on `master`
+  at `a33aac61`; D1–D8 await the maintainer's confirmation.~~ **Corrected
+  2026-10-09:** the ADR is `Accepted (2026-10-08)` on `master` at `87166eaf`; the
+  maintainer confirmed D1–D8 and their text is unchanged. D8's `jti` item is the
+  exception to "their sweeps still take an instant" (next section).
+
+`recovery_step`'s "every duration is measured by Postgres" rule above is the
+same principle, older: `Charges::get_by_id_as_of` reads `now()` off the same
+`SELECT` as the row.
+
+Sources: `docs/adr/0026-the-database-clock-schedules-jobs.md` (the rule and D1–D8),
+`docs/reference/vpay-worker.md` (the queue-gauge amendment and the list of seeds,
+scans and fan-out jobs now on the database's clock) and
+`docs/reference/vpay-db/jobs.md` § "One clock: the database's".
+
+## The hourly sweep keeps a spent `jti` five minutes past `exp` (ADR-0028, 2026-10-09)
+
+_Added 2026-10-09, verified against vpay `87166eaf` (vaam-apps/vpay#271)._
+`handlers::sweep_expired` (every `SWEEP_INTERVAL`, 3600 s, one `jobs` row,
+`sweep:expired`) runs four steps: `Idempotency::sweep_expired`,
+`delete_expired_client_assertion_jtis` and `reap_expired_leases` (three
+independent statements, each its own transaction) and then the checkout-session
+expiry, which is not a delete. The second used to delete
+`oauth_client_assertion_jtis` rows at `expires_at < now()`. It now takes
+`retain_after_exp: Duration`, and the worker passes
+`vpay_worker::CLIENT_ASSERTION_JTI_RETENTION` (`5 * 60` s, defined beside
+`SWEEP_INTERVAL` in `backends/crates/vpay-worker/src/handlers.rs` and re-exported
+from `lib.rs`). The statement is
+`expires_at < now() - ($1::BIGINT * INTERVAL '1 microsecond')`, so **Postgres
+computes the cut** and the worker's clock never reaches the comparison (ADR-0026
+D1's shape, applied to the column D8 had left out).
+
+Why a row may not go at `exp`: `authkestra-op` (`=0.13.1` since 2026-10-26) verifies an assertion with
+`jsonwebtoken`'s default 60 s leeway, on a whole-second `now`, so the API accepts
+it until `exp + 61 s`. A sweep inside that window deleted the `jti` of an assertion
+that still verified, and one captured, already-spent assertion could be replayed
+once for a second access token (about 1.7 % per assertion at zero clock skew). The
+5 minutes is 60 s + 1 s + about 239 s of skew budget. **Do not pass `Duration::ZERO`
+to "make a test sweep everything"**: that restores the defect. A test that needs a
+row gone puts its `expires_at` beyond the horizon, relative to the _database's_
+`now()` (`client_store.rs` does, through `support::db_now`), and leaves the horizon
+alone. Two tests in `merchant_token_flow.rs` hold the invariant: a spent
+assertion 30 s past `exp` cannot be replayed after the real worker sweep runs,
+and an assertion older than the production horizon is **refused by the
+validator**, so an `authkestra-op` or `jsonwebtoken` bump that widens the leeway
+past 5 minutes fails CI before it reopens the window. Detail and the wire side:
+`vpay-merchant-api`.
+
+~~Sweeping `jti`s and `idempotency_keys` is a boot-time stopgap, "because there is
+no worker job loop to schedule either properly".~~ **Corrected 2026-10-09:** the two
+boot-time sweeps were `vpay-server`'s from Step 1 and were removed in Step 4
+(2026-09-03). The server sweeps nothing at boot, and the worker's hourly job does
+both. The boot lists in `vpay-ops` and `vpay-troubleshooting` said otherwise until
+today, and so does vpay's own `docs/flows/configuration.md` step 7 at `87166eaf`
+(`docs/flows/merchant-auth.md` § Status says what is true).
+
+Sources: `docs/adr/0028-a-spent-jti-outlives-the-validators-leeway.md`,
+`backends/crates/vpay-worker/src/handlers.rs` (`CLIENT_ASSERTION_JTI_RETENTION`,
+`sweep_expired`) and `backends/crates/vpay-db/src/client_assertion.rs`.
+
+## Job kinds
+
+`PollCharge`, `ResubmitCharge`, `SweepExpired`, `FanOutEvents`,
+`DeliverWebhook`, `ScanDeliveries`, `SweepIdleCustomers`, and the eighth in
+`JobKind::EVERY`. `IDLE_SLEEP` is a plain 1 s sleep, not `LISTEN`/`NOTIFY` — the
+fastest poll rung is 10 s, so a job is never waiting on the loop.
+
+## Also here
+
+- `references/the-confirm-poll-race.md` — the 3.7-second window in which the
+  worker applied crash recovery to a charge that had not crashed, what it did to
+  a live Orange order, and the one predicate that closes it.
+- Retry policy is `Classify::retry` and nothing else. There is deliberately **no
+  `ProviderError::retryable()`**; a second oracle beside `Classify` is what
+  ADR-0011 exists to prevent. See `vpay-conventions`.
+- Webhook signing, the outbox and SSRF vetting live in `vpay-webhooks`.

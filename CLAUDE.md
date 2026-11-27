@@ -89,6 +89,7 @@ their files.
 | Writing a schema, a server, procedures, migrations or clients | `cratestack` first; it routes to the `cratestack-*` skills |
 | Authentication, tokens, the identity provider | `authkestra-quickstart`, then `authkestra-features`, `authkestra-op`, `authkestra-store` |
 | Money, ledgers, idempotency | `domain-fintech`, `cratestack-data-integrity` |
+| The payment provider (vpay): its API, webhooks, statuses | `vpay` first; it routes to `vpay-merchant-api`, `vpay-webhooks`, `vpay-payments` and the rest |
 | The ledger's SQL, migrations | `cratestack-migrations` (the applier's rules), and the PostgreSQL 19 documentation: verify every claim |
 | A decision | `documentation-and-adrs`, `doubt-driven-development` |
 | Rust | `rust-router`, `rust-skills`, `coding-guidelines` |

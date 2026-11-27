@@ -1,0 +1,208 @@
+# The outbox, the ladder, and the deliverer
+
+_Verified against vpay `a33aac61` (2026-09-29) for § "Two retry ladders" and the two paragraphs after it (the clock, `create_in_tx`); the rest of this page was last read at `b747e5d5` (2026-09-23). Version-sensitive claims
+carry the date they became true — see [VERSIONING.md](https://github.com/vaam-apps/vpay-skills/blob/main/VERSIONING.md)._
+
+All of it in `vpay_worker::webhooks`, run by the job loop in `vpay-server`'s
+worker mode. `docs/reference/vpay-worker.md` §"The outbox drain" is the long
+form; `docs/runbooks/webhook-delivery-failures.md` is what an operator does.
+
+## Two steps, not one
+
+**Step 1 — `handle_fan_out`.** Claims a page of the `events` backlog and, in
+**one transaction per event**, writes a `webhook_deliveries` row per configured
+endpoint and enqueues a `deliver_webhook` job. It is a singleton job that
+reschedules itself, keyed `vpay_worker::jobs::FANOUT_DEDUPE_KEY`
+(`"fanout:events"`).
+
+- `FAN_OUT_PAGE` = 100 events per pass; a pass that comes back full reschedules
+  immediately, so a backlog drains over several passes rather than in one
+  enormous read.
+- `FAN_OUT_IDLE` = 5 s when the backlog is empty. That is the whole latency
+  budget between a payment settling and its webhook being _enqueued_.
+- A **poll**, not `LISTEN`/`NOTIFY`, deliberately: the drain must also pick up
+  events written by a process that has since died, which a notification would
+  not deliver.
+- `FANOUT_MAX_ATTEMPTS` = **5**. After five failed passes the event is
+  `fanout_state = 'failed'`, and **nothing retries it** — that is a webhook the
+  merchant will never receive. Five is large enough that ~25 seconds of
+  Postgres being unavailable abandons nothing, small enough that a poisoned
+  page clears in under a minute. Re-arming a `failed` event is a runbook, not
+  an automatic behaviour.
+
+**Step 2 — `handle_deliver`.** Renders one delivery through
+`vpay_api::model::EventObject`, signs the exact bytes it is about to send, and
+POSTs them.
+
+**Step 3 — `handle_scan_deliveries`.** The backstop behind both: every 10
+minutes it re-enqueues up to 500 outstanding deliveries. A healthy deployment's
+pass finds nothing.
+
+## Two retry ladders, and they do not share
+
+|             | `poll_delay`                                                               | `delivery_delay`                                              |
+| ----------- | -------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| Asks        | a **rail**, what happened to money                                         | a **merchant**, telling them what already happened            |
+| Rungs       | 10s, 20s, 30s, 45s, 60s, 90s, then 120s to the 30-minute mark, then 15 min | 10s, 30s, 2m, 10m, 1h, 6h, 24h                                |
+| Runs out    | **never** — always another rung                                            | **yes** — `None` after seven, and the delivery is `exhausted` |
+| Return type | `Duration`                                                                 | `Option<Duration>`                                            |
+
+Both are in `vpay_worker` (crate root). The `Option` is the point: "the ladder
+ran out" is the `exhausted` transition of a `webhook_deliveries` row and must
+not be expressible as another delay. A live charge, by contrast, is always owed
+another question — a charge nobody asks about is one whose late success is
+lost. `UNRESOLVED_POLL_INTERVAL` (1 hour) is the escalated rung once the
+24-hour ladder is spent; it changes the interval and adds an alert, it never
+stops the question being asked.
+
+The delivery index is the **pre-increment** `attempt`, which counts failures so
+far: after the first failure the wait is `delivery_delay(0)`.
+
+**Every rung is measured on Postgres' clock** (since 2026-09-23, ADR-0026,
+vaam-apps/vpay#256, merged 2026-09-24). `WebhookDeliveries::record_attempt` takes
+`retry_after: Option<Duration>` and writes `next_attempt_at = now() + retry_after`
+in the statement that stamps `sent_at` (`None` writes `NULL`: nothing is owed);
+~~it took a `next_attempt_at: Option<OffsetDateTime>` computed from the worker
+host's clock~~, which the delivery backstop then compared with `now()`, so a
+skewed worker moved the backstop's view of every delivery. Each fan-out's first
+`deliver_webhook` job is also due at the database's `now()` (`Duration::ZERO`).
+The ladder itself — the rungs above, `None` after seven — did not change.
+`record_attempt_bounds_the_excerpt_moves_the_ladder_and_then_exhausts` asserts
+`next_attempt_at - sent_at` equals the rung to the microsecond. (The `t=` in a
+webhook **signature** is a different thing: it is a fact, judged by the
+receiver's clock, and stays the application's — ADR-0026 D6.)
+
+**`create_in_tx` and a repeat inside one transaction** (cratestack 0.15.0,
+2026-09-29, vaam-apps/vpay#259). The fan-out creates each `(event_id,
+endpoint_id)` delivery through CrateStack's `.do_nothing()`. Through 0.12.0 a
+second `create_in_tx` for one pair **in the same still-open transaction** answered
+`PersistenceError::Denied`, which would have failed the whole fan-out; from
+0.15.0 it answers `Ok(None)`, as a committed repeat always did. Nothing reached
+the old refusal either way — `endpoint.id` is unique per merchant (refused at
+boot by `vpay_config`, deduped again by `EndpointRegistry::from_pairs`) — but if
+you read a comment saying the same-transaction repeat is `Denied`, it describes
+0.12.0. The test is
+`a_repeat_creation_inside_one_transaction_is_reported_missing_like_a_committed_one`
+(renamed from `…_is_refused_rather_than_reported_missing`).
+
+**Delivery never consults `Classify`.** A merchant's `500` is not a
+`ProviderError` and has no place in the rail failure vocabulary. Do not route a
+delivery failure through `JobError::decision`.
+
+## Budgets and caps
+
+| Constant                   | Value     | Why                                                                      |
+| -------------------------- | --------- | ------------------------------------------------------------------------ |
+| `WEBHOOK_CONNECT_TIMEOUT`  | 5 s       | shorter than a rail's; an unreachable receiver is retried in seconds     |
+| `WEBHOOK_REQUEST_TIMEOUT`  | 10 s      | a handler slower than this has acknowledged nothing a sender can rely on |
+| `MAX_ACK_BODY_BYTES`       | 8 KiB     | nothing parses the ack; the cap stops an unbounded response              |
+| excerpt stored             | 512 chars | enough of an error page to recognise it in a runbook                     |
+| `SCAN_DELIVERIES_INTERVAL` | 10 min    | backstop                                                                 |
+| `SCAN_DELIVERIES_BATCH`    | 500       | backstop                                                                 |
+
+The timeouts live **beside the handler that spends them**, not in the binary.
+They used to live in `vpay-worker-bin` and be written out again by two test
+helpers — three copies of a number nothing pinned together, so changing the
+binary's pair would have left the whole suite exercising a client that no
+longer shipped, and staying green while it said so. There is exactly one reader
+now: `vpay_worker::ssrf::pinned_client`.
+
+This is why merchants are told to **acknowledge first and work afterwards**.
+
+## SSRF vetting is per delivery, and the client is pinned
+
+`vpay_worker::ssrf::vet` resolves and classifies the target before the request
+(`AddressClass`, `EgressPolicy`, `EgressRefusal`, `VettedTarget`), and
+`pinned_client` builds a client for _that_ delivery pinned to the vetted
+address. A shared client cannot be pinned, which is why there is no shared
+webhook client anywhere in the process.
+
+There is a boot-time half too: `vpay_config::validate_webhook_url` refuses a
+non-https URL under livemode and refuses stub markers. Both halves are required — boot
+validation cannot see a hostname that starts resolving to a private address
+later.
+
+## Headers on every delivery
+
+| Header             | Value                                     |
+| ------------------ | ----------------------------------------- |
+| `Vpay-Signature`   | `t=…,v1=…[,v1=…]`                         |
+| `Stripe-Signature` | the same value, so `constructEvent` works |
+| `Vpay-Event-Id`    | the event's `evt_…`, **not signed**       |
+| `Content-Type`     | `application/json`                        |
+
+`Vpay-Event-Id` is a convenience for a merchant deduping in an access log or a
+proxy. **Only the body is signed**, so a value in that header is not evidence
+of anything and a receiver must still read `event.id` out of the verified body.
+
+`vpay_worker::signing::signature_header` is the only producer in the workspace,
+and `vpay_worker::webhooks::event_bytes` produces the bytes that are both
+signed and sent. Keep it that way: the scheme's whole guarantee is that the
+bytes signed are the bytes on the wire, and a second serialisation between the
+two would break every verifier for a reason nobody could see.
+
+An endpoint with **no secrets is not sent to** — `handle_deliver` records a
+failed attempt instead, because a receiver refusing a bare `t=` is a much worse
+diagnostic than a log line naming the endpoint.
+
+## The verifiers are the specification
+
+`sdks/rust/src/webhooks.rs` and `sdks/nodejs/src/webhooks.ts` are the two
+verifiers this sender is held to, and `vpay-worker`'s own doctests verify
+against the real `vpay_sdk::webhooks::verify_at`. If you change the header
+grammar, you are changing four things: the signer, both verifiers, and
+`docs/flows/webhooks.md` — plus the parity row, because
+`cargo xtask verify-sdk-parity` reads `docs/sdks/parity.md`.
+
+`DEFAULT_TOLERANCE` in the SDKs is the 5-minute timestamp window.
+
+## What an operator can and cannot recover
+
+| Situation                                  | Recovery                                                               |
+| ------------------------------------------ | ---------------------------------------------------------------------- |
+| delivery failed, ladder not spent          | automatic — next rung                                                  |
+| delivery `exhausted` (7 attempts)          | operator action against `webhook_deliveries`; the merchant is not told |
+| event `fanout_state = 'failed'` (5 passes) | operator re-arms it; **nothing** retries automatically                 |
+| merchant simply missed one                 | they poll `GET /v1/events` — same renderer, same bytes                 |
+
+`webhook_deliveries` (migration `0022`, `vpay_db::webhook_deliveries`) is a
+**state row read by humans**, not a log. That is why the response excerpt is
+512 characters of something recognisable rather than a full body.
+
+**The endpoint URL in an excerpt and in the alert is its origin (pending in
+vpay#406, issue #147, 2026-11-17).** An endpoint URL may carry a
+receiver's credential in its query — whether it may is RFC-0002 D4, open, so
+vpay still accepts and stores it in `webhook_deliveries.url`. What stops is the
+repetition: `transport_excerpt` passes the reqwest error through
+`vpay_provider::http::redact_url` (`no response: error sending request for url
+(https://host/): …`), and the `exhausted` alert's `url` field is
+`SafeUrl(https://host)`. `an_exhausted_delivery_never_logs_or_stores_the_endpoints_query`
+proves both against a real Postgres. **Rows and log lines written before that
+build still hold the whole URL**; vpay's `docs/runbooks/privacy-telemetry.md`
+gives the read-only SQL to find them, and what to do with them is undecided
+(RFC-0002 D9/D13). A livemode webhook URL refused at boot is still printed as
+written.
+
+**The excerpt is personal data, and an erasure rewrites it.** A receiver that
+echoes what it was sent has put the payer's details in it. Since 2026-09-19
+(vaam-apps/vpay#211) a customer erasure replaces `response_excerpt` with
+`[redacted]` on **every** delivery of that payer's `customer.*` events,
+terminal ones included. Since 2026-09-23 (#251) it does the same for the
+`invoice.*` deliveries whose body carries an out-of-band `reference`
+(`vpay_db::customers`, `redact_stored_copies` and
+`redact_out_of_band_references`). A runbook or tool that reads excerpts must
+therefore expect `[redacted]` in them. A new column that stores a copy of a
+merchant's response needs its own erasure statement:
+`an_erasure_leaves_no_payer_identifier_in_any_column_of_any_table` is the
+test that fails if it lacks one.
+
+## Status, as of 2026-09-23 (unchanged since 2026-09-16)
+
+- Signing, both ladders, the outbox, `webhook_deliveries`, the SSRF guard and
+  the SDK verifiers: real, tested, with the Node SDK's signature parity checked
+  under `VPAY_REQUIRE_NODE=1`.
+- **No merchant endpoint outside this repository has ever been POSTed to.**
+  Every delivery in this repository's history went to a test receiver
+  (`backends/tests/webhook-receiver`, `examples/webhook-receiver`).
+- `docs/status/backend.md` marks the outbox drain and the delivery ladder 🟡,
+  and those markers are there because a test says so.

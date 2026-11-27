@@ -1,0 +1,267 @@
+# Testing the checkout, and the gates that guard the gates
+
+_Verified against vpay `a33aac61` (2026-09-29); the `@vaam-apps/ui` 0.5.0
+notes re-read against `73c3a7cf` (2026-10-21); case 6 and `just build-storybook`
+re-read against `3bdbbeac` (2026-10-24, vaam-apps/vpay#349); the spec list
+under "End to end" against `10f42747` (2026-10-30). Version-sensitive claims
+carry the date they became true — see [VERSIONING.md](https://github.com/vaam-apps/vpay-skills/blob/main/VERSIONING.md)._
+
+> **Added 2026-09-29, and it is a limit on every number below.** The checkout
+> app's `@vaam-apps/ui` range moved `^0.1.2` → `^0.2.4` (vaam-apps/vpay#249,
+> 2026-09-23) → `^0.4.0` (#258, 2026-09-25 — titled "move the dashboard", but
+> `frontends/apps/checkout/package.json` is in its diff). **Nothing else under
+> `frontends/apps/checkout` changed** across either bump (`git diff` over
+> `0799a8d2..a33aac61` shows that one file). #249's own message says 0.2.0
+> "carried documented visual breaking changes … so typecheck/lint were not
+> enough on their own to trust the bump". The browser-level measurements in
+> vpay's docs at `a33aac61` for 0.3.0 and 0.4.0 are the **dashboard's**
+> (`docs/flows/dashboard/status-built-and-not-built.md`); a search of
+> `docs/status/` and `docs/flows/hosted-checkout*` for `0.2.4` and `0.4.0` on
+> 2026-09-29 found none for the checkout. So the 22-story, axe, `--color-base-100` and byte-count figures here
+> were measured at `^0.1.2` and have not been re-evidenced at `^0.4.0` in any
+> vpay page. The gates still run in CI; their _numbers_ are history.
+>
+> **Added 2026-10-21.** vaam-apps/vpay#318 moved the checkout to `^0.5.0`,
+> the Material 3 Expressive release, with the dashboard. The checkout was
+> upgraded and **not redesigned**, but two of its tests and its contrast helper
+> changed, because
+> 0.5.0 replaced the palette and the `#0a0b0d` literal they pinned no longer
+> exists: `src/styling-gate.test.ts` now asserts that `base-100` is
+> `var(--md-sys-color-surface)` and that the compiled sheet carries the
+> package's own dark `surface` value; `src/testing/contrast.ts` follows
+> `var()` chains and composites over a ground named by token; and
+> `outcome-contrast.test.ts`'s hand-computed forward-button ratio moved from
+> 16.34:1 (`#e8eaed` on `#0a0b0d`) to **6.109:1** (`#cfcdff` / `#424179`,
+> the dark `primary` / `on-primary` roles, recomputed in Python). #318's
+> verification page records one thing it did not measure: the checkout's
+> brand retarget sets `--color-primary`, and a component that reads an M3
+> role directly may not follow a merchant's colour. Treat merchant branding
+> on 0.5.0 as unverified.
+
+The theme through this whole page: **every one of these checks has, at some
+point, gone green while measuring nothing.** Each fix is a test that asserts the
+_gate_ is still a gate. When you add a check here, ask what a vacuous version
+of it would report.
+
+## The suites
+
+| Command                                       | What it is                                                                                                                                                                                                                                                                                                                                                         |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `pnpm --filter @vpay/checkout test`           | The jsdom/node suite. `environment: "node"` by default so tests talking to `src/testing/browser-stub.ts` use the platform `fetch`; rendering tests opt in with a `// @vitest-environment jsdom` docblock. Run by `just test-web` → `just ci`                                                                                                                       |
+| `pnpm --filter @vpay/checkout test-storybook` | 22 stories in a real headless Chromium with axe over each. **Not** in `just ci` — it needs a ~115 MB Playwright Chromium and `just ci` must pass offline. CI's `web` job runs it                                                                                                                                                                                   |
+| `just build-storybook`                        | Builds both apps' Storybooks **and asserts the built stylesheet defines `--color-base-100`**, then (since 2026-10-23) runs each app's `a11y-gate.test.ts` against that build, once per app inside its loop, with `VPAY_STORYBOOK_BUILT=1` and a JSON-report check that fails the recipe if any case skips (since 2026-10-24), so case 6 runs in CI and cannot skip |
+| `just test-e2e`                               | Cypress against the real compose stack                                                                                                                                                                                                                                                                                                                             |
+
+`vitest.config.ts` sets `esbuild.jsx: "automatic"` for the jsdom suite because
+the app's `tsconfig.json` says `"jsx": "preserve"` for Next.
+
+## `src/a11y-gate.test.ts` — the gate on the gate
+
+A plain jsdom test, in the suite `just ci` does run, guarding a browser suite
+`just ci` cannot run. Six cases:
+
+1. `.storybook/preview.ts` still sets `a11y.test: "error"` and not
+   `"off"`/`"todo"`.
+2. `preview.ts` still paints the document shell the real page paints — it must
+   contain `bg-base-100`, `data-theme`, and `import "../app/globals.css"`.
+3. `.storybook/main.ts` still loads `@storybook/addon-a11y` and
+   `@storybook/addon-vitest`.
+4. **`globals.css` imports the theme BEFORE any other at-rule.**
+5. No story switches the addon off and nothing disables an axe rule. **This app
+   pins the set at zero** — the expected arrays are empty, so the first
+   suppression added fails `just ci` and has to be argued for in review.
+6. The **built** Storybook stylesheet resolves `--color-base-100` to the colour
+   the package's own `theme.css` resolves it to, in `dark` and in `light`
+   (since vaam-apps/vpay#349; vaam-apps/vpay#355 had made it "every definition
+   ends in a colour, one `var()` deep" on 2026-10-23, and before that it was
+   "defines it as a hex").
+
+### Case 2 is not cosmetic
+
+`bg-base-100` is what **paints** the background; the theme only defines the
+variable. Without it a story renders on the browser's default white while the
+real page is `#0a0b0d` — and axe then measures every foreground against the
+wrong ground and returns a verdict that is confidently wrong. Measured: the
+first run of this suite passed 22 stories against white, and a deliberately
+dark-grey `#3a3a3a` probe (unreadable on this theme) passed with them.
+
+`THEME` is imported from `src/config/theme.ts` rather than spelled in
+`preview.ts`, so the story shell cannot drift from what the layout sets.
+
+### Case 4 is the theme-ordering defect, as a position check
+
+`app/globals.css` must read `@import "tailwindcss"` → `@import
+"@vaam-apps/ui/styles/theme.css"` → `@plugin "daisyui" { themes: false }` →
+`@source "../node_modules/@vaam-apps/ui/dist"`.
+
+The theme `@import` sat **after** `@plugin "daisyui"` until 2026-09-12. CSS
+drops an `@import` that follows another at-rule. Tailwind's own parser is
+lenient, so `next build` and `src/styling-gate.test.ts` — which compiles the
+same file through `@tailwindcss/postcss` directly — both inlined the theme and
+both **passed**. Storybook's vite build did not: it emitted a stylesheet with
+every `var(--color-base-100)` present and `--color-base-100` defined nowhere.
+Every component rendered unstyled on the browser's default white, axe measured
+every foreground against the wrong ground, and the suite reported **22 passing
+stories for six consecutive runs** — with the `#3a3a3a` probe passing
+alongside them.
+
+> A green a11y run against the wrong background is worse than no run: it is a
+> claim nobody will re-check.
+
+The test strips comments before checking, because this file's own header
+explains the defect in prose and names `@plugin` — the first draft failed on
+its own documentation.
+
+### Case 6 — `ctx.skip()`, not a bare `return`
+
+The case reads `storybook-static/assets/*.css`. When that directory does not
+exist it calls **`ctx.skip()`**. A bare `return` reported the case as **PASSED
+with nothing measured** — and CI is exactly where that happens: the `web` job
+runs `pnpm -r test` **before** `just build-storybook`, so `storybook-static/`
+never exists when this file runs there. The one check standing behind this
+app's whole styled-or-not claim was green-and-blind on every CI run. Found in
+the dashboard's copy of this file and fixed in both, 2026-09-13.
+
+Its failure message also names the _other_ cause: a stale `storybook-static/`.
+A `just build-storybook` that fails its own check leaves the theme-less
+artefact on disk on purpose, so it can be inspected — and every later run of
+this test then reads that instead of the source. Re-run
+`just build-storybook`: if it exits 0, the tree was fine and the artefact was
+stale.
+
+**Corrected 2026-10-23 (vpay `9499f09d` plus the change that lands this).**
+Until then case 6 asserted `--color-base-100:\s*#`, a hex literal. The
+`@vaam-apps/ui` 0.5.0 theme (#318) writes `--color-base-100:
+var(--md-sys-color-surface)` and gives that a hex per scheme, so case 6
+**failed on every local build** while CI only ever skipped it. It now
+resolves one `var()` and requires a colour, reporting each reason in one line
+rather than dumping the stylesheet. And `just build-storybook` now **runs**
+it, in both apps, straight after building, with `VPAY_STORYBOOK_BUILT=1`:
+under that variable a missing `storybook-static/` fails the case instead of
+skipping it. CI's `web` job already runs that recipe, so case 6 runs in CI
+for the first time. `pnpm -r test` without a build still skips it, as before.
+
+**Changed 2026-10-24 (vaam-apps/vpay#349).** Case 6 no longer stops one
+`var()` deep at "any colour". It parses the built sheet with `postcss`, follows
+the whole `var()` chain per theme (`dark` and `light`) through the app's
+`themeColours` (`src/testing/contrast.ts`), and requires the result to equal
+what the package's own `@vaam-apps/ui/styles/theme.css` resolves to. That makes
+a sheet that keeps the `var()` mapping but loses the Material roles behind it a
+failure, where the recipe's grep and the one-hop check passed it. In
+`just build-storybook` the case runs **once** per app, inside the loop, with
+`VPAY_STORYBOOK_BUILT=1`. Vitest exits 0 on a skipped case, so the recipe reads
+the JSON report and fails unless every case passed; #355's second run after
+the loop is gone. Do not re-add a hex or role-name literal to the assertion:
+compare against the package's theme, as it does now.
+
+**Why one `var()` was not enough (measured 2026-10-24).** #355's check read
+the stylesheet as text and followed one `var()`, so it could not tell the two
+themes apart: with only the light theme's `--md-sys-color-surface` deleted
+from a built checkout sheet, #355's case **passed** and #349's failed on
+`"light"`. `themeColours` applies cascade layers and theme pinning and follows
+`var()` to any depth; on `@vaam-apps/ui` 0.5.0 the package resolves
+`--color-base-100` to `#0f0c1b` (dark) and `#fdf7ff` (light). #355's one-hop
+helpers are gone; its `VPAY_STORYBOOK_BUILT` guard stays.
+
+## `src/styling-gate.test.ts` — what `just ci` cannot build
+
+`just ci` never builds this app. This test compiles `app/globals.css` through
+`postcss([tailwind()])` in Node, which is possible because Tailwind v4's
+`@source` scan runs under a plain `.process(css, { from, to })` call.
+
+Two cases, each with a hand-run, reverted mutation:
+
+- **`@source` reached `@vaam-apps/ui/dist`** — a utility only the package's
+  compiled `dist` writes must be present. Deleting the `@source` line took the
+  count 2 → 0 and the file 201 041 → 97 446 bytes.
+- **Every `--color-base-100` the build emits is one the package declares**.
+  Removing `themes: false` produced **three** values — `#0a0b0d`,
+  `oklch(100% 0 0)` and daisyUI's stock dark `oklch(25.33% 0.016 252.42)`, the
+  last at higher specificity.
+
+Both assert a **non-zero match count first**. The discipline exists because a
+contrast helper ported unchanged once parsed zero colours and still passed.
+
+Note the split of responsibilities: `styling-gate.test.ts` uses the _lenient_
+parser, so it **cannot** catch the `@import` ordering defect and did not.
+`a11y-gate.test.ts` reads the _built_ Storybook's stylesheet instead.
+
+## The 22 stories
+
+`src/components/checkout-screens.stories.tsx`. Seventeen checkout states, two
+of them repeated in English, and three return-page screens. The states come
+from `src/testing/screen-states.ts` — **the same literals
+`checkout-view.test.tsx` asserts against** — so a screen a designer reviews is a
+screen a test covers, and a screen added to one without the other fails the
+"covers each state the machine can be in" assertion.
+
+This is the **only** thing in the repository that can answer `color-contrast`
+for these screens. The jsdom axe suites next door (`screens.axe.test.tsx`,
+`outcome-contrast.test.ts`) compute no colour and answer `color-contrast`
+"incomplete". Issue #73's Cypress attempt could not get a verdict either:
+daisyUI's `:root` scroll-lock rule carries an unconditional `background-image`
+and axe-core abandons the rule under any such ancestor. A story renders inside
+`#storybook-root` with no such ancestor, which is why this route works where
+Cypress could not.
+
+The stories were deleted along with `@vpay/ui` and **restored verbatim** on
+2026-09-12 — the props of `CheckoutView` and `ReturnView` did not change in the
+cutover, so the file is the one that was deleted rather than a reconstruction.
+
+## Storybook wiring gotchas
+
+All four are in `vpay-frontend`'s `references/workspace.md` in full, because
+both apps share them. The short list, each a measured false green:
+
+- `esbuild.jsx` belongs in `.storybook/main.ts`'s `viteFinal`, **not** in
+  `vitest.storybook.config.ts` — one setting, read by both `build-storybook`
+  and `addon-vitest` through `configDir`.
+- `test.css: true` in `vitest.storybook.config.ts`, or every story renders
+  unstyled and passes.
+- Declare every dependency the stories reach in `optimizeDeps.include`, or a
+  cold dep cache gives a `null` React and vitest reports every story passing
+  beside a count of unhandled errors.
+- **No** `setupFiles` calling `setProjectAnnotations` — the manual call
+  suppresses the automatic one, measured reporting 93 passing stories while
+  checking none.
+- `main.ts` aliases `@vaam-apps/ui/styles/theme.css` by hand, computed from the
+  package's own `exports`, because vite drops the `exports`-mapped specifier
+  silently.
+
+## End to end
+
+`frontends/tests/e2e/cypress/e2e/` — `checkout.cy.ts`, `shop-hosted.cy.ts` and
+`shop-embedded.cy.ts` as of 2026-10-27. `dashboard.cy.ts` was deleted with the
+staff sign-in (vaam-apps/vpay#383; VP-6b restores a dashboard spec), and with it
+the staff-password file this paragraph described. **Corrected 2026-10-30:** a
+fourth spec, `dashboard-human-login.cy.ts` (vaam-apps/vpay#394, VPA-5c), signs
+the demo staff member in through the dashboard against the compose stack, and
+the staff-password file is back
+(`.e2e/<demo_project>/staff-password.txt`, written by `just demo-staff`). It
+touches no checkout page; `dashboard.cy.ts` is not back, and the VP-6b spec
+for a paired-key console is still unwritten. `pnpm --filter @vpay/e2e e2e`
+runs the suite twice: plain, then with `VPAY_E2E_FRAMED=1`. `just e2e-specs` is
+what supplies every URL and port.
+
+Two Node-side fixture servers are started by `cypress.config.ts` itself:
+`checkoutBrowserServer.ts` and `frameFixtureServer.ts`.
+
+## What is still not proven
+
+- No Cypress case has ever opened a **real popup** — every window in
+  `sdks/stripe-js/src/popup.test.ts` is a stub, because jsdom implements
+  neither `window.open` nor cross-window `postMessage`. `examples/shop`'s popup
+  mode was exercised by hand. This is a dated ⛔ in `docs/sdks/parity.md`.
+  _(2026-11-17, issue #65, vpay#402: that file is 41 cases now and proves the
+  primary/fallback channels, the per-session dedupe in both orders and the
+  reopened-`open`-session release — still against stub windows. vpay's own
+  message is a literal of `CompleteMessage` there, not this page.)_
+- No Cypress case follows an invoice's `hosted_invoice_url` to a paid charge,
+  so the invoice line (2026-11-17, issue #91) is proven in jsdom, Storybook and
+  the integration suite only.
+- The `@vaam-apps/vpay-stripe-js` package has never run against a live stack;
+  its server is always `src/testing/browser-stub.ts`. The `/v1/browser` routes
+  themselves are proven server-side by
+  `backends/tests/integration/tests/browser_checkout.rs`.
+- The rail behind every one of these runs is a WireMock host. See
+  `docs/status.md`'s banner.

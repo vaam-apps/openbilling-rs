@@ -33,7 +33,7 @@ The owner, 2026-11-27:
 
 [vpay](https://github.com/vaam-apps/vpay) is a public payment orchestrator with a Stripe-shaped merchant API. What
 this record says about it was read in vpay's source at `8b56831` and in its skills (`vaam-apps/vpay-skills` at
-`19f15ba`, read but not vendored here); each fact is listed, with its file, under *Agent notes*.
+`19f15ba`, vendored in `.agents/skills/vpay*` and pinned in `skills-lock.json` since 2026-11-27, the owner's choice); each fact is listed, with its file, under *Agent notes*.
 
 ## Decision
 

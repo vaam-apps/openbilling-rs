@@ -1,0 +1,499 @@
+# CrateStack in vpay: the private module, the traps, and the drift
+
+_Verified against vpay `a33aac61` (2026-09-29); the staff-model rows and the
+note under the statement table were re-read against vpay `f885170c`
+(2026-10-27), and the 2026-10-30 corrections against `10f42747` (2026-10-30). Version-sensitive claims
+carry the date they became true — see [VERSIONING.md](https://github.com/vaam-apps/vpay-skills/blob/main/VERSIONING.md)._
+
+`vpay-db` compiles `schemas/vpay.cstack` with CrateStack's
+`include_server_schema!` macro
+(`cratestack = { package = "cratestack-pg", version = "=0.16.0", features = ["postgres", "envelope", "cose", "mcp"] }`;
+`mcp` since 2026-10-27 for the merchant MCP endpoint, vaam-apps/vpay#377; the rest
+since 2026-10-26, vaam-apps/vpay#376; ~~`=0.15.0`~~ from 2026-09-29,
+vaam-apps/vpay#259; ~~`=0.12.0`~~ before that. Each was a version bump, not a
+feature: `schemas/vpay.cstack` needed no edit either time. 0.16.0 turns on
+`envelope` and `cose` and links `cratestack-cose`'s Ed25519 stack into
+`vpay-server`, **and nothing calls it**: there is no `EnvelopeLayer`, no
+`CoseSigner` and no signed transport. In v0.15.0 only `vpay-config`, which parses and
+thumbprints registered keys, and `vpay_api::merchant_keys`, the resolver, use
+`cratestack-cose`. No request path reaches either. See `vpay-merchant-api`.)
+
+**Claims on this page that name `0.12.0` are measurements of 0.12.0.** vpay
+re-measured only some of them at 0.15.0 (below), and every one it did not is
+marked **unverified at 0.15.0** where it appears. vpay's own docs, doc comments
+and `schemas/vpay.cstack` still say `0.12.0` in dozens of places, as dated
+history; that is not a stale pin. The pin is in `Cargo.toml`, `justfile` and
+`vpay-db/Cargo.toml`.
+
+**`backends/migrations/*.sql` remains the authoritative schema.** Nothing
+generates DDL from the `.cstack` file and it drives no migration. What the
+file buys is a second, machine-checked description of the same database and
+a query layer for the parts of it that fit.
+
+## What actually runs through it, as of 2026-09-23 (re-confirmed 2026-09-29)
+
+Twenty `model` declarations (nineteen from 2026-09-13, when `Credential`
+arrived, until step A added `ManualPayment` on 2026-09-23). **Fourteen** carry
+production statements — thirty-six chains, counted on vpay `b747e5d5` as every
+generated builder chain in `backends/crates/vpay-db/src/*.rs` outside
+`#[cfg(test)]` that ends in one `run(..)` or `run_in_tx(..)`. **Re-checked on
+vpay `a33aac61` (2026-09-29):** the twenty `model`s and the per-file counts of
+`.run(` / `.run_in_tx(` before the first `#[cfg(test)]` are identical to
+`b747e5d5` (the 0.15.0 bump and ADR-0025 to ADR-0027 added no generated
+statement — `claim_intent_customer` and the erasure statements are raw
+`sqlx`):
+
+| model                        | statements | what                                                                                    |
+| ---------------------------- | ---------- | --------------------------------------------------------------------------------------- |
+| `DisabledClient`             | 3          | `find_unique`, `upsert`, `delete_many().where_(..)`                                     |
+| `Currency`                   | 2          | `find_unique(..).for_update()` then `upsert(..)`, both `run_in_tx` on boot step 4       |
+| `Provider`                   | 1          | `upsert(..).run_in_tx` — migration `0033` is what made it possible                      |
+| `Event`                      | 1          | the outbox: `update_many(..)` on the fan-out transaction                                |
+| `WebhookDelivery`            | 1          | the outbox: `upsert(..).do_nothing()` on the same transaction                           |
+| `Customer`                   | 2          | `touch_last_used`'s `update_many`, the hard delete's `delete_many`                      |
+| `CheckoutSession`            | 4          | four reads (`find_many`/`find_unique`), no generated write                              |
+| `Invoice`                    | 1          | `mark_uncollectible`'s guarded `update_many`                                            |
+| `InvoiceItem`                | 1          | `items_for_invoice`, a `find_many`                                                      |
+| `ManualPayment`              | 1          | `manual_payment_for_invoice`, a `find_many` (step A, 2026-09-23)                        |
+| `StaffMember`                | 5          | every `staff_members` statement                                                         |
+| ~~`StaffSession`~~           | ~~7~~      | ~~every `staff_sessions` statement~~ deleted 2026-10-27 (vaam-apps/vpay#383)            |
+| ~~`OauthAuthorizationCode`~~ | ~~3~~      | ~~every `oauth_authorization_codes` statement~~ deleted 2026-10-27 (vaam-apps/vpay#383) |
+| `Credential`                 | 4          | every `credentials` statement (2026-09-13)                                              |
+
+**Corrected 2026-10-30 (vaam-apps/vpay#388, VPA-2).** The two struck models
+are declared again, with `model StaffSsoAttempt`, and their tables are back
+(migration `0058`). Per file, before the first `#[cfg(test)]`, at
+`10f42747`: `staff_sessions.rs` **7** `.run(`, `authorization_codes.rs` **3**,
+`staff_sso_attempts.rs` **4**, `console_keys.rs` **5**, `credentials.rs` **5**
+and `staff.rs` **7** (one of `staff.rs`'s seven is the `Credential` create in
+the `staff add` transaction, so attribute by accessor, not by file). Those are
+`.run(`/`.run_in_tx(` counts, not the chain recount the method asks for. The
+model total is **twenty-three** (`MODEL_TABLES`).
+
+**Changed 2026-10-27 and not re-counted here.** vaam-apps/vpay#383 deleted
+`model StaffSession` and `model OauthAuthorizationCode` with the staff
+sign-in, and migration `0056` dropped their tables. It added `model ConsoleKey`
+(`console_keys`), whose repository, `vpay_db::ConsoleKeys`, runs generated
+chains (`create`, two `find_many`, one of them on a `starts_with` prefix,
+and the revoke's `update_many`), and it rewrote `staff.rs` and `credentials.rs`, so the `StaffMember`
+and `Credential` figures above may have moved too. vaam-apps/vpay#380 added
+`model EnvelopeNonce` the same day. The model total is still twenty. The table
+above is the 2026-09-23 count with the two deleted rows struck: recount by the
+method above before quoting any number from it. `schemas/vpay.cstack`'s
+header box still lists `StaffSession 7` and `OauthAuthorizationCode 3` at
+`f885170c`, so it is stale too. _(2026-10-30: those two figures happen to be
+right again after vpay#388; the box's "FOURTEEN OF TWENTY" and its
+thirty-six-statement list are not — it names neither `ConsoleKey` nor
+`StaffSsoAttempt` at `10f42747`.)_
+
+~~Nineteen `model` declarations, **five** of which carry real queries~~ —
+**corrected 2026-09-23.** The five-row table was the figure in
+`schemas/vpay.cstack`'s own header box, which said "FIVE" on `b747e5d5`, and it
+was wrong from 2026-09-06 (`Customer`) and 2026-09-07 (the rest). vpay's
+`docs/status/infrastructure.md` corrected it to twelve of seventeen on
+2026-09-10 (issue #87). ~~`docs/reference/vpay-db/cratestack-what-runs-through-it.md`
+still carries that 2026-09-10 registry ("thirty-two statements, twelve
+tables"), with no `Credential` or `ManualPayment` row.~~ **Corrected
+2026-09-29:** both were fixed by vaam-apps/vpay#255 (2026-09-24). The schema's
+header box now says "FOURTEEN OF TWENTY MODELS ARE QUERIED" with the same
+36-statement per-model list as the table above, and the registry page opens with
+a dated banner saying its 2026-09-10 table is a snapshot and giving today's
+figures (**36 statements over fourteen tables**, and what moved since). The
+page's body is still the 2026-09-10 registry, kept as written. **Recount by the
+method above before you quote any of these numbers.**
+
+~~Four whole tables have **every** repository statement on the generated layer,
+with no raw `sqlx` in their modules: `staff_members` (5), `staff_sessions`
+(7), `oauth_authorization_codes` (3) and `credentials` (4).~~ **Two of those
+four tables were dropped on 2026-10-27** (`0056`, vaam-apps/vpay#383):
+`staff_sessions` and `oauth_authorization_codes`. Whether `staff_members` and
+`credentials` are still generated-only after #383 rewrote their modules was
+not re-checked for this note. **Corrected 2026-10-30:** both tables are back
+(`0058`, vaam-apps/vpay#388), and at `10f42747` none of `staff.rs`,
+`staff_sessions.rs`, `authorization_codes.rs`, `staff_sso_attempts.rs` or
+`credentials.rs` calls `sqlx::query*` before its first `#[cfg(test)]` — all
+five tables are generated-only, as is `console_keys`'s repository bar its
+transaction type. ~~Three … (7),
+(6), (3), sixteen of the thirty-two statements~~ _(this said three tables and
+7/6/3 — the 2026-09-10 registry's counts; re-measured 2026-09-23.)_
+
+That is a property of migrations `0035` (the staff three) and `0044`
+(`credentials`) rather than of ambition. Everything that keeps other tables on
+raw `sqlx` was designed out of those four before they were created: no `jsonb`, no `bytea`, no native enum, no `DEFAULT` on
+any column a writer names, no `seq` cursor.
+
+**The other six are a design sketch** — `PaymentIntent`, `Charge`,
+`Refund`, `LedgerTransaction`, `LedgerEntry`, `RateLimitWindow` (the last
+declared since 2026-09-10; `rate_limits.rs` is raw `sqlx`). `model PaymentIntent`,
+`model Charge` and `model Refund` in particular carry **no `@@allow` arm at
+all**, so every generated read on them answers zero rows — and that is
+pinned in that direction on purpose by
+`the_three_money_models_answer_no_rows_to_every_action`. The usual hazard is
+an `@@allow` going missing; here it is the reverse. An arm added to one of
+those three would be a standing permission over `payment_intents`, `charges`
+and `refunds` with no caller asking for it, and nothing else in `just ci`
+would say a word.
+
+## Why `mod schema` is private, and what keeps it that way
+
+`include_server_schema!` expands to `pub mod cratestack_schema { … }` **at
+its invocation site**. The invocation therefore lives in a private
+`mod schema;` in `lib.rs` — never `pub mod` — and nothing below it is
+re-exported, ever.
+
+At the crate root the same expansion would publish
+`vpay_db::cratestack_schema::*` — every model struct, every query delegate
+and a whole generated `pub mod axum` — to every consumer of `vpay-db`, **a
+wholesale reversal of ADR-0016 standard 5 in a diff that looks like one
+line**.
+
+`cargo xtask verify-repositories` has three signals. The first two read
+declarations and `impl` headers:
+
+1. a declaration whose body carries a `DB_HANDLE_TYPES` field — `PgPool`,
+   `Transaction`, **`Cratestack`**, **`SqlxRuntime`**. The last two were
+   added 2026-09-06 and neither contains the word `PgPool`: a
+   `struct CsChargeStore { cs: Cratestack }` would have been invisible.
+   Matching is on identifier boundaries, which keeps `Cratestack` out of
+   `CratestackError` and `CratestackContext`.
+2. a type on the right of `impl <Trait> for <T>` where `<Trait>` is a `pub`
+   trait `vpay-db` declares.
+
+The third is **textual, and that is not laziness**:
+
+> The module the macro creates **does not exist in any source file**, so the
+> two signals above cannot see it, and neither can `cargo doc`'s intra-doc
+> link resolution or any lint. `pub use schema::cratestack_schema;` would
+> hand `vpay_db::cratestack_schema::Charge` to every consumer, **and this
+> gate said `ok` for it until this check landed** — with both original
+> signals in place, `pub mod schema;` _and_ `pub use
+schema::cratestack_schema;` both printed `ok`.
+
+So the gate also greps for `include_server_schema!` and refuses the module
+being made `pub` or named in a `pub use`.
+
+`verify-repositories` strips comments (unlike `verify-no-mocks`), because
+`PgRepositories` is a real type with a real reason to be discussed and an
+intra-doc link is documentation, not a reach.
+
+## The schema produces a TypeScript client too (since 2026-10-26)
+
+_Since vaam-apps/vpay#371._ `just gen-dash-client` runs
+`cratestack generate-typescript` over `schemas/vpay.cstack` into
+`frontends/packages/dash-client` (`@vpay/dash-client`), with
+`schemas/typescript-client/package.json.j2` overriding that one template so
+the package is consumed as TypeScript source (the stock template builds
+`dist/` with its own `typescript ^7`). `just check-schema` fails if the
+committed tree drifts — and **any** schema edit, a comment included, drifts
+it, because `src/runtime.ts` embeds the schema's SHA-256. So an edit to this
+file is two commands now: the edit, and `just gen-dash-client`.
+
+The dashboard uses only the client's **procedures**. The generated model
+classes target routes nothing mounts (below), and the generator's `--refine`
+manifest is deliberately not generated for the same reason; the
+`@cratestack/refine` manifest is hand-written over the procedures.
+
+## `procedure_router`, never `router()`
+
+The dashboard's read surface mounts `cratestack_schema::axum::procedure_router`.
+
+The generated `router()` **merges `model_router(...)`** — the CRUD CrateStack
+generates for every model, creates, updates and deletes included, whether or
+not anything routes it. `procedure_router` is the same generated function with
+that merge removed. **"Reads only" is expressed by calling a different
+generated function rather than by trusting a route table**, and
+`no_generated_model_route_is_mounted_only_the_one_procedure_is` probes each
+model's paths to prove none matches.
+
+~~**Gap, measured on vpay `b747e5d5` (2026-09-23): the probe covers nineteen of
+the twenty models.** Its `MODEL_TABLES: [&str; 19]` has no `manual_payments`.~~
+**Closed 2026-09-24 by vaam-apps/vpay#255, which this page's re-verification
+prompted.** At `a33aac61` it is `MODEL_TABLES: [(&str, &str); 20]` of
+`(model, table)`, and **before any request is sent** the model column is sorted
+and compared with `cratestack_schema::MODELS` — the macro's own list of every
+`model` in the schema — so a model added and not listed (or listed and no longer
+declared) fails the test in both directions. Each of the twenty is probed on two
+paths and four methods (160 requests; the count is arithmetic from the loop
+bounds, no sabotage run watched it). **What is still hand-written is the table
+column:** a wrong table beside a right model would probe the wrong path
+(vpay lists `models::<NAME>_MODEL.table_name` as the stricter source it did not
+use). **If you add a model, add its `(model, table)` pair in the same commit.**
+
+`dashboard_procedure_router` never calls `crate::persistence::system_context`
+— the only place in the crate that can produce a context for which
+`is_system()` is true. `resolvers: ()` because the schema declares no
+`@computed` field.
+
+**Known-stale prose** (still so at `a33aac61`: `schema.rs` L25 and L362). That
+test's name, its inline comment ("the one real
+procedure"), and `schema.rs`'s header ("the bodies of this schema's
+`procedure` declarations — one today") all say **one**. The schema declares
+**five**: `searchPaymentIntents`, `searchRefunds`, `searchWebhookDeliveries`,
+`searchCustomers`, `searchCheckoutSessions`, with five body modules under
+`src/schema/`. **The code wins.** If you touch that file, fix the sentences.
+
+## Traps that no gate catches
+
+### 1. The table name is derived from the model name — and there is no `@@map`
+
+0.12.0 derived it with
+`cratestack_core::route_naming::pluralize(to_snake_case(model))`.
+**Unverified at 0.15.0 by source:** vpay's docs name the function only as of
+0.12.0. What vpay measured is narrower: the `vpay-db` and Postgres-only integration
+suites were run against a throwaway local Postgres 16 after the bump (the
+WireMock-dependent suites could not run in that session and rely on CI), and
+the relation-joined reads passed unchanged, so no model those suites touch
+changed table; and `schema.rs`'s probe still states
+`pluralize(to_snake_case(model))` as the rule at `a33aac61`. Treat the rule as
+holding and a container-backed test as the proof, as below.
+
+> **`model Staff` reads and writes a table called `staffs`.**
+
+The first draft of migration `0035` created `staff`. Every query answered
+`relation "staffs" does not exist`, and **no gate said anything** — not
+`cargo build`, not `just check-schema`, not clippy, not any of the `just
+verify` gates — until a container-backed test ran.
+
+The model is `StaffMember` and the table is `staff_members`. The Rust trait
+is still `vpay_db::Staff`, because it is a trait about staff and not about a
+table.
+
+**If you add a model, run a container-backed test against it before you
+believe the name.**
+
+### 2. A `procedure` name that collides with a generated method is a compile error
+
+`procedure listPaymentIntents` collides with the generated `list`:
+
+```text
+Error: procedure `listPaymentIntents` collides with the generated ...
+```
+
+and fails as `error[E0428]`. That is why all five are named `search*`, not
+`list*` — a naming convention with a compiler behind it, not a preference.
+(`validate/procedure_handler_collisions.rs` upstream.)
+
+### 3. A `procedure` body is hand-written, and that is the point
+
+The macro emits the signature into a `ProcedureRegistry` trait **inside the
+private expansion**; vpay writes the body in `src/schema/*.rs`. That is why a
+procedure can read `payment_intents` when a generated delegate cannot. It is
+also why every body module must be a **child of `mod schema`**, not a
+sibling: the trait it implements is private there.
+
+The trait requires exactly **one implementer per schema** (`Payments`, in
+`search_payment_intents.rs`). Other body modules contribute a `pub(super)`
+free function that `Payments` delegates to — not a second impl.
+
+Tenancy predicates CrateStack's policy language cannot express (it cannot
+name the caller's own tenant) live in the **procedure body's own `WHERE`**.
+
+### 4. The grammar has no `@@check(expr)` at 0.12.0 — **unverified at 0.15.0**
+
+vpay's measurement is a `grep -rn '@@check'` over `cratestack-parser` and
+`cratestack-migrate` at 0.11.1 and 0.12.0 that found nothing. **vpay did not
+repeat it at 0.15.0**: its #259 write-up records only that `cratestack check`
+at 0.15.0 accepts `schemas/vpay.cstack` unchanged, and `schemas/vpay.cstack` and
+`postgres_smoke.rs` still say "no `@@check(expr)` in the 0.12.0 grammar". Do not
+tell anyone the grammar still lacks it, and do not tell them it gained it;
+re-run the grep against the 0.15.0 sources before you build on either.
+
+`@db_enforce` promotes only a _single field's_ `@range`/`@length`/`@iso4217`
+validator to a CHECK. A cross-column constraint — such as
+`supports_partial_refunds ⇒ supports_refunds` — cannot be expressed, and the
+`.cstack` file carries a GAP note saying so. The real CHECK lives in
+`backends/migrations/0002_create-providers.sql`.
+
+## The version lockstep
+
+Three pins that must move together, because they are one release:
+
+| where                | what                                                                                                                                                      |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `justfile`           | `cratestack_version := "0.16.0"` — what CI installs and `just check-schema` compares against                                                              |
+| root `Cargo.toml`    | `cratestack = { package = "cratestack-pg", version = "=0.16.0", … }`, and since 2026-10-26 `cratestack-cose` and `cratestack-core` at `=0.16.0` beside it |
+| `vpay-db/Cargo.toml` | `cratestack-codec-json = { version = "=0.16.0" }`                                                                                                         |
+
+_(All three read `0.12.0` until 2026-09-29, vaam-apps/vpay#259. The same bump
+repointed both `install-cratestack-cli` steps in `.github/workflows/ci.yml` at
+the commit the `v0.15.0` tag points to, `da143158…`, replacing a post-v0.12.0
+commit chosen for the CLI-download retry fix; the 0.15.0 action still carries
+that retry. `Cargo.lock` moved the twelve `cratestack-*` entries and nothing
+else.)_ _(All three moved to `0.16.0` on 2026-10-26, vaam-apps/vpay#376. Both
+`install-cratestack-cli` steps now point at `f90ddbfc…`, the commit the
+lightweight `v0.16.0` tag names. `Cargo.lock` went from 523 packages to 543,
+mostly `cratestack-cose`'s RustCrypto stack: `ed25519-dalek` and `p256` now
+appear twice each, once at the older major that `authkestra` and
+`jsonwebtoken` bring in.)_
+
+The CLI and the library being the same version is why the two checks cannot
+answer about different grammars. The twelve `cratestack-*` packages all
+declare `rust-version = "1.98.0"` and are the sole maximum over the whole
+graph — which is why the workspace's `rust-version` moved to 1.98 when they
+entered it.
+
+`just check-schema` is the seventh gate in `just verify`. It:
+
+- **fails, never skips**, if the `cratestack` CLI is absent ("this is a
+  failure, not a skip: nothing checked $schema in this run");
+- **warns** on a version mismatch rather than failing, because CI installs
+  the pin exactly and CI is the gate of record;
+- asserts a `datasource` block exists — **without one, cratestack treats the
+  file as client-only, stops applying every database-backed-model rule, and
+  still prints `schema OK`**;
+- asserts at least `cratestack_min_declarations` (15) model/enum
+  declarations — an emptied file type-checks vacuously;
+- then runs `cratestack check --schema schemas/vpay.cstack`.
+
+`cargo build` is the second, independent check: the macro parses the file
+with `cratestack-parser` and fails the build on anything the CLI would
+reject, **and on some things it would not** (composite `@@id`, list-arity
+scalars on a database-backed model).
+
+## The drift test — exact, not a floor
+
+`the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount` in
+`backends/tests/integration/tests/postgres_smoke.rs` runs
+`cratestack migrate baseline --strict` against a real, fully migrated vpay
+Postgres. `--strict` inverts the exit condition (fail non-zero, no writes, if
+any drift is found), which is what makes an adoption tool usable as a
+measurement. vpay is **not** adopting anything.
+
+It asserts `exit code == 1` — a zero exit would mean schema and migrations
+agree, the one outcome it must not silently accept — and then three
+`assert_eq!`s, exact and not floors:
+
+| constant                      | value (2026-09-16) | what it pins                                    |
+| ----------------------------- | ------------------ | ----------------------------------------------- |
+| `EXPECTED_DRIFT_CHANGES`      | **190**            | total pending changes                           |
+| `EXPECTED_DRIFTED_RELATIONS`  | **25**             | tables/views the drift is spread over           |
+| `EXPECTED_UNMAPPABLE_COLUMNS` | (pinned)           | live columns cratestack **declines to compare** |
+
+**Moved since that column, 2026-09-23:** 190 → 192 → **194** on 2026-09-15
+(migrations `0045`, `0046`; `master` before step A), then 194 → 199 → **201**
+over **26** relations since vaam-apps/vpay step A (RFC-0004 §§ 5–6, merged
+in vaam-apps/vpay#251), with `EXPECTED_UNMAPPABLE_COLUMNS` at **19**, unmoved. The step A
++7 is five `manual_payments` lines (four hand-named single-column CHECKs and
+the permanent `method` type line), one `records_an_out_of_band_payment` CHECK
+line, and one undeclarable `invoices_payment_record_key` index line; the
+composite foreign key costs nothing, because 0.12.0 introspects none
+(**unverified at 0.15.0** — see below). It was
+derived from the shape first while the host's Docker was down and then
+measured — the order this test is built to force. `docs/status/cratestack.md`
+has the derivation.
+
+**Re-measured at 0.15.0 on 2026-09-29 (vaam-apps/vpay#259):** the 0.15.0 CLI's
+`migrate baseline --strict` reports **201 changes across 26 tables**, "the
+constant it already asserted: the bump moved the count not at all", and
+`EXPECTED_UNMAPPABLE_COLUMNS` is still `19` in the test. So the constants above
+are the 0.15.0 ones too. **At 0.16.0 (2026-10-26, vaam-apps/vpay#376) the test
+pins 212 changes across 28 tables/views and 20 unmappable columns**
+(`EXPECTED_DRIFT_CHANGES`, `EXPECTED_DRIFTED_RELATIONS`,
+`EXPECTED_UNMAPPABLE_COLUMNS` in `postgres_smoke.rs`). The bump itself moved
+nothing: the 0.16.0 CLI reported those same pinned totals. The growth since
+2026-09-29 came from schema and migration changes made in between, not from
+either bump. That is a measurement of the _totals_. It does not
+re-prove the 0.12.0 statements about _why_ those totals have the shape they have
+(foreign keys not introspected; `jsonb`/`bytea`/`int2`/`int4` not read back).
+A total that did not move is consistent with those statements and does not
+establish them: if a later cratestack starts introspecting foreign keys, the
+count moves by the number of `.cstack`-declared relations and this test is what
+tells you.
+
+Plus the **exact sorted set** of tables the live database has and the schema
+does not.
+
+Why all four:
+
+- 85 changes in three relations and 85 over sixteen are different facts, and
+  only one is true. The relation count moving and the change count moving
+  mean **different things**.
+- The table-set assertion exists because the count alone was proven
+  insufficient: adding a `DisabledClient` model swapped one change for
+  another ("table … is not declared" out, "column default value differs" in)
+  and the total stayed at exactly 86. **A whole table entering the schema was
+  invisible to the change count.** This assertion caught it.
+- `EXPECTED_UNMAPPABLE_COLUMNS` is a **blind spot in the measurement
+  itself**: those columns are excluded from the comparison, so the drift on
+  them is unmeasured. Every one is a `jsonb`, a `bytea` or an `int2`/`int4`.
+  `jsonb` and `bytea` do not round-trip at 0.12.0 (**unverified at 0.15.0**; the
+  constant did not move across the bump), so it cannot reach zero by
+  schema work alone. **If it grows, the report is comparing less than it was,
+  and the change count can fall for a reason that has nothing to do with the
+  schema improving.**
+
+> **A commit that grows the schema and leaves these constants alone has
+> changed the schema without measuring the change.** The test failing is the
+> intended way to find that out.
+
+Migration `0033` moved the count by **zero, and had to**: a column default
+costs drift only when the two sides disagree, so dropping the five
+`@default(...)` from the `.cstack` file _without_ that migration would have
+made it 89.
+
+The test prints the CLI version it ran under and **warns** (does not fail) on
+a mismatch with the justfile pin — measured 2026-09-05, a shim printing
+`cratestack 9.9.9-review-fake` ran the whole measurement and said nothing.
+Whether that should fail instead is a maintainer's call, left open.
+
+It also writes to an `--out-dir` **outside the checkout**, created empty
+first, so "`--strict` wrote nothing" is an assertion about a directory that
+exists rather than one that may never have been reached.
+
+## What 0.15.0 changed that vpay can see (2026-09-29)
+
+One behaviour change reaches vpay, and it **reverses a trap this page's earlier
+versions did not list because vpay's docs had it as a known limitation**:
+
+- **Policy reads run on the caller's transaction (cratestack #1117).** A write's
+  update-policy re-check used to take its own connection from the pool
+  (`row_passes_update_policy(runtime.pool(), …)`); it now reads on the
+  connection the write runs on. The visible effect in vpay: a repeat
+  `WebhookDeliveries::create_in_tx` for one `(event_id, endpoint_id)` **inside
+  one still-open transaction** now answers `Ok(None)` — as a committed-row repeat
+  always did, and as the raw `INSERT … ON CONFLICT DO NOTHING` it replaced did —
+  ~~and `PersistenceError::Denied` (`"forbidden: update policy denied this
+upsert"`) from 2026-09-06 until 0.15.0~~. `create_in_tx`'s at-least-once
+  contract is unconditional again. The tripwire test is renamed
+  `a_repeat_creation_inside_one_transaction_is_reported_missing_like_a_committed_one`
+  and asserts the new answer (and the unchanged committed-row `None`). Nothing in
+  vpay reached the old refusal: duplicate webhook endpoint ids are refused at
+  boot and deduped, so no production behaviour moved. **If you read a claim
+  elsewhere that a same-transaction repeat is `Denied`, it is a 0.12.0 claim.**
+- **`.do_nothing()` holds one connection, not two.** The `MAX_CONNECTIONS / 2`
+  ceiling on `--worker-concurrency` (the boot guard, its integration test and
+  the chart's `"worker-concurrency-pool"` literal) was derived from two. It was
+  **left alone on purpose**: it is now the conservative reading rather than a
+  tight one, and loosening it is a behaviour change for its own PR (vpay's
+  `pool.rs`). Do not "fix" the ceiling in passing.
+- **No schema edit and no gate moved.** `cratestack check` accepts the schema
+  unchanged (29 model/enum declarations as of 2026-09-29), `just check-schema`,
+  `just verify` (fifteen gates), `just deny`, `just clippy` and `just test-doc`
+  were run on 2026-09-29 (vpay's status page lists them as run and says
+  every other gate is unchanged by the bump); the drift total did not move.
+
+What was **not** run in the session that made the bump, and so rests on CI: every
+suite that needs a WireMock or receiver container (`checkout_sessions`,
+`refunds`, `webhooks`, `worker_recovery`, `confirm_rails`, `provider_callback`,
+`browser_checkout`, `account_holders`, `worker_e2e`, most of `worker_kill9`),
+`vpay-tests-conformance`, and `vpay-server`'s `cli` suite. The Postgres-only
+suites ran against a throwaway local Postgres 16 under a temporary, uncommitted
+patch to the container helpers. Source: vpay `docs/status/cratestack.md`,
+"CrateStack 0.12.0 → 0.15.0 (2026-09-29)".
+
+## The reference pages
+
+`docs/reference/vpay-db/cratestack.md` plus four siblings
+(`cratestack-what-runs-through-it.md`,
+`cratestack-currencies-and-providers.md`, `cratestack-money-tables.md`,
+`cratestack-procedure.md`). Moved out of a 3 330-line
+`docs/reference/vpay-db.md` on 2026-09-11 and **deliberately left unedited**
+— every dated measurement, struck-through claim and correction is there as
+written, because "this said X until date Y and was wrong" is the only signal
+a reader has about which sentences have been checked recently.
+
+Its headline number, "thirty-two statements over twelve tables", was itself
+corrected on 2026-09-10 (issue #87) from two contradictory figures written in
+consecutive sentences on branches that did not see each other. Read the
+running totals in that page as the history of what each change _said_, not as
+arithmetic that adds up to today.
