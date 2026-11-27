@@ -14,11 +14,6 @@ name: release-check
 # the same cosign release as release.yml's (cosign-installer v3.10.1's default, v2.6.1).
 
 on:
-  # TEMPORARY (ANR-1330): a workflow file that is not on the default branch cannot be dispatched, so this branch's push
-  # runs it once, on 0.4.0. Removed before the merge.
-  push:
-    branches: [claude/anr-1330-kind]
-    paths: [.github/workflows/release-check.yml]
   workflow_dispatch:
     inputs:
       version:
@@ -55,7 +50,7 @@ jobs:
     name: Install ${{ github.event.workflow_run.head_branch || format('v{0}', inputs.version) }} in kind and verify its signatures
     # A workflow_run only for a release's tag, and only when that run succeeded: `head_branch` is the tag.
     if: >-
-      github.event_name != 'workflow_run' ||
+      github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'success' && startsWith(github.event.workflow_run.head_branch, 'v'))
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -68,7 +63,6 @@ jobs:
         run: |
           set -euo pipefail
           version="${INPUT_VERSION:-${RUN_REF#v}}"
-          [[ "${GITHUB_EVENT_NAME}" != push ]] || version=0.4.0
           [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::'${version}' is not X.Y.Z"; exit 1; }
           echo "version=${version}" >> "$GITHUB_OUTPUT"
 
