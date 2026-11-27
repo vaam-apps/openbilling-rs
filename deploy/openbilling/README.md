@@ -90,9 +90,10 @@ credential gets it as a header **from a file**: mount a Secret of your own with 
 ## Dashboards
 
 `deploy/dashboards/` is the canonical copy ([its README](../dashboards/README.md) explains each panel); `dashboards/`
-in this chart is a copy a chart can read (Helm cannot read outside the chart), and
-`crates/openbilling-telemetry/tests/dashboards.rs` fails when they differ: copy with
-`cp deploy/dashboards/*.json deploy/openbilling/dashboards/`. The ConfigMap reads them with `.Files.Get`; its first
+in this chart is a copy a chart can read (Helm cannot read outside the chart). Both are **generated** by
+`tools/dashboards/generate.sh` (Python, standard library only), which writes the two copies identically; CI runs it and
+fails on any difference, and `crates/openbilling-telemetry/tests/dashboards.rs` fails when they differ. Edit
+`tools/dashboards/`, never the JSON. The ConfigMap reads them with `.Files.Get`; its first
 render is CI's (*unverified*: no Helm was available when it was written).
 
 **Refused** (the render fails, naming the value): an empty `existingSecret` or `key`; an `otel.endpoint` that is not an http(s) URL or holds a credential, or, with the NetworkPolicy on, whose port no egress rule allows; an `auth.issuer` without an
