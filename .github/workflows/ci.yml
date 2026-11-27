@@ -143,36 +143,78 @@ jobs:
       - run: cargo check --workspace --all-targets --locked
 
   image:
-    name: Image (build and smoke test)
-    # On pull requests; on main, release.yml builds the same stages and pushes. Nothing is pushed here.
+    name: Image (${{ matrix.arch }}, static musl build and smoke test)
+    # On pull requests; on main, release.yml builds the same stages and pushes. Nothing is pushed here. One job per
+    # architecture on a runner of that architecture, as release.yml does: `x86_64-unknown-linux-musl` and
+    # `aarch64-unknown-linux-musl` (ADR 0006).
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+            docker: linux/amd64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            docker: linux/arm64
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
-      # The `smoke` stage builds the binary `--locked` and runs `--version` and `--help` on the runtime base, as the
-      # runtime user. Read-only cache: main's builds (release.yml) write it.
+      # The `smoke` stage builds the static binary `--locked` (and fails if it is not static) and runs `--version` and
+      # `--help` on the runtime base, distroless/static, as the runtime user. Read-only cache: main's builds (release.yml) write it.
       - name: Smoke test
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: docker/openbilling/Dockerfile
           target: smoke
-          platforms: linux/amd64
+          platforms: ${{ matrix.docker }}
           push: false
-          cache-from: type=gha,scope=openbilling-amd64
+          cache-from: type=gha,scope=openbilling-${{ matrix.arch }}
+      # The runtime stage, loaded into the runner's Docker so the next step can run it.
       - name: The runtime stage builds
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: docker/openbilling/Dockerfile
           target: runtime
-          platforms: linux/amd64
+          platforms: ${{ matrix.docker }}
+          load: true
+          tags: openbilling:ci
           push: false
-          cache-from: type=gha,scope=openbilling-amd64
+          cache-from: type=gha,scope=openbilling-${{ matrix.arch }}
+      # `--version` and `--help` never touch the network or a database. This runs `serve` itself from the static image:
+      # it connects, applies the migrations, listens, and answers its health routes, on this runner's architecture
+      # (the musl binary is otherwise never run against a database: the end-to-end suite runs the glibc host build).
+      - name: Serve from the image against PostgreSQL 19
+        env:
+          # The same pin as the `test` job's service: tag and digest, the multi-arch index of `19.0`.
+          POSTGRES_IMAGE: postgres:19.0@sha256:4ea94de574c17f0372722806c949757050fbb1cd7648410fe45d6bba275cc00e
+        run: |
+          set -euo pipefail
+          # A throwaway database for this job only, on the loopback; the service shares the host's network to reach it.
+          docker run -d --name pg --network host -e POSTGRES_HOST_AUTH_METHOD=trust "$POSTGRES_IMAGE"
+          for _ in $(seq 1 60); do docker exec pg pg_isready -U postgres -h 127.0.0.1 && break; sleep 1; done
+          docker run -d --name ob --network host \
+            -e OPENBILLING_DATABASE_URL=postgres://postgres@127.0.0.1:5432/postgres \
+            -e OPENBILLING_LISTEN=127.0.0.1:8080 \
+            openbilling:ci serve
+          ok=0
+          for _ in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8080/readyz > /dev/null 2>&1; then ok=1; break; fi
+            sleep 1
+          done
+          docker logs ob
+          [ "$ok" = 1 ] || { echo "::error::the static image's serve never answered /readyz"; exit 1; }
+          curl -fsS http://127.0.0.1:8080/healthz
+          # SIGTERM is how Kubernetes stops a pod: the service must exit 0.
+          docker stop -t 20 ob > /dev/null
+          [ "$(docker inspect -f '{{.State.ExitCode}}' ob)" = 0 ] || { echo "::error::serve did not exit 0 on SIGTERM"; exit 1; }
 
   chart:
     name: Helm chart

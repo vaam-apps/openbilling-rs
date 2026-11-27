@@ -56,8 +56,8 @@ Legend: ✅ built and tested in CI · ⚠️ built, but partial or not yet prove
 | Testing | End-to-end scenarios against the real service and PostgreSQL | ⚠️ | [`e2e/`](e2e/README.md): `openbilling serve` as a process, driven only through its API and webhook, with tokens of a test issuer. Metered model usage, prepaid balance, organisation caps, once-only, 10 000 events over three services, price versions, statements, payment round-trip, authentication. Run against PostgreSQL 19.0 (the image CI pins) where it was written, 2026-11-27; not yet in CI |
 | Command line | `openbilling serve`, `--help`, `--version`, with clap and colour | ⚠️ | Colour off when not a terminal, `NO_COLOR` and `CLICOLOR_FORCE` honoured (tested); the help and the colour are tested; `serve` is what the end-to-end suite runs |
 | Release | Versions from the commits: release-please's release pull request, a `vX.Y.Z` tag, a changelog | ⚠️ | `release-please.yml`, through a GitHub App token; not yet run: the App and its two secrets are not set yet ([ADR 0005](docs/adr/0005-release-fixed-versions-image-and-chart.md)) |
-| Release | A container image, amd64 and arm64, distroless and non-root, signed (cosign keyless), with provenance and an SBOM | ⚠️ | `docker/openbilling/Dockerfile`; `X.Y.Z` and `X.Y` on a tag, `sha-<7>` and `edge` on `main`, never `latest`. Not yet built anywhere: the first build is CI's |
-| Release | A smoke test of the image (`--version`, `--help` on the runtime base) on every pull request | ⚠️ | CI's `image` job, pushes nothing; not yet run |
+| Release | A container image, amd64 and arm64: a static musl binary on `distroless/static`, non-root, signed (cosign keyless), with provenance and an SBOM | ⚠️ | `docker/openbilling/Dockerfile` ([ADR 0006](docs/adr/0006-a-static-musl-binary-on-distroless-static.md)); the build fails if the binary is not static; `X.Y.Z` and `X.Y` on a tag, `sha-<7>` and `edge` on `main`, never `latest`. Not yet built anywhere: the first build is CI's |
+| Release | A smoke test of the image (`--version`, `--help` on the runtime base, and `serve` against PostgreSQL), on both architectures, on every pull request | ⚠️ | CI's `image` job, pushes nothing; not yet run |
 | Release | An OCI Helm chart on the bjw-s common library 5.3.0, signed, pinning its release's image by tag and digest | ⚠️ | `deploy/openbilling`, published at `oci://ghcr.io/vaam-apps/charts/openbilling` on a tag; linted, rendered and schema-checked by `tests/check.sh` locally, not yet in CI or in a cluster. The token verifier's settings are optional values, unset by default |
 | Command line | `serve` stops cleanly on `SIGTERM` (how Kubernetes stops a pod) | ⚠️ | `tests/cli.rs` passed against PostgreSQL 19.0 outside CI (2026-11-27); not yet run in CI |
 | CI | fmt, clippy, tests on PostgreSQL 19, cargo deny, MSRV | ✅ | |
@@ -103,7 +103,7 @@ with cosign keyless, by `release.yml`'s identity ([the chart's README](deploy/op
 `cosign verify` lines).
 
 ```sh
-docker build -f docker/openbilling/Dockerfile --target smoke .   # the image's smoke test, as CI runs it
+docker build -f docker/openbilling/Dockerfile --target smoke .   # the static musl build and the image's smoke test, as CI runs it
 sh deploy/openbilling/tests/check.sh                            # the chart's checks (helm v4, kubeconform)
 ```
 
@@ -125,7 +125,7 @@ secret.
 | `crates/openbilling-jwt` | The API's token verifier: a JWT against an issuer's keys, on ring |
 | `bin/openbilling` | The service binary: `openbilling serve` |
 | `e2e/` | The end-to-end suite: the real service against PostgreSQL, through its API |
-| `docker/openbilling/` | The image: cargo-chef, distroless, non-root, a smoke stage |
+| `docker/openbilling/` | The image: cargo-chef, a static musl build, distroless/static, non-root, a smoke stage |
 | `deploy/openbilling/` | The Helm chart, on the bjw-s common library 5.3.0, and its checks (`tests/`) |
 | `release-please-config.json`, `.release-please-manifest.json` | The versions release-please writes |
 | `.github/workflows/` | `ci.yml` (Rust, the end-to-end suite, the API contract, the image's smoke test, the chart), `release-please.yml`, `release.yml` |
