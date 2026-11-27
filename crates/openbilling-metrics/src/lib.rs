@@ -11,7 +11,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Instant, SystemTime};
 
 /// One label: a name and a value, both static.
@@ -248,8 +248,20 @@ struct State {
     gauges: BTreeMap<Key<Gauge>, f64>,
 }
 
+/// Where the registry also sends each counter increment and histogram observation as it happens: the seam by which
+/// `openbilling-telemetry` feeds the OpenTelemetry SDK's instruments, so that this crate, and the crates that record
+/// into it, depend on no exporter (Rule 4). Gauges are read through [`Metrics::snapshot`] instead. An implementation
+/// must not block and must not record into the registry it is attached to.
+pub trait Recorder: Send + Sync {
+    /// A counter was incremented by `n`.
+    fn counter(&self, counter: Counter, labels: Labels<'_>, n: u64);
+    /// A duration, in seconds, was observed.
+    fn histogram(&self, histogram: Histogram, labels: Labels<'_>, seconds: f64);
+}
+
 /// The registry.
 pub struct Metrics {
+    recorder: OnceLock<Arc<dyn Recorder>>,
     state: Mutex<State>,
     started: SystemTime,
     born: Instant,
@@ -318,11 +330,18 @@ impl Metrics {
     #[must_use]
     pub fn new() -> Self {
         Self {
+            recorder: OnceLock::new(),
             state: Mutex::new(State::default()),
             started: SystemTime::now(),
             born: Instant::now(),
             last_drain_ok: AtomicU64::new(0),
         }
+    }
+
+    /// Attaches the recorder that also receives every counter increment and histogram observation from now on.
+    /// Only the first call takes effect; `false` says a recorder was already attached.
+    pub fn attach(&self, recorder: Arc<dyn Recorder>) -> bool {
+        self.recorder.set(recorder).is_ok()
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
@@ -334,12 +353,17 @@ impl Metrics {
         if n == 0 {
             return;
         }
-        let mut state = self.lock();
-        let total = state
-            .counters
-            .entry((counter, labels.to_vec()))
-            .or_insert(0);
-        *total = total.saturating_add(n);
+        {
+            let mut state = self.lock();
+            let total = state
+                .counters
+                .entry((counter, labels.to_vec()))
+                .or_insert(0);
+            *total = total.saturating_add(n);
+        }
+        if let Some(recorder) = self.recorder.get() {
+            recorder.counter(counter, labels, n);
+        }
     }
 
     /// Records a duration, in seconds, in a histogram.
@@ -353,14 +377,19 @@ impl Metrics {
             .iter()
             .position(|bound| seconds <= *bound)
             .unwrap_or(BUCKETS.len());
-        let mut state = self.lock();
-        let hist = state
-            .histograms
-            .entry((histogram, labels.to_vec()))
-            .or_default();
-        hist.counts[bucket] += 1;
-        hist.sum += seconds;
-        hist.count += 1;
+        {
+            let mut state = self.lock();
+            let hist = state
+                .histograms
+                .entry((histogram, labels.to_vec()))
+                .or_default();
+            hist.counts[bucket] += 1;
+            hist.sum += seconds;
+            hist.count += 1;
+        }
+        if let Some(recorder) = self.recorder.get() {
+            recorder.histogram(histogram, labels, seconds);
+        }
     }
 
     /// Sets a gauge.
@@ -493,6 +522,32 @@ mod tests {
         assert_eq!(s.observations(Histogram::Drain), 3);
         let h = &s.histograms[0].2;
         assert_eq!((h.counts[0], h.counts[BUCKETS.len()]), (2, 1));
+    }
+
+    #[test]
+    fn an_attached_recorder_sees_counters_and_histograms_once() {
+        use std::sync::atomic::AtomicU64;
+        #[derive(Default)]
+        struct Seen(AtomicU64, AtomicU64);
+        impl Recorder for Seen {
+            fn counter(&self, _: Counter, _: Labels<'_>, n: u64) {
+                self.0.fetch_add(n, Ordering::Relaxed);
+            }
+            fn histogram(&self, _: Histogram, _: Labels<'_>, _: f64) {
+                self.1.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        let seen = Arc::new(Seen::default());
+        let m = Metrics::new();
+        m.add(Counter::DrainRuns, &[], 5);
+        assert!(m.attach(seen.clone()));
+        assert!(!m.attach(Arc::new(Seen::default())), "the first one stays");
+        m.add(Counter::DrainRuns, &[], 2);
+        m.add(Counter::DrainRuns, &[], 0);
+        m.observe(Histogram::Drain, &[], 0.1);
+        assert_eq!(seen.0.load(Ordering::Relaxed), 2);
+        assert_eq!(seen.1.load(Ordering::Relaxed), 1);
+        assert_eq!(m.snapshot().counter(Counter::DrainRuns, None), 7);
     }
 
     #[test]

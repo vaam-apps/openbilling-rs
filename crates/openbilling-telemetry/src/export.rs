@@ -1,27 +1,51 @@
-//! The exporter: batches finished spans and logs, ships metrics on an interval, and posts each as an OTLP/HTTP
-//! JSON document. It never blocks the code that records: spans and logs reach it through a bounded queue with
-//! `try_send`, and a full queue drops (and counts). A failed export is retried a few times and then dropped: the
+//! Starts the OpenTelemetry SDK: a tracer provider, a meter provider and a logger provider, each exporting over
+//! OTLP/HTTP with JSON bodies through one caller-supplied `reqwest` client (rustls on ring; the CA bundle of
+//! `OTEL_EXPORTER_OTLP_CERTIFICATE` is then the only trust), and installs the `tracing` subscriber that feeds them.
+//!
+//! Recording never blocks: spans and logs wait in a bounded queue (a full one drops and counts, [`crate::filter`]),
+//! and the SDK exports from threads of its own. A failed export is retried by the exporter and then dropped: the
 //! telemetry is never the reason a request waits.
 
+use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant, SystemTime};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
-use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
-use serde_json::Value as Json;
-use tokio::sync::{mpsc, watch};
-use tokio::task::JoinHandle;
+use opentelemetry::metrics::MeterProvider;
+use opentelemetry::trace::TracerProvider;
+use opentelemetry::{KeyValue, logs::LoggerProvider};
+use opentelemetry_otlp::{
+    LogExporter, MetricExporter, Protocol, SpanExporter, WithExportConfig, WithHttpConfig,
+};
+use opentelemetry_sdk::Resource as SdkResource;
+use opentelemetry_sdk::logs::{
+    BatchConfigBuilder as LogBatchConfig, BatchLogProcessor, SdkLoggerProvider,
+};
+use opentelemetry_sdk::metrics::{PeriodicReader, SdkMeterProvider};
+use opentelemetry_sdk::trace::{
+    BatchConfigBuilder as SpanBatchConfig, BatchSpanProcessor, Sampler, SdkTracerProvider,
+};
+use reqwest::header::{HeaderName, HeaderValue};
+use tracing::Metadata;
+use tracing_subscriber::Layer;
+use tracing_subscriber::filter::filter_fn;
 use tracing_subscriber::layer::SubscriberExt;
-use url::Url;
 
-use crate::layer::TelemetryLayer;
-use crate::otlp::{LogRecord, SpanRecord, logs_request, metrics_request, traces_request};
+use crate::filter::{
+    BoundedLogs, BoundedSpans, CAP, GuardedLogs, GuardedMetrics, GuardedSpans, Tally, ours,
+};
+use crate::layer::{DbTimingLayer, LogLayer};
 use crate::settings::{Resource, Settings};
-use openbilling_metrics::{Counter, Metrics};
+use openbilling_metrics::Metrics;
 
+pub use crate::filter::Stats;
+
+/// Spans (and, apart, logs) that may wait for export, in the queue and in flight; a new one past it is dropped.
 const QUEUE: usize = 4096;
+/// The most items in one export request.
 const BATCH: usize = 512;
-const ATTEMPTS: u32 = 3;
+/// The name of the instrumentation scope.
+const SCOPE: &str = "openbilling";
 
 /// Why telemetry did not start.
 #[derive(Debug, thiserror::Error)]
@@ -35,6 +59,9 @@ pub enum StartError {
     /// `OTEL_EXPORTER_OTLP_CERTIFICATE` does not hold a PEM certificate.
     #[error("OTEL_EXPORTER_OTLP_CERTIFICATE does not hold a PEM certificate")]
     Certificate,
+    /// An OTLP exporter could not be built.
+    #[error("an OTLP exporter could not be built")]
+    Exporter,
     /// A `tracing` subscriber is already installed in this process.
     #[error("a tracing subscriber is already installed")]
     Subscriber,
@@ -44,196 +71,205 @@ impl openbilling_core::Classify for StartError {
     fn class(&self) -> openbilling_core::ErrorClass {
         match self {
             Self::Header | Self::Certificate => openbilling_core::ErrorClass::Invalid,
-            Self::Client | Self::Subscriber => openbilling_core::ErrorClass::Internal,
+            Self::Client | Self::Exporter | Self::Subscriber => {
+                openbilling_core::ErrorClass::Internal
+            }
         }
     }
 }
 
-/// What the exporter did, in counts.
-#[derive(Debug, Default)]
-pub struct Stats {
-    /// Requests the collector accepted.
-    pub exported: AtomicU64,
-    /// Requests that failed after every attempt.
-    pub failed: AtomicU64,
+fn client(settings: &Settings) -> Result<reqwest::blocking::Client, StartError> {
+    // reqwest is built with no crypto provider of its own: rustls uses the process default, ring.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let mut builder = reqwest::blocking::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(settings.timeout);
+    if let Some(pem) = &settings.ca_pem {
+        // The CA bundle is the only trust, as `OTEL_EXPORTER_OTLP_CERTIFICATE` says.
+        let certificates =
+            reqwest::Certificate::from_pem_bundle(pem).map_err(|_| StartError::Certificate)?;
+        builder = builder.tls_certs_only(certificates);
+    }
+    builder.build().map_err(|_| StartError::Client)
 }
 
-#[derive(Clone)]
-struct Sender {
+fn headers(settings: &Settings) -> Result<HashMap<String, String>, StartError> {
+    let mut out = HashMap::new();
+    for (name, value) in &settings.headers {
+        HeaderName::from_bytes(name.as_bytes()).map_err(|_| StartError::Header)?;
+        HeaderValue::from_str(value).map_err(|_| StartError::Header)?;
+        out.insert(name.clone(), value.clone());
+    }
+    Ok(out)
+}
+
+fn resource(resource: &Resource) -> SdkResource {
+    let mut attributes = vec![
+        KeyValue::new("service.name", resource.service_name.clone()),
+        KeyValue::new("service.version", resource.service_version.clone()),
+    ];
+    if let Some(environment) = &resource.environment {
+        attributes.push(KeyValue::new(
+            "deployment.environment.name",
+            environment.clone(),
+        ));
+    }
+    if let Some(instance) = &resource.instance {
+        attributes.push(KeyValue::new("service.instance.id", instance.clone()));
+    }
+    // No detectors: the resource is exactly what the settings say, never read from the environment by the SDK.
+    SdkResource::builder_empty()
+        .with_attributes(attributes)
+        .build()
+}
+
+/// What `build` made, to be installed on the thread that called `start`.
+struct Providers {
+    tracer: Option<SdkTracerProvider>,
+    meter: Option<SdkMeterProvider>,
+    logger: Option<SdkLoggerProvider>,
+}
+
+impl Providers {
+    fn shutdown(&self, deadline: Duration) {
+        let _ = self
+            .tracer
+            .as_ref()
+            .map(|p| p.shutdown_with_timeout(deadline));
+        let _ = self
+            .logger
+            .as_ref()
+            .map(|p| p.shutdown_with_timeout(deadline));
+        let _ = self
+            .meter
+            .as_ref()
+            .map(|p| p.shutdown_with_timeout(deadline));
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+fn build(
+    settings: &Settings,
     metrics: &'static Metrics,
-    client: reqwest::Client,
-    headers: HeaderMap,
-    timeout: Duration,
-    stats: Arc<Stats>,
-    last_warning: Arc<std::sync::Mutex<Option<Instant>>>,
+    tally: &Tally,
+) -> Result<Providers, StartError> {
+    let http = client(settings)?;
+    let headers = headers(settings)?;
+    let resource = resource(&settings.resource);
+
+    let tracer = match settings
+        .traces_url
+        .as_ref()
+        .filter(|_| settings.signals.traces)
+    {
+        None => None,
+        Some(url) => {
+            let exporter = SpanExporter::builder()
+                .with_http()
+                .with_http_client(http.clone())
+                .with_endpoint(url.as_str())
+                .with_protocol(Protocol::HttpJson)
+                .with_timeout(settings.timeout)
+                .with_headers(headers.clone())
+                .build()
+                .map_err(|_| StartError::Exporter)?;
+            let pending = Arc::new(AtomicUsize::new(0));
+            let exporter = GuardedSpans::new(exporter, Arc::clone(&pending), tally.clone());
+            let config = SpanBatchConfig::default()
+                .with_max_queue_size(QUEUE + BATCH)
+                .with_max_export_batch_size(BATCH)
+                .with_scheduled_delay(settings.batch_delay)
+                .build();
+            let batch = BatchSpanProcessor::builder(exporter)
+                .with_batch_config(config)
+                .build();
+            let sampler = if settings.sample_ratio >= 1.0 {
+                Sampler::AlwaysOn
+            } else {
+                Sampler::ParentBased(Box::new(Sampler::TraceIdRatioBased(settings.sample_ratio)))
+            };
+            Some(
+                SdkTracerProvider::builder()
+                    .with_span_processor(BoundedSpans::new(batch, pending, QUEUE, tally.clone()))
+                    .with_sampler(sampler)
+                    .with_resource(resource.clone())
+                    .build(),
+            )
+        }
+    };
+
+    let logger = match settings.logs_url.as_ref().filter(|_| settings.signals.logs) {
+        None => None,
+        Some(url) => {
+            let exporter = LogExporter::builder()
+                .with_http()
+                .with_http_client(http.clone())
+                .with_endpoint(url.as_str())
+                .with_protocol(Protocol::HttpJson)
+                .with_timeout(settings.timeout)
+                .with_headers(headers.clone())
+                .build()
+                .map_err(|_| StartError::Exporter)?;
+            let pending = Arc::new(AtomicUsize::new(0));
+            let exporter = GuardedLogs::new(exporter, Arc::clone(&pending), tally.clone());
+            let config = LogBatchConfig::default()
+                .with_max_queue_size(QUEUE + BATCH)
+                .with_max_export_batch_size(BATCH)
+                .with_scheduled_delay(settings.batch_delay)
+                .build();
+            let batch = BatchLogProcessor::builder(exporter)
+                .with_batch_config(config)
+                .build();
+            Some(
+                SdkLoggerProvider::builder()
+                    .with_log_processor(BoundedLogs::new(batch, pending, QUEUE, tally.clone()))
+                    .with_resource(resource.clone())
+                    .build(),
+            )
+        }
+    };
+
+    let meter = match settings
+        .metrics_url
+        .as_ref()
+        .filter(|_| settings.signals.metrics)
+    {
+        None => None,
+        Some(url) => {
+            let exporter = MetricExporter::builder()
+                .with_http()
+                .with_http_client(http)
+                .with_endpoint(url.as_str())
+                .with_protocol(Protocol::HttpJson)
+                .with_timeout(settings.timeout)
+                .with_headers(headers)
+                .build()
+                .map_err(|_| StartError::Exporter)?;
+            let reader = PeriodicReader::builder(GuardedMetrics::new(exporter, tally.clone()))
+                .with_interval(settings.metric_interval)
+                .build();
+            let provider = SdkMeterProvider::builder()
+                .with_reader(reader)
+                .with_resource(resource)
+                .build();
+            crate::meter::install(&provider.meter(SCOPE), metrics);
+            Some(provider)
+        }
+    };
+
+    Ok(Providers {
+        tracer,
+        meter,
+        logger,
+    })
 }
 
-impl Sender {
-    fn new(
-        settings: &Settings,
-        stats: Arc<Stats>,
-        metrics: &'static Metrics,
-    ) -> Result<Self, StartError> {
-        // reqwest is built with no crypto provider of its own: rustls uses the process default, ring.
-        let _ = rustls::crypto::ring::default_provider().install_default();
-        let mut headers = HeaderMap::new();
-        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        for (name, value) in &settings.headers {
-            let name = HeaderName::from_bytes(name.as_bytes()).map_err(|_| StartError::Header)?;
-            let mut value = HeaderValue::from_str(value).map_err(|_| StartError::Header)?;
-            value.set_sensitive(true);
-            headers.insert(name, value);
-        }
-        let mut builder = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none());
-        if let Some(pem) = &settings.ca_pem {
-            // The CA bundle is the only trust, as `OTEL_EXPORTER_OTLP_CERTIFICATE` says.
-            let certificates =
-                reqwest::Certificate::from_pem_bundle(pem).map_err(|_| StartError::Certificate)?;
-            builder = builder.tls_certs_only(certificates);
-        }
-        let client = builder.build().map_err(|_| StartError::Client)?;
-        Ok(Self {
-            metrics,
-            client,
-            headers,
-            timeout: settings.timeout,
-            stats,
-            last_warning: Arc::default(),
-        })
-    }
-
-    fn warn(&self, what: &str) {
-        let mut last = self
-            .last_warning
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if last.is_none_or(|at| at.elapsed() >= Duration::from_secs(60)) {
-            *last = Some(Instant::now());
-            // Stderr, not `tracing`: the exporter must not feed itself. No URL, no header, no body.
-            eprintln!("openbilling: telemetry export failed ({what}); dropping, will keep trying");
-        }
-    }
-
-    async fn post(&self, signal: &'static str, url: &Url, document: &Json) {
-        let Ok(body) = serde_json::to_vec(document) else {
-            return;
-        };
-        let mut what = "no answer";
-        for attempt in 0..ATTEMPTS {
-            if attempt > 0 {
-                tokio::time::sleep(Duration::from_millis(200 << attempt)).await;
-            }
-            let sent = self
-                .client
-                .post(url.clone())
-                .headers(self.headers.clone())
-                .timeout(self.timeout)
-                .body(body.clone())
-                .send()
-                .await;
-            match sent {
-                Ok(response) if response.status().is_success() => {
-                    self.stats.exported.fetch_add(1, Ordering::Relaxed);
-                    self.metrics.add(
-                        Counter::TelemetryExports,
-                        &[("signal", signal), ("result", "ok")],
-                        1,
-                    );
-                    return;
-                }
-                Ok(response) => {
-                    let status = response.status().as_u16();
-                    if !matches!(status, 429 | 502 | 503 | 504) {
-                        what = "refused by the collector";
-                        break;
-                    }
-                    what = "the collector is busy";
-                }
-                Err(_) => what = "network error",
-            }
-        }
-        self.stats.failed.fetch_add(1, Ordering::Relaxed);
-        self.metrics.add(
-            Counter::TelemetryExports,
-            &[("signal", signal), ("result", "failed")],
-            1,
-        );
-        self.warn(what);
-    }
-}
-
-/// Collects items until a batch is full or `delay` passes, and hands each batch to `send`; on `stop`, flushes
-/// what is queued and ends.
-async fn batches<T, F, Fut>(
-    mut rx: mpsc::Receiver<T>,
-    mut stop: watch::Receiver<bool>,
-    delay: Duration,
-    send: F,
-) where
-    F: Fn(Vec<T>) -> Fut,
-    Fut: Future<Output = ()>,
-{
-    let mut batch = Vec::new();
-    let mut tick = tokio::time::interval(delay);
-    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    loop {
-        tokio::select! {
-            item = rx.recv() => match item {
-                Some(item) => {
-                    batch.push(item);
-                    if batch.len() >= BATCH {
-                        send(std::mem::take(&mut batch)).await;
-                    }
-                }
-                None => break,
-            },
-            _ = tick.tick() => {
-                if !batch.is_empty() {
-                    send(std::mem::take(&mut batch)).await;
-                }
-            }
-            _ = stop.changed() => break,
-        }
-    }
-    while let Ok(item) = rx.try_recv() {
-        batch.push(item);
-    }
-    if !batch.is_empty() {
-        send(batch).await;
-    }
-}
-
-async fn metrics_loop(
-    metrics: &'static Metrics,
-    sender: Sender,
-    url: Url,
-    resource: Resource,
-    mut stop: watch::Receiver<bool>,
-    every: Duration,
-) {
-    let mut tick = tokio::time::interval(every);
-    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    tick.tick().await;
-    loop {
-        let last = tokio::select! {
-            _ = tick.tick() => false,
-            _ = stop.changed() => true,
-        };
-        let document = metrics_request(&resource, &metrics.snapshot(), SystemTime::now());
-        sender.post("metrics", &url, &document).await;
-        if last {
-            break;
-        }
-    }
-}
-
-/// The running exporter. Dropping it ends the process's telemetry without a flush: the tasks stop with the runtime and
-/// what is queued is lost. Call [`Guard::shutdown`] on every way out to flush the queues and the metrics once more.
+/// The running exporter. Dropping it ends the process's telemetry without a flush of what is queued beyond what the
+/// SDK does when its providers drop. Call [`Guard::shutdown`] on every way out to flush the queues and the metrics
+/// once more.
 pub struct Guard {
-    stop: watch::Sender<bool>,
-    tasks: Vec<JoinHandle<()>>,
+    providers: Providers,
     stats: Arc<Stats>,
-    layer: TelemetryLayer,
 }
 
 impl Guard {
@@ -246,96 +282,78 @@ impl Guard {
     /// Spans and logs dropped because the queue was full.
     #[must_use]
     pub fn dropped(&self) -> u64 {
-        self.layer.dropped()
+        self.stats.dropped.load(Ordering::Relaxed)
     }
 
-    /// Flushes everything queued and the metrics one last time, waiting at most `deadline`.
+    /// Flushes everything queued and the metrics one last time, waiting at most `deadline`. The flush runs on a
+    /// thread of its own, so a collector that never answers costs the deadline and nothing more.
     pub async fn shutdown(self, deadline: Duration) {
-        let _ = self.stop.send(true);
-        let wait = async {
-            for task in self.tasks {
-                let _ = task.await;
-            }
-        };
-        let _ = tokio::time::timeout(deadline, wait).await;
+        let (done, wait) = tokio::sync::oneshot::channel();
+        let providers = self.providers;
+        let spawned = std::thread::Builder::new()
+            .name("openbilling-telemetry-shutdown".to_owned())
+            .spawn(move || {
+                providers.shutdown(deadline);
+                let _ = done.send(());
+            });
+        if spawned.is_ok() {
+            let _ = tokio::time::timeout(deadline, wait).await;
+        }
     }
 }
 
-/// Starts exporting: installs the `tracing` subscriber of this process and spawns the exporter's tasks on the
-/// current tokio runtime. Call it once, inside the runtime.
+fn spans_and_logs<'a>(meta: &Metadata<'a>) -> bool {
+    ours(meta.target()) && *meta.level() <= CAP
+}
+
+/// Starts exporting: builds the providers, installs the `tracing` subscriber of this process and the recorder of
+/// `metrics`. Call it once.
 ///
 /// # Errors
 ///
-/// [`StartError`] for an invalid header, a client that cannot be built, or a subscriber already installed.
+/// [`StartError`] for an invalid header, a client or an exporter that cannot be built, or a subscriber already
+/// installed.
 pub fn start(settings: &Settings, metrics: &'static Metrics) -> Result<Guard, StartError> {
-    let stats = Arc::new(Stats::default());
-    let sender = Sender::new(settings, Arc::clone(&stats), metrics)?;
-    let (stop, stop_rx) = watch::channel(false);
-    let mut tasks = Vec::new();
-
-    let span_tx = settings
-        .traces_url
-        .clone()
-        .filter(|_| settings.signals.traces)
-        .map(|traces_url| {
-            let (tx, rx) = mpsc::channel::<SpanRecord>(QUEUE);
-            let (sender, url, resource) = (sender.clone(), traces_url, settings.resource.clone());
-            tasks.push(tokio::spawn(batches(
-                rx,
-                stop_rx.clone(),
-                settings.batch_delay,
-                move |spans: Vec<SpanRecord>| {
-                    let (sender, url, document) = (
-                        sender.clone(),
-                        url.clone(),
-                        traces_request(&resource, &spans),
-                    );
-                    async move { sender.post("traces", &url, &document).await }
-                },
-            )));
-            tx
-        });
-    let log_tx = settings
-        .logs_url
-        .clone()
-        .filter(|_| settings.signals.logs)
-        .map(|logs_url| {
-            let (tx, rx) = mpsc::channel::<LogRecord>(QUEUE);
-            let (sender, url, resource) = (sender.clone(), logs_url, settings.resource.clone());
-            tasks.push(tokio::spawn(batches(
-                rx,
-                stop_rx.clone(),
-                settings.batch_delay,
-                move |logs: Vec<LogRecord>| {
-                    let (sender, url, document) =
-                        (sender.clone(), url.clone(), logs_request(&resource, &logs));
-                    async move { sender.post("logs", &url, &document).await }
-                },
-            )));
-            tx
-        });
-    if let Some(metrics_url) = settings
-        .metrics_url
-        .clone()
-        .filter(|_| settings.signals.metrics)
-    {
-        tasks.push(tokio::spawn(metrics_loop(
-            metrics,
-            sender,
-            metrics_url,
-            settings.resource.clone(),
-            stop_rx,
-            settings.metric_interval,
-        )));
+    if tracing::dispatcher::has_been_set() {
+        return Err(StartError::Subscriber);
     }
+    let stats = Arc::new(Stats::default());
+    let tally = Tally::new(Arc::clone(&stats), metrics);
+    // The blocking HTTP client and the SDK's threads are built off any async runtime this is called inside.
+    let settings_for_build = settings.clone();
+    let tally_for_build = tally.clone();
+    let providers = std::thread::Builder::new()
+        .name("openbilling-telemetry-start".to_owned())
+        .spawn(move || build(&settings_for_build, metrics, &tally_for_build))
+        .map_err(|_| StartError::Client)?
+        .join()
+        .map_err(|_| StartError::Client)??;
 
-    let layer = TelemetryLayer::new(span_tx, log_tx, settings.sample_ratio, metrics);
-    tracing::subscriber::set_global_default(tracing_subscriber::registry().with(layer.clone()))
-        .map_err(|_| StartError::Subscriber)?;
-    Ok(Guard {
-        stop,
-        tasks,
-        stats,
-        layer,
-    })
+    let spans = providers.tracer.as_ref().map(|provider| {
+        tracing_opentelemetry::layer()
+            .with_tracer(provider.tracer(SCOPE))
+            .with_location(false)
+            .with_threads(false)
+            .with_level(false)
+            .with_target(false)
+            .with_tracked_inactivity(false)
+            .with_filter(filter_fn(spans_and_logs))
+    });
+    let logs = providers.logger.as_ref().map(|provider| {
+        LogLayer::new(provider.logger(SCOPE)).with_filter(filter_fn(|meta: &Metadata<'_>| {
+            meta.is_event() && meta.target().starts_with("openbilling") && *meta.level() <= CAP
+        }))
+    });
+    let db = DbTimingLayer::new(metrics).with_filter(filter_fn(|meta: &Metadata<'_>| {
+        meta.is_span() && spans_and_logs(meta)
+    }));
+    let subscriber = tracing_subscriber::registry()
+        .with(spans)
+        .with(logs)
+        .with(db);
+    if tracing::subscriber::set_global_default(subscriber).is_err() {
+        providers.shutdown(Duration::from_millis(100));
+        return Err(StartError::Subscriber);
+    }
+    Ok(Guard { providers, stats })
 }

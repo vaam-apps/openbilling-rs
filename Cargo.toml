@@ -53,6 +53,13 @@ hmac = "0.13.0"
 # reqwest 0.13 as CrateStack's client builds it: rustls with no provider of its own, so rustls uses the one the
 # workspace already holds (ring, through sqlx). One reqwest, and no aws-lc-rs.
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider"] }
+# OpenTelemetry (ADR 0007, accepted 2026-11-27): the API, the SDK, the OTLP exporter and the `tracing` bridge. They move
+# together (0.33.x for the first three, 0.34 for the bridge, which needs `opentelemetry` 0.33); none pulls tonic, aws-lc-rs
+# or OpenSSL with the features below. *Verified 2026-11-27*: crates.io and the crates' own `Cargo.toml`.
+opentelemetry = { version = "0.33.1", default-features = false, features = ["trace", "metrics", "logs"] }
+opentelemetry_sdk = { version = "0.33.1", default-features = false, features = ["trace", "metrics", "logs"] }
+opentelemetry-otlp = { version = "0.33.1", default-features = false, features = ["http-json", "reqwest-blocking-client", "trace", "metrics", "logs"] }
+tracing-opentelemetry = { version = "0.34.0", default-features = false }
 # ring: the provider rustls uses here, and the signature verifier of `openbilling-jwt`. Already in the lockfile.
 ring = "0.17.14"
 # rustls on ring: the provider the reqwest above uses, installed process-wide by `openbilling-vpay`.
