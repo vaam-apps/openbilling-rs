@@ -1,0 +1,16 @@
+[package]
+name = "openbilling-core"
+description = "Pure types and rules of openbilling-rs: ids, amounts, event outcomes, errors. No I/O, no async."
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+
+[lints]
+workspace = true
