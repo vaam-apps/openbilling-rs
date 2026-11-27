@@ -43,10 +43,33 @@ the port, with the store's own clock, and assume the default window (seven days,
 | `daily_usage_sums_applied_debits_per_utc_day` | Per UTC day of occurrence; refused events not counted |
 | `invalid_amounts_and_configurations_are_refused` | Wrong signs per source and kind, malformed configurations, more than 1 000 events |
 
-`fixtures` holds the helpers the cases share; a store's own tests may use them too.
+## The price book's cases
+
+A store that implements [`PriceBook`](../openbilling-core/README.md) also runs
+`openbilling_testkit::price_book_conformance!(support::fresh_ledger);`
+([ADR 0004](../../docs/adr/0004-a-versioned-price-book-in-sql.md)). The meters and prices are made up: an example AI
+service with `tokens.input`, `tokens.output` and `tokens.cached` per model, and `compute.seconds`. Versions take effect
+a minute or two after the store's clock, and the events rated occur between them, inside the default skew of five
+minutes.
+
+| Case | Holds |
+|---|---|
+| `the_same_event_rated_twice_gives_the_same_amount_and_version` | Rated twice, before and after its drain: one amount and one version; taken in, debited once, its outcome names the version |
+| `a_new_version_rates_only_later_events` | An event before the new version keeps the old price; one at its instant and after has the new; the versions list in order |
+| `an_unpriced_meter_or_dimension_is_refused` | An unknown meter, an unpriced currency, no version yet, an unpriced value, a missing or extra key: refused naming the event, by `rate` too; nothing written |
+| `rounding_is_half_to_even_once_per_event` | Exact halves to the even neighbour, the rest to the nearest; two half micro-units are two zeros, not one |
+| `a_huge_quantity_is_exact_or_refused` | `i64::MAX` tokens rated exactly; past the largest amount refused, alone or as a sum; zero costs nothing |
+| `a_malformed_price_list_names_its_error` | A syntax error and an unknown key at the parser's line; each SQL check at its line and key; nothing loaded |
+| `loading_the_same_list_twice_is_a_no_op` | The same content, however written, is one version; another price or time is another |
+| `a_version_is_never_back_dated` | Not before now, not at or before an event already rated, not at another version's instant |
+| `the_payload_of_a_raw_event_is_its_meter_quantity_and_dimensions` | Another quantity, meter or dimension, or a priced event with the same id and day, is a conflict; priced and raw events in one ledger |
+
+`fixtures` holds the helpers the cases share, and `price_cases` the price book's (`example_list`, `raw`); a store's
+own tests may use them too.
 
 ## Tests
 
-The suite runs where an implementation runs it: `openbilling-pg`'s `tests/ledger.rs`, which needs a PostgreSQL 19. The
+The suites run where an implementation runs them: `openbilling-pg`'s `tests/ledger.rs` and `tests/price_book.rs`,
+which need a PostgreSQL 19. The
 crate has no tests of its own; there is no second implementation of the rules to run it against (agent guide,
 rule 12).

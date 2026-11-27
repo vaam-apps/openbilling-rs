@@ -8,6 +8,10 @@
 //!
 //! The operator's names are narrower: a [`CurrencyCode`] is 1 to 16 bytes of `A`–`Z` and `0`–`9`, an
 //! [`AccountLabel`] 1 to 64 bytes of `a`–`z`, `0`–`9`, `_` and `-` (ADR 0002).
+//!
+//! The price book's names (ADR 0004) are as narrow: a [`MeterId`] and a [`DimensionKey`] are 1 to 64 bytes of `a`–`z`,
+//! `0`–`9`, `.`, `_` and `-` (`tokens.input`, `model`); a [`DimensionValue`] follows the rule of ids, up to
+//! [`MAX_ID_LEN`] bytes.
 
 use std::fmt;
 use std::str::FromStr;
@@ -26,6 +30,9 @@ pub const MAX_CURRENCY_LEN: usize = 16;
 /// The longest [`AccountLabel`], in bytes.
 pub const MAX_LABEL_LEN: usize = 64;
 
+/// The longest [`MeterId`] or [`DimensionKey`], in bytes.
+pub const MAX_NAME_LEN: usize = 64;
+
 fn printable(b: u8) -> bool {
     b.is_ascii_graphic()
 }
@@ -36,6 +43,10 @@ fn currency_byte(b: u8) -> bool {
 
 fn label_byte(b: u8) -> bool {
     b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-'
+}
+
+fn name_byte(b: u8) -> bool {
+    b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'.' || b == b'_' || b == b'-'
 }
 
 fn check(kind: IdKind, value: &str, max: usize, allowed: fn(u8) -> bool) -> Result<(), Error> {
@@ -176,6 +187,32 @@ caller_id!(
     label_byte
 );
 
+caller_id!(
+    /// A meter of the price book, for example `tokens.input` or `compute.seconds`: 1 to 64 bytes of `a`–`z`, `0`–`9`,
+    /// `.`, `_` and `-` (ADR 0004). A raw usage event names one, and a quantity of its unit.
+    MeterId,
+    IdKind::Meter,
+    MAX_NAME_LEN,
+    name_byte
+);
+
+caller_id!(
+    /// The key of a dimension a meter is priced by, for example `model`: the alphabet of a [`MeterId`] (ADR 0004).
+    DimensionKey,
+    IdKind::DimensionKey,
+    MAX_NAME_LEN,
+    name_byte
+);
+
+caller_id!(
+    /// The value of a dimension, for example `example-small`: the rule of ids, printable ASCII up to [`MAX_ID_LEN`]
+    /// bytes (ADR 0004).
+    DimensionValue,
+    IdKind::DimensionValue,
+    MAX_ID_LEN,
+    printable
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -306,6 +343,28 @@ mod tests {
                 problem: IdProblem::TooLong
             })
         );
+    }
+
+    #[test]
+    fn meters_and_dimensions_have_the_names_alphabet() {
+        for good in ["tokens.input", "compute.seconds", "model", "a_b-c.1"] {
+            assert!(MeterId::new(good).is_ok(), "{good}");
+            assert!(DimensionKey::new(good).is_ok(), "{good}");
+        }
+        for bad in ["Tokens", "a b", "a/b", "caf\u{e9}", ""] {
+            assert!(MeterId::new(bad).is_err(), "{bad}");
+            assert!(DimensionKey::new(bad).is_err(), "{bad}");
+        }
+        assert_eq!(
+            MeterId::new("m".repeat(MAX_NAME_LEN + 1)),
+            Err(Error::InvalidId {
+                kind: IdKind::Meter,
+                problem: IdProblem::TooLong
+            })
+        );
+        assert!(DimensionValue::new("Example-Large/2").is_ok());
+        assert!(DimensionValue::new("a b").is_err());
+        assert!(DimensionValue::new("v".repeat(MAX_ID_LEN + 1)).is_err());
     }
 
     #[test]

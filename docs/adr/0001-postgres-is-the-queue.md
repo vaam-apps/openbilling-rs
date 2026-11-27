@@ -32,6 +32,16 @@ below is updated to A1.
 | B7 | **The drain claims an event id before it takes any balance lock**: it inserts the id's outcome as `pending`, in id order, then locks balances in (owner, currency) order, then decides. A drain waiting on an id holds no balance lock, so drains cannot deadlock on a reused id. A constraint trigger refuses a commit that leaves an outcome pending | 13, 14, 15 |
 | B8 | **Detaching and dropping old partitions is not built yet**; creating them ahead is (`ob_prepare_partitions`) | 10 |
 
+*Amended 2026-11-27 (the price book, slice 3):* [ADR 0004](0004-a-versioned-price-book-in-sql.md) builds rating.
+What it changes here:
+
+| # | Change | Points |
+|---|---|---|
+| C1 | **Raw events are rated at intake**, not by the worker: intake prices each by the version in force at its occurrence time, refuses an unpriced one (`unpriced_meter`, `unpriced_dimension`), and stores its amount and version; the drain is unchanged. `no_price` stays a reserved outcome reason that no drain decides | 12, 14, 27 |
+| C2 | **The payload hash of a raw event changes**: it covers the meter, the quantity and the dimensions, and not the amount. A pre-priced event (B4) keeps its hash; pre-priced intake stays, for a producer that rates elsewhere | 3 |
+| C3 | **No back-dating is made exact**: a version takes effect after the clock *and* after every event already rated, since an event may occur up to the skew ahead of the clock. A load and a rating intake exclude each other by a table lock | 19 |
+| C4 | **Rounding**: once per event, to the micro-unit, half to even, of `quantity × price ÷ per` in `numeric` (the recommendation of *Still open*, built) | 20 |
+
 ## Summary
 
 A usage event is written once, by one insert, into a table partitioned by day. That table is the queue and the
@@ -71,7 +81,8 @@ PostgreSQL is already the only infrastructure (rule 1 of the agent guide). This 
    - the same hash is a replay, answered exactly as the first acceptance was;
    - a different hash is a **conflict**, answered as a conflict with the event id only. The answer never echoes the
      stored payload, its hash or any field of it.
-3. **The payload hash** is SHA-256 over a canonical form of the fields that define the event (account, meter,
+3. *(Amended 2026-11-27 (C2): for a raw event, the meter, quantity and dimensions, not the amount.)* **The payload
+   hash** is SHA-256 over a canonical form of the fields that define the event (account, meter,
    quantity, occurrence time, dimensions): keys sorted, no insignificant whitespace, times in UTC with a fixed
    precision. Fields the service adds (intake time, producer identity) are not in it. The exact canonical form is
    specified with the code and fixed by test vectors.
@@ -118,7 +129,8 @@ PostgreSQL is already the only infrastructure (rule 1 of the agent guide). This 
 11. **Workers drain with `SKIP LOCKED`.** A worker takes a batch:
     `SELECT … FROM usage_event WHERE state = 'received' ORDER BY received_at LIMIT n FOR UPDATE SKIP LOCKED`,
     served by a partial index on `received_at` where `state = 'received'`.
-12. **One transaction per batch.** In it the worker rates each event, writes its outcome and ledger entries, updates
+12. **One transaction per batch.** *(Amended 2026-11-27 (C1): intake rates, the worker does not.)* In it the worker
+    rates each event, writes its outcome and ledger entries, updates
     the balances and sets each event's `state` to `applied` or `refused`. Two workers never take the same row. A
     crash rolls the whole batch back and the rows are taken again. A slow batch holds locks only on its own rows and
     on balance rows, never on anything intake touches.
@@ -151,7 +163,7 @@ PostgreSQL is already the only infrastructure (rule 1 of the agent guide). This 
     its prices. Once published, a version
     never changes. An event is rated by the version in effect at its `occurred_at`, and that version id is stored on
     its outcome, so a statement can be derived again from the outcomes alone.
-19. **No back-dating.** A new version takes effect at or after the time it is published. Otherwise an event still in
+19. **No back-dating.** *(Amended 2026-11-27 (C3): and after every event already rated.)* A new version takes effect at or after the time it is published. Otherwise an event still in
     the queue would be rated by a version that applied events never saw. A correction to the past is a credit.
 20. **Integers only.** Quantities are integers. Amounts are integers in the minor unit of a currency. No float is used
     anywhere, in the database or in the code (rule 3). *Amended 2026-11-27 (B1): micro-units of a currency, not its
@@ -313,7 +325,7 @@ returns a batch's rows to `Received`, because the transaction that would have mo
 | Is an event id unique per deployment or per producer? | Per producer: key `(producer, event_id, occurred_on)`, so a conflict never tells one producer about another's ids |
 | Does one very busy account need more than one balance update per batch? | Measure first. If it does, split its balance into a few sub-rows with a share of the limit each, or a per-day aggregate rolled up; both make the limit check harder. Undecided |
 | ~~Minimum PostgreSQL version~~ | ~~The oldest version upstream still supports at the first release. Use `DO SELECT` where available (19), two statements elsewhere~~ **Decided 2026-11-27: PostgreSQL 19** (the amendment at the top) |
-| A price below one minor unit per unit | Prices as an integer amount per an integer quantity; round once per event, half-to-even, with the rounding mode stored on the version |
+| ~~A price below one minor unit per unit~~ | ~~Prices as an integer amount per an integer quantity; round once per event, half-to-even, with the rounding mode stored on the version~~ **Built 2026-11-27** ([ADR 0004](0004-a-versioned-price-book-in-sql.md)): micro-units per an integer `per`, half to even once per event. The mode is one for every version, not stored on each |
 | How long are outcomes and the ledger kept, and how are they stored? | Kept for good; partition them by month for archival, never drop them in the service |
 | Can a refused debit be retried after a credit? | No. A refusal is final for its event; an operator who wants it billed sends a new event with a new id |
 | Window and skew defaults | 7 days and 5 minutes, both configurable; the window never shorter than the producers' retry horizon |

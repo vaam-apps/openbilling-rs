@@ -5,23 +5,26 @@
 ## What this is
 
 An open-source usage billing service in Rust on PostgreSQL alone: intake of usage events, rating against a price book,
-and a double-entry ledger. **Status: the ledger on pre-priced events (slice 2).** [ADR 0001](docs/adr/0001-postgres-is-the-queue.md)
-and [ADR 0002](docs/adr/0002-an-owner-holds-several-accounts.md) are the design. Built: owners with several accounts
+and a double-entry ledger. **Status: the ledger (slice 2) and the price book (slice 3).** [ADR 0001](docs/adr/0001-postgres-is-the-queue.md),
+[ADR 0002](docs/adr/0002-an-owner-holds-several-accounts.md) and
+[ADR 0004](docs/adr/0004-a-versioned-price-book-in-sql.md) are the design. Built: owners with several accounts
 (one currency and label each), credits by source (payment, promotion, adjustment), refunds and chargebacks capped at
 the payment, the monthly allowance, the partitioned usage queue with once-only intake, the drain into the ledger with
-the configured draw order, debt and debt limits, member caps, and the reads. Every rule is SQL in
-`crates/openbilling-pg/migrations/`; `PgLedger` calls it through the `LedgerStore` port, and `openbilling-testkit`
-holds the conformance suite. **The suite has not run against a PostgreSQL 19 outside CI** (none was available where it
-was written). Not built: rating against a price book (slice 3), detaching and dropping old partitions, a worker loop
-and the binary's service.
+the configured draw order, debt and debt limits, member caps, and the reads; a versioned price book loaded from YAML
+(once per content, never changed or back-dated), raw events rated at intake by the version in force at their time
+(half to even, once per event; unpriced meters and dimensions refused) and kept with their version. Every rule is SQL
+in `crates/openbilling-pg/migrations/`; `PgLedger` calls it through the `LedgerStore` and `PriceBook` ports, and
+`openbilling-testkit` holds the conformance suites. **The suites have not run against a PostgreSQL 19 outside CI**
+(none was available where they were written). Not built: detaching and dropping old partitions, a worker loop, the
+binary's service, an external read API (CrateStack's, being built).
 
 ## Layout
 
 | Path | What |
 |---|---|
-| `crates/openbilling-core` | Types, no I/O, no async runtime, no rule: the ids (`EventId`, `AccountId`, `OwnerId`, `MemberId`, `CreditId`, `CurrencyCode`, `AccountLabel`), `Amount` (`i64` micro-units), `Timestamp`/`UtcDay`/`UtcMonth`, the configuration, credits, events, `EventOutcome`, the port `LedgerStore` with `LedgerError`, `Refusal` and `Rule`, and `Error` with `ErrorClass` through `Classify` |
-| `crates/openbilling-pg` | The PostgreSQL store on sqlx `=0.9.0` (held to CrateStack 0.20.6's pin); refuses a server older than PostgreSQL 19. `migrations/` holds every rule (hand-written SQL, applied by `migrator()`); `src/ledger.rs` is `PgLedger`, a thin caller; `src/sqlstate.rs` the one map of SQLSTATEs. `tests/` need `OPENBILLING_TEST_DATABASE_URL` and make a fresh database per test |
-| `crates/openbilling-testkit` | The conformance suite of `LedgerStore`: `ledger_conformance!(factory)`, its cases in `src/cases.rs` and fixtures |
+| `crates/openbilling-core` | Types, no I/O, no async runtime, no rule: the ids (`EventId`, `AccountId`, `OwnerId`, `MemberId`, `CreditId`, `CurrencyCode`, `AccountLabel`, `MeterId`, `DimensionKey`, `DimensionValue`), `Amount` (`i64` micro-units), `Quantity`, `Timestamp`/`UtcDay`/`UtcMonth`, the configuration, credits, priced and raw events, `EventOutcome`, the ports `LedgerStore` and `PriceBook` with `LedgerError`, `Refusal`, `ListPosition` and `Rule`, and `Error` with `ErrorClass` through `Classify` |
+| `crates/openbilling-pg` | The PostgreSQL store on sqlx `=0.9.0` (held to CrateStack 0.20.6's pin); refuses a server older than PostgreSQL 19. `migrations/` holds every rule (hand-written SQL, applied by `migrator()`); `src/ledger.rs` is `PgLedger`, a thin caller; `src/price_list.rs` parses the YAML price list (serde-saphyr) and nothing more; `src/sqlstate.rs` the one map of SQLSTATEs. `tests/` need `OPENBILLING_TEST_DATABASE_URL` and make a fresh database per test |
+| `crates/openbilling-testkit` | The conformance suites: `ledger_conformance!(factory)` of `LedgerStore` (`src/cases.rs`) and `price_book_conformance!(factory)` of `PriceBook` (`src/price_cases.rs`), and fixtures |
 | `bin/openbilling` | The service binary (`anyhow`). Answers `--help` and `--version` for now |
 | `docs/adr/` | The decisions, with an index in `docs/adr/README.md` |
 | `Cargo.toml`, `clippy.toml`, `deny.toml` | Workspace (edition 2024, resolver 3, MSRV `rust-version`), lints (`unsafe_code` forbidden, `unwrap`/`expect` warn outside tests), dependency policy |
@@ -50,8 +53,11 @@ and the binary's service.
     2026-11-27); the store refuses an older server at connect.
 12. **SQL first: the ledger's rules live in PostgreSQL** (ADR 0002). Debit, credit by source, reversal, the drain, the
     draw order, intake's checks and the reads are functions, constraints, triggers and views in
-    `crates/openbilling-pg/migrations/`. Rust keeps the port, the types, the wiring and the tests, and never
-    implements a rule a second time. Plain SQL gets a SQL-standard body (`LANGUAGE sql`, `RETURN` or
+    `crates/openbilling-pg/migrations/`, and so are the price book's checks, its content hash, rating and rounding
+    (ADR 0004). Rust keeps the port, the types, the wiring, the YAML parsing and the tests, and never implements a
+    rule a second time. Writes and internal operations are functions called as `SELECT … FROM fn($1, …)`; a read that
+    carries no rule is a plain parameterized query, and reads for external clients are CrateStack's (the owner's
+    decisions of 2026-11-27). Plain SQL gets a SQL-standard body (`LANGUAGE sql`, `RETURN` or
     `BEGIN ATOMIC … END`: parsed at creation, dependencies tracked, no polymorphic arguments); `LANGUAGE plpgsql` only
     for control flow or `RAISE` with a SQLSTATE, and the function's comment says which. Functions, not procedures,
     where the caller needs rows back. Atomicity is the caller's transaction, not `BEGIN ATOMIC`. Custom SQLSTATEs are

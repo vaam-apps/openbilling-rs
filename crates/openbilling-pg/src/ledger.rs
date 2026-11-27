@@ -1,7 +1,8 @@
 //! [`PgLedger`]: the [`LedgerStore`] port on PostgreSQL.
 //!
-//! A thin caller (agent guide, rule 12): each method is one statement that calls one function of the migrations, in
-//! its own transaction, and maps the answer to the port's types. No rule of the ledger is written here.
+//! A thin caller (agent guide, rule 12): each write is one statement that calls one function of the migrations, in
+//! its own transaction, and maps the answer to the port's types; a read that carries no rule is a plain query. No
+//! rule of the ledger is written here. It also implements [`PriceBook`] (ADR 0004).
 
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -9,9 +10,9 @@ use std::time::{Duration, Instant};
 use openbilling_core::{
     AccountBalance, AccountId, AccountLabel, Allowed, Amount, Balance, CreditId, CreditTarget,
     Credited, CurrencyCode, Decided, DrainReport, EventId, EventOutcome, Intake, IntakeReport,
-    LedgerConfig, LedgerError, LedgerStore, LotKind, LotView, MemberId, NewAccount, NotAllowed,
-    Opened, OutcomeView, OwnerId, RefusalReason, Reversal, Timestamp, UsageEvent, UtcDay, UtcMonth,
-    Window, WithinKind,
+    LedgerConfig, LedgerError, LedgerStore, Loaded, LotKind, LotView, MemberId, NewAccount,
+    NotAllowed, Opened, OutcomeView, OwnerId, PriceBook, PriceVersionId, PriceVersionView, Rated,
+    RawEvent, RefusalReason, Reversal, Timestamp, UsageEvent, UtcDay, UtcMonth, Window, WithinKind,
 };
 use sqlx::PgPool;
 use sqlx::postgres::PgListener;
@@ -160,6 +161,12 @@ impl Wakeup {
 /// expiry (microseconds).
 type LotRow = (String, Option<String>, Option<i32>, i64, i64, Option<i64>);
 
+/// A decision as `ob_drain` returns it: event id, occurrence day, state, reason, amount, price book version.
+type DrainRow = (String, i32, String, Option<String>, i64, Option<String>);
+
+/// An outcome as `PgLedger::outcome` reads it: occurrence day, state, reason, amount, price book version.
+type OutcomeRow = (i32, String, Option<String>, i64, Option<String>);
+
 fn amount(micros: i64) -> Result<Amount, LedgerError> {
     Amount::from_micros(micros).map_err(|_| corrupt())
 }
@@ -179,6 +186,84 @@ fn credited(row: (String, String, bool, i64, i64)) -> Result<Credited, LedgerErr
     })
 }
 
+fn version(id: Option<String>) -> Result<Option<PriceVersionId>, LedgerError> {
+    id.map(PriceVersionId::new)
+        .transpose()
+        .map_err(|_| corrupt())
+}
+
+fn timestamp(micros: i64) -> Result<Timestamp, LedgerError> {
+    Timestamp::from_unix_micros(micros).map_err(|_| corrupt())
+}
+
+/// One batch for `ob_intake`: priced rows carry an amount and no meter, raw rows a meter, a quantity and their
+/// dimensions (by 1-based position) and no amount.
+#[derive(Default)]
+struct IntakeBatch<'a> {
+    ids: Vec<&'a str>,
+    owners: Vec<&'a str>,
+    currencies: Vec<&'a str>,
+    members: Vec<&'a str>,
+    amounts: Vec<Option<i64>>,
+    occurred: Vec<i64>,
+    meters: Vec<Option<&'a str>>,
+    quantities: Vec<Option<i64>>,
+    dimension_of: Vec<i32>,
+    dimension_keys: Vec<&'a str>,
+    dimension_values: Vec<&'a str>,
+}
+
+impl<'a> IntakeBatch<'a> {
+    fn priced(events: &'a [UsageEvent]) -> Self {
+        let mut batch = Self::default();
+        for e in events {
+            batch.row(
+                e.id.as_str(),
+                e.owner.as_str(),
+                e.currency.as_str(),
+                e.member.as_str(),
+            );
+            batch.amounts.push(Some(e.amount.micros()));
+            batch.occurred.push(e.occurred_at.unix_micros());
+            batch.meters.push(None);
+            batch.quantities.push(None);
+        }
+        batch
+    }
+
+    fn raw(events: &'a [RawEvent]) -> Self {
+        let mut batch = Self::default();
+        for (n, e) in events.iter().enumerate() {
+            batch.row(
+                e.id.as_str(),
+                e.owner.as_str(),
+                e.currency.as_str(),
+                e.member.as_str(),
+            );
+            batch.amounts.push(None);
+            batch.occurred.push(e.occurred_at.unix_micros());
+            batch.meters.push(Some(e.meter.as_str()));
+            batch.quantities.push(Some(e.quantity.units()));
+            // At most 1000 events reach the SQL; a longer batch is refused there, so the position never saturates
+            // where it matters.
+            let position = i32::try_from(n + 1).unwrap_or(i32::MAX);
+            for (key, value) in e.dimensions.iter() {
+                batch.dimension_of.push(position);
+                batch.dimension_keys.push(key.as_str());
+                batch.dimension_values.push(value.as_str());
+            }
+        }
+        batch
+    }
+
+    fn row(&mut self, id: &'a str, owner: &'a str, currency: &'a str, member: &'a str) {
+        self.ids.push(id);
+        self.owners.push(owner);
+        self.currencies.push(currency);
+        self.members.push(member);
+    }
+}
+
 fn outcome(state: &str, reason: Option<&str>) -> Result<EventOutcome, LedgerError> {
     match (state, reason) {
         ("applied", None) => Ok(EventOutcome::Applied),
@@ -186,6 +271,50 @@ fn outcome(state: &str, reason: Option<&str>) -> Result<EventOutcome, LedgerErro
             .map(EventOutcome::Refused)
             .ok_or_else(corrupt),
         _ => Err(corrupt()),
+    }
+}
+
+impl PgLedger {
+    /// Calls `ob_intake` with one batch, priced or raw, and notifies the workers when it wrote anything.
+    async fn take_in(&self, batch: IntakeBatch<'_>) -> Result<IntakeReport, LedgerError> {
+        let window = self.settings.window;
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT o_event_id, o_answer \
+             FROM ob_intake($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+        )
+        .bind(batch.ids)
+        .bind(batch.owners)
+        .bind(batch.currencies)
+        .bind(batch.members)
+        .bind(batch.amounts)
+        .bind(batch.occurred)
+        .bind(batch.meters)
+        .bind(batch.quantities)
+        .bind(batch.dimension_of)
+        .bind(batch.dimension_keys)
+        .bind(batch.dimension_values)
+        .bind(i32::from(window.days()))
+        .bind(window.skew_micros())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(ledger_error)?;
+        let answers = rows
+            .into_iter()
+            .map(|(id, answer)| {
+                let id = EventId::new(id).map_err(|_| corrupt())?;
+                let answer = match answer.as_str() {
+                    "accepted" => Intake::Accepted,
+                    "replayed" => Intake::Replayed,
+                    _ => return Err(corrupt()),
+                };
+                Ok((id, answer))
+            })
+            .collect::<Result<Vec<_>, LedgerError>>()?;
+        let report = IntakeReport { answers };
+        if report.accepted() > 0 {
+            self.notify().await;
+        }
+        Ok(report)
     }
 }
 
@@ -333,49 +462,13 @@ impl LedgerStore for PgLedger {
     }
 
     async fn intake(&self, events: &[UsageEvent]) -> Result<IntakeReport, LedgerError> {
-        let ids: Vec<&str> = events.iter().map(|e| e.id.as_str()).collect();
-        let owners: Vec<&str> = events.iter().map(|e| e.owner.as_str()).collect();
-        let currencies: Vec<&str> = events.iter().map(|e| e.currency.as_str()).collect();
-        let members: Vec<&str> = events.iter().map(|e| e.member.as_str()).collect();
-        let amounts: Vec<i64> = events.iter().map(|e| e.amount.micros()).collect();
-        let occurred: Vec<i64> = events.iter().map(|e| e.occurred_at.unix_micros()).collect();
-        let window = self.settings.window;
-        let rows: Vec<(String, String)> = sqlx::query_as(
-            "SELECT o_event_id, o_answer FROM ob_intake($1, $2, $3, $4, $5, $6, $7, $8)",
-        )
-        .bind(ids)
-        .bind(owners)
-        .bind(currencies)
-        .bind(members)
-        .bind(amounts)
-        .bind(occurred)
-        .bind(i32::from(window.days()))
-        .bind(window.skew_micros())
-        .fetch_all(&self.pool)
-        .await
-        .map_err(ledger_error)?;
-        let answers = rows
-            .into_iter()
-            .map(|(id, answer)| {
-                let id = EventId::new(id).map_err(|_| corrupt())?;
-                let answer = match answer.as_str() {
-                    "accepted" => Intake::Accepted,
-                    "replayed" => Intake::Replayed,
-                    _ => return Err(corrupt()),
-                };
-                Ok((id, answer))
-            })
-            .collect::<Result<Vec<_>, LedgerError>>()?;
-        let report = IntakeReport { answers };
-        if report.accepted() > 0 {
-            self.notify().await;
-        }
-        Ok(report)
+        self.take_in(IntakeBatch::priced(events)).await
     }
 
     async fn drain(&self, limit: u32) -> Result<DrainReport, LedgerError> {
-        let rows: Vec<(String, i32, String, Option<String>, i64)> = sqlx::query_as(
-            "SELECT o_event_id, o_occurred_day, o_state, o_reason, o_amount FROM ob_drain($1)",
+        let rows: Vec<DrainRow> = sqlx::query_as(
+            "SELECT o_event_id, o_occurred_day, o_state, o_reason, o_amount, o_price_version::text \
+             FROM ob_drain($1)",
         )
         .bind(i32::try_from(limit).unwrap_or(i32::MAX))
         .fetch_all(&self.pool)
@@ -383,12 +476,13 @@ impl LedgerStore for PgLedger {
         .map_err(ledger_error)?;
         let decided = rows
             .into_iter()
-            .map(|(id, occurred_on, state, reason, micros)| {
+            .map(|(id, occurred_on, state, reason, micros, price_version)| {
                 Ok(Decided {
                     event: EventId::new(id).map_err(|_| corrupt())?,
                     occurred_on: day(occurred_on)?,
                     outcome: outcome(&state, reason.as_deref())?,
                     amount: amount(micros)?,
+                    price_version: version(price_version)?,
                 })
             })
             .collect::<Result<Vec<_>, LedgerError>>()?;
@@ -489,18 +583,21 @@ impl LedgerStore for PgLedger {
     }
 
     async fn outcome(&self, event: &EventId) -> Result<Option<OutcomeView>, LedgerError> {
-        let row: Option<(i32, String, Option<String>, i64)> = sqlx::query_as(
-            "SELECT o_occurred_day, o_state, o_reason, o_amount FROM ob_outcome_of($1)",
+        // A plain read: no rule, so no function (the owner's decision of 2026-11-27).
+        let row: Option<OutcomeRow> = sqlx::query_as(
+            "SELECT ob_day(o.occurred_on), o.state, o.reason, o.amount, o.price_version::text \
+             FROM ob_event_outcome o WHERE o.event_id = $1 AND o.state <> 'pending'",
         )
         .bind(event.as_str())
         .fetch_optional(&self.pool)
         .await
         .map_err(ledger_error)?;
-        row.map(|(occurred_on, state, reason, micros)| {
+        row.map(|(occurred_on, state, reason, micros, price_version)| {
             Ok(OutcomeView {
                 occurred_on: day(occurred_on)?,
                 outcome: outcome(&state, reason.as_deref())?,
                 amount: amount(micros)?,
+                price_version: version(price_version)?,
             })
         })
         .transpose()
@@ -521,5 +618,88 @@ impl LedgerStore for PgLedger {
         rows.into_iter()
             .map(|(d, micros)| Ok((day(d)?, amount(micros)?)))
             .collect()
+    }
+}
+
+impl PriceBook for PgLedger {
+    async fn load_price_list(&self, yaml: &str) -> Result<Loaded, LedgerError> {
+        let list = crate::price_list::parse(yaml)?;
+        let (id, effective_micros, content_hash, replayed): (String, i64, String, bool) =
+            sqlx::query_as(
+                "SELECT o_version_id::text, o_effective_micros, o_content_hash, o_replayed \
+                 FROM ob_load_price_list($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)",
+            )
+            .bind(list.effective_from)
+            .bind(list.top)
+            .bind(list.meter_names)
+            .bind(list.meter_units)
+            .bind(list.meter_lines)
+            .bind(list.meter_columns)
+            .bind(list.meter_dimension_of)
+            .bind(list.meter_dimensions)
+            .bind(list.price_meters)
+            .bind(list.price_currencies)
+            .bind(list.price_micros)
+            .bind(list.price_per)
+            .bind(list.price_lines)
+            .bind(list.price_columns)
+            .bind(list.price_dimension_of)
+            .bind(list.price_dimension_keys)
+            .bind(list.price_dimension_values)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(ledger_error)?;
+        Ok(Loaded {
+            version: PriceVersionId::new(id).map_err(|_| corrupt())?,
+            effective_from: timestamp(effective_micros)?,
+            content_hash,
+            replayed,
+        })
+    }
+
+    async fn price_versions(&self) -> Result<Vec<PriceVersionView>, LedgerError> {
+        // A plain read: no rule, so no function (the owner's decision of 2026-11-27).
+        let rows: Vec<(String, i64, String)> = sqlx::query_as(
+            "SELECT v.version_id::text, ob_micros(v.effective_from), encode(v.content_hash, 'hex') \
+             FROM ob_price_version v ORDER BY v.effective_from",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(ledger_error)?;
+        rows.into_iter()
+            .map(|(id, micros, content_hash)| {
+                Ok(PriceVersionView {
+                    version: PriceVersionId::new(id).map_err(|_| corrupt())?,
+                    effective_from: timestamp(micros)?,
+                    content_hash,
+                })
+            })
+            .collect()
+    }
+
+    async fn rate(&self, event: &RawEvent) -> Result<Rated, LedgerError> {
+        let keys: Vec<&str> = event.dimensions.iter().map(|(k, _)| k.as_str()).collect();
+        let values: Vec<&str> = event.dimensions.iter().map(|(_, v)| v.as_str()).collect();
+        // A function, not a query: the refusals of an unpriced meter or dimension are SQLSTATEs, which one plain
+        // statement cannot raise.
+        let (micros, id): (i64, String) =
+            sqlx::query_as("SELECT o_amount, o_version::text FROM ob_rate($1, $2, $3, $4, $5, $6)")
+                .bind(event.currency.as_str())
+                .bind(event.meter.as_str())
+                .bind(event.quantity.units())
+                .bind(keys)
+                .bind(values)
+                .bind(event.occurred_at.unix_micros())
+                .fetch_one(&self.pool)
+                .await
+                .map_err(ledger_error)?;
+        Ok(Rated {
+            amount: amount(micros)?,
+            version: PriceVersionId::new(id).map_err(|_| corrupt())?,
+        })
+    }
+
+    async fn intake_raw(&self, events: &[RawEvent]) -> Result<IntakeReport, LedgerError> {
+        self.take_in(IntakeBatch::raw(events)).await
     }
 }

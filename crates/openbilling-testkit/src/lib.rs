@@ -11,6 +11,10 @@
 //! once-only intake, replays and conflicts, the window, the drain, the draw order across an owner's accounts and
 //! their lots, credits by source, the reversal cap, debt, limits and caps, and concurrency with scarce credit.
 //!
+//! [`price_book_conformance!`] runs the cases of the price book
+//! ([ADR 0004](https://github.com/vaam-apps/openbilling-rs/blob/main/docs/adr/0004-a-versioned-price-book-in-sql.md)):
+//! loading, versions, rating, rounding, refusals and raw intake.
+//!
 //! The consumer needs `tokio` as a dev-dependency with the `macros` and `rt-multi-thread` features: each case is a
 //! `#[tokio::test]` on the multi-threaded runtime.
 
@@ -19,6 +23,7 @@
 
 pub mod cases;
 pub mod fixtures;
+pub mod price_cases;
 
 /// Runs every conformance case against the store `$factory` makes: `async fn() -> Option<S>`, a fresh empty store
 /// per case, or `None` to skip it.
@@ -54,6 +59,42 @@ macro_rules! ledger_conformance {
             daily_usage_sums_applied_debits_per_utc_day,
             invalid_amounts_and_configurations_are_refused,
         );
+    };
+}
+
+/// Runs every conformance case of the price book (ADR 0004) against the store `$factory` makes: `async fn() ->
+/// Option<S>` where `S` implements [`PriceBook`](openbilling_core::PriceBook), a fresh empty store per case, or
+/// `None` to skip it.
+#[macro_export]
+macro_rules! price_book_conformance {
+    ($factory:path) => {
+        $crate::__price_book_cases!(
+            $factory;
+            the_same_event_rated_twice_gives_the_same_amount_and_version,
+            a_new_version_rates_only_later_events,
+            an_unpriced_meter_or_dimension_is_refused,
+            rounding_is_half_to_even_once_per_event,
+            a_huge_quantity_is_exact_or_refused,
+            a_malformed_price_list_names_its_error,
+            loading_the_same_list_twice_is_a_no_op,
+            a_version_is_never_back_dated,
+            the_payload_of_a_raw_event_is_its_meter_quantity_and_dimensions,
+        );
+    };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __price_book_cases {
+    ($factory:path; $($case:ident),* $(,)?) => {
+        $(
+            #[::tokio::test(flavor = "multi_thread", worker_threads = 4)]
+            async fn $case() {
+                if let Some(store) = $factory().await {
+                    $crate::price_cases::$case(store).await;
+                }
+            }
+        )*
     };
 }
 

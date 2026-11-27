@@ -5,7 +5,8 @@
 //! [ADR 0002](https://github.com/vaam-apps/openbilling-rs/blob/main/docs/adr/0002-an-owner-holds-several-accounts.md)
 //! gives an owner several accounts. Every rule of the ledger is SQL in `migrations/` (agent guide, rule 12);
 //! [`PgLedger`] implements the [`LedgerStore`](openbilling_core::LedgerStore) port by calling it, and
-//! [`sqlstate`] maps what it raises.
+//! [`sqlstate`] maps what it raises. It also implements the [`PriceBook`](openbilling_core::PriceBook) port
+//! (ADR 0004): it parses a YAML price list and the SQL checks and loads it.
 //!
 //! PostgreSQL 19 is the minimum (ADR 0001, amended 2026-11-27). The store uses its features and refuses to start
 //! against an older server.
@@ -19,12 +20,13 @@ use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{PgPool, SqlSafeStr};
 
 mod ledger;
+mod price_list;
 pub mod sqlstate;
 
 pub use ledger::{LedgerSettings, NOTIFY_CHANNEL, PgLedger, Wakeup, Woken};
 
 /// The migrations, in order: hand-written SQL, embedded in the binary.
-const MIGRATIONS: [(i64, &str, &str); 4] = [
+const MIGRATIONS: [(i64, &str, &str); 6] = [
     (
         20_261_127_000_001,
         "configuration and accounts",
@@ -44,6 +46,16 @@ const MIGRATIONS: [(i64, &str, &str); 4] = [
         20_261_127_000_004,
         "ledger functions",
         include_str!("../migrations/20261127000004_ledger_functions.sql"),
+    ),
+    (
+        20_261_127_000_005,
+        "rated events",
+        include_str!("../migrations/20261127000005_rated_events.sql"),
+    ),
+    (
+        20_261_127_000_006,
+        "price book",
+        include_str!("../migrations/20261127000006_price_book.sql"),
     ),
 ];
 

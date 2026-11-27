@@ -21,6 +21,10 @@ openbilling-core = { path = "crates/openbilling-core" }
 openbilling-testkit = { path = "crates/openbilling-testkit" }
 
 anyhow = "1.0.105"
+serde = { version = "1.0.229", default-features = false, features = ["std", "derive"] }
+# The YAML price list (ADR 0004): pure Rust, no panic on input, a budget on what a document may cost, duplicate keys
+# refused, and `Spanned` values that carry their line and column. Deserializing only.
+serde-saphyr = { version = "2.2.0", default-features = false, features = ["deserialize"] }
 thiserror = "2.0.21"
 tokio = { version = "1.54.1", default-features = false }
 # `=0.9.0`, not 0.9.1: CrateStack 0.20.6, the stack ADR 0001 names, pins sqlx `=0.9.0`, and Cargo cannot hold two
