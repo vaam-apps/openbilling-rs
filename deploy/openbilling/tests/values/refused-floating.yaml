@@ -1,0 +1,7 @@
+# expect: "edge" is not a fixed version
+controllers:
+  main:
+    containers:
+      main:
+        image:
+          tag: edge

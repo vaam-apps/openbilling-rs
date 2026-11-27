@@ -1,0 +1,8 @@
+# A floating tag is accepted when a digest fixes what is pulled (a development install of an `edge` build).
+controllers:
+  main:
+    containers:
+      main:
+        image:
+          tag: edge
+          digest: sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210

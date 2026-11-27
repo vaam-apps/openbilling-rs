@@ -1,0 +1,101 @@
+#!/bin/sh
+# check.sh: every check of the chart, run by CI (ci.yml, job `chart`) and runnable as is on a laptop.
+#
+#   sh deploy/openbilling/tests/check.sh
+#
+# Needs helm (v4; CI pins the version) and kubeconform on PATH, and the network once: the common library is pulled
+# from ghcr.io, and kubeconform reads the Kubernetes schemas from GitHub. The ServiceMonitor schema is vendored.
+#
+#   1. the versions agree: Cargo.toml's workspace version, Chart.yaml's version and appVersion;
+#   2. the common library is the archive Chart.yaml pins, by sha256;
+#   3. helm lint, defaults and every accepted values file;
+#   4. helm template of each, then render-check.sh and kubeconform (strict) on the render;
+#   5. every refused values file is refused, with its message.
+
+set -eu
+
+here=$(cd "$(dirname "$0")" && pwd)
+chart=$(cd "$here/.." && pwd)
+root=$(cd "$chart/../.." && pwd)
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT INT TERM
+
+KUBERNETES_VERSION=${KUBERNETES_VERSION:-1.35.0}
+# The sha256 of common-5.3.0.tgz: the layer of oci://ghcr.io/bjw-s-labs/helm/common:5.3.0 and the digest in the
+# bjw-s index.yaml (verified 2026-11-27). Move it with Chart.yaml's dependency.
+COMMON_ARCHIVE=common-5.3.0.tgz
+COMMON_SHA256=d373034b8f8d2d7c25d4028f8280a2112486a8b1a3deb1f4e690cd132ac20f80
+
+step() { printf '\n== %s\n' "$1"; }
+die() { printf 'check.sh: %s\n' "$1" >&2; exit 1; }
+
+for tool in helm kubeconform; do
+    command -v "$tool" > /dev/null 2>&1 || die "$tool is not on PATH"
+done
+
+sha256() {
+    if command -v sha256sum > /dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
+    else shasum -a 256 "$1" | cut -d' ' -f1
+    fi
+}
+
+step "versions agree"
+# `[^ #"]*`, never `.*$`: each line ends in the release-please marker, and a pattern anchored to the end of the line
+# would match nothing and pass.
+cargo_version=$(sed -n 's/^version = "\([^"]*\)" # x-release-please-version$/\1/p' "$root/Cargo.toml" | head -1)
+chart_version=$(sed -n 's/^version: *\([^ #"]*\) # x-release-please-version$/\1/p' "$chart/Chart.yaml" | head -1)
+app_version=$(sed -n 's/^appVersion: *"\([^"]*\)" # x-release-please-version$/\1/p' "$chart/Chart.yaml" | head -1)
+printf 'Cargo.toml %s, Chart.yaml version %s, appVersion %s\n' "$cargo_version" "$chart_version" "$app_version"
+[ -n "$cargo_version" ] || die "Cargo.toml has no workspace version line with its x-release-please-version marker"
+[ -n "$chart_version" ] || die "Chart.yaml has no version line with its x-release-please-version marker"
+[ -n "$app_version" ] || die "Chart.yaml has no appVersion line with its x-release-please-version marker"
+[ "$cargo_version" = "$chart_version" ] || die "Chart.yaml version $chart_version is not Cargo.toml's $cargo_version"
+[ "$cargo_version" = "$app_version" ] || die "Chart.yaml appVersion $app_version is not Cargo.toml's $cargo_version"
+
+step "the common library"
+if [ ! -f "$chart/charts/$COMMON_ARCHIVE" ]; then
+    helm dependency build "$chart"
+fi
+got=$(sha256 "$chart/charts/$COMMON_ARCHIVE")
+[ "$got" = "$COMMON_SHA256" ] || die "charts/$COMMON_ARCHIVE is $got, not the pinned $COMMON_SHA256"
+printf '%s sha256:%s\n' "$COMMON_ARCHIVE" "$got"
+
+# name|values file (empty: the defaults)|render-check flags
+accepted="defaults||
+full|$here/values/full.yaml|--require-digest
+edge-with-digest|$here/values/edge-with-digest.yaml|--require-digest"
+
+printf '%s\n' "$accepted" | while IFS='|' read -r name values flags; do
+    set --
+    [ -n "$values" ] && set -- -f "$values"
+
+    step "lint: $name"
+    helm lint --strict "$chart" "$@"
+
+    step "template: $name"
+    helm template openbilling "$chart" --namespace billing "$@" > "$work/$name.yaml"
+    # shellcheck disable=SC2086 # $flags is empty or one flag.
+    sh "$here/render-check.sh" "$work/$name.yaml" $flags
+    kubeconform -strict -summary \
+        -kubernetes-version "$KUBERNETES_VERSION" \
+        -schema-location default \
+        -schema-location "$here/schemas/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json" \
+        "$work/$name.yaml"
+done
+
+for values in "$here"/values/refused-*.yaml; do
+    name=$(basename "$values" .yaml)
+    step "refused: $name"
+    expect=$(sed -n 's/^# expect: //p' "$values" | head -1)
+    [ -n "$expect" ] || die "$values has no '# expect:' line"
+    if helm template openbilling "$chart" -f "$values" > "$work/$name.yaml" 2> "$work/$name.err"; then
+        die "$name rendered; it must be refused with: $expect"
+    fi
+    grep -qF -- "$expect" "$work/$name.err" || {
+        cat "$work/$name.err" >&2
+        die "$name was refused, but not with: $expect"
+    }
+    printf 'refused, as expected: %s\n' "$expect"
+done
+
+step "ok"

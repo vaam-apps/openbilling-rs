@@ -1,0 +1,7 @@
+{{- /*
+The whole chart is values (values.yaml) rendered by the bjw-s common library, as app-template renders them. The one
+thing values cannot say is a refusal: _validate.tpl, run first.
+*/ -}}
+{{- include "openbilling.validate" . }}
+{{- include "bjw-s.common.loader.init" . }}
+{{- include "bjw-s.common.loader.generate" . }}

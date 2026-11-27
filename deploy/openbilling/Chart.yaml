@@ -1,0 +1,23 @@
+apiVersion: v2
+name: openbilling
+description: Usage billing on PostgreSQL alone (openbilling-rs), on the bjw-s common library v5.
+type: application
+# Both lines are the release, written by release-please (release-please-config.json, `extra-files`); release.yml
+# refuses a tag they disagree with. Never edit them by hand.
+version: 0.1.0 # x-release-please-version
+appVersion: "0.1.0" # x-release-please-version
+kubeVersion: ">=1.28.0-0"
+home: https://github.com/vaam-apps/openbilling-rs
+sources:
+  - https://github.com/vaam-apps/openbilling-rs
+annotations:
+  artifacthub.io/license: Apache-2.0
+dependencies:
+  # The bjw-s common library, the library app-template itself is (app-template 5.3.0 is common 5.3.0 and one
+  # template). Pinned exactly; tests/check.sh refuses a pulled archive whose sha256 is not
+  # d373034b8f8d2d7c25d4028f8280a2112486a8b1a3deb1f4e690cd132ac20f80 (*verified* 2026-11-27: the layer of
+  # oci://ghcr.io/bjw-s-labs/helm/common:5.3.0, manifest sha256:d1738ab79720d0369126df92adf6bbf32c20ea816edc4ab5cd377b2beba8f408,
+  # and the `digest` of common 5.3.0 in https://bjw-s-labs.github.io/helm-charts/index.yaml agree).
+  - name: common
+    version: 5.3.0
+    repository: oci://ghcr.io/bjw-s-labs/helm

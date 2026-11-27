@@ -1,0 +1,7 @@
+# expect: a digest is sha256: and 64 lower-case hex digits
+controllers:
+  main:
+    containers:
+      main:
+        image:
+          digest: sha256:not-a-digest

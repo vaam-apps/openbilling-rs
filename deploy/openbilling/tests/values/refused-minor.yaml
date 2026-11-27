@@ -1,0 +1,7 @@
+# expect: "0.1" is not a fixed version
+controllers:
+  main:
+    containers:
+      main:
+        image:
+          tag: "0.1"
