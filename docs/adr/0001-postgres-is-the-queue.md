@@ -19,6 +19,19 @@ partition key column (point 7), and `DETACH PARTITION … CONCURRENTLY` still ta
 parent (point 10) (*verified 2026-11-27*, PostgreSQL 19 documentation, 5.13 *Table Partitioning*). The sequence diagram
 below is updated to A1.
 
+*Amended 2026-11-27 (the ledger, slice 2):* what building the ledger changed. Each point named below carries a marker.
+
+| # | Change | Points |
+|---|---|---|
+| B1 | **Amounts are integer micro-units** of a currency (10^-6 of its major unit), not its minor unit: one usage event is often worth less than one minor unit. An `i64` still holds about 9.2 × 10^12 major units. Each account carries its own currency, the operator names the set of currencies, and nothing converts between them. A decision for the owner to confirm | 20 |
+| B2 | **An owner holds several accounts**, one per currency and label, and the balance row an event locks is the owner's in that currency ([ADR 0002](0002-an-owner-holds-several-accounts.md)). Locks are taken in (owner, currency) order | 13, 22 |
+| B3 | **Every rule is SQL** in the migrations of `openbilling-pg`; the Rust store only calls it ([ADR 0002](0002-an-owner-holds-several-accounts.md), *Where the rules live*) | 1, 11 to 15 |
+| B4 | **This slice takes pre-priced events**: an event carries its owner, currency, member and amount, and no meter or quantity. Rating against a price book, the meter, the quantity and the price book version on the outcome come with the next slice | 1, 3, 12, 14, 18 |
+| B5 | **The balance row is updated once per event, not once per batch**: each event's draw depends on what the one before it left. Updating once per batch is left open, with the busy-account question below | 22 |
+| B6 | **The limit is a debt limit** per owner and currency, none by default: a debit is refused `limit` when the debt it leaves would pass it, or would pass the largest amount | 23 |
+| B7 | **The drain claims an event id before it takes any balance lock**: it inserts the id's outcome as `pending`, in id order, then locks balances in (owner, currency) order, then decides. A drain waiting on an id holds no balance lock, so drains cannot deadlock on a reused id. A constraint trigger refuses a commit that leaves an outcome pending | 13, 14, 15 |
+| B8 | **Detaching and dropping old partitions is not built yet**; creating them ahead is (`ob_prepare_partitions`) | 10 |
+
 ## Summary
 
 A usage event is written once, by one insert, into a table partitioned by day. That table is the queue and the
@@ -110,7 +123,8 @@ PostgreSQL is already the only infrastructure (rule 1 of the agent guide). This 
     crash rolls the whole batch back and the rows are taken again. A slow batch holds locks only on its own rows and
     on balance rows, never on anything intake touches.
 13. **Lock order prevents deadlocks.** The worker locks the balance rows of a batch `FOR UPDATE` in one order (account,
-    then currency) before writing any entry. It runs at `READ COMMITTED`; the explicit locks, not the isolation level,
+    then currency) before writing any entry. *Amended 2026-11-27 (B2, B7): (owner, currency), after the event ids are
+    claimed in id order.* It runs at `READ COMMITTED`; the explicit locks, not the isolation level,
     serialize debits of one account. Concurrency tests prove that two workers neither double-apply nor deadlock.
 14. **Every event gets a durable outcome.** The worker inserts one row per event into `event_outcome`, keyed by
     `event_id` alone (not partitioned by day, kept for good): applied or refused, the reason, the price book version,
@@ -140,7 +154,8 @@ PostgreSQL is already the only infrastructure (rule 1 of the agent guide). This 
 19. **No back-dating.** A new version takes effect at or after the time it is published. Otherwise an event still in
     the queue would be rated by a version that applied events never saw. A correction to the past is a credit.
 20. **Integers only.** Quantities are integers. Amounts are integers in the minor unit of a currency. No float is used
-    anywhere, in the database or in the code (rule 3).
+    anywhere, in the database or in the code (rule 3). *Amended 2026-11-27 (B1): micro-units of a currency, not its
+    minor unit.*
 
 ### Ledger
 
@@ -148,7 +163,8 @@ PostgreSQL is already the only infrastructure (rule 1 of the agent guide). This 
     deferred constraint trigger checks the sum at commit, so a transaction that does not balance cannot commit.
 22. **Balances are maintained in the same transaction** for accounts that carry a limit: one row per account and
     currency. A worker updates each balance row once per batch, with the sum of that batch's entries for it.
-23. **Limits are checked there.** The worker checks each debit, in the batch's order, against the locked balance and
+    *Amended 2026-11-27 (B2, B5): one row per owner and currency, updated once per event.*
+23. **Limits are checked there** (*amended 2026-11-27 (B6): a debt limit*). The worker checks each debit, in the batch's order, against the locked balance and
     its limit. A debit past the limit is **refused, not lost**: its outcome is `refused`, reason `limit`, with the
     amount it would have been. A refusal is final for that event.
 24. **Counter-accounts carry no live balance row.** Every debit has a balancing credit, for instance to a revenue
