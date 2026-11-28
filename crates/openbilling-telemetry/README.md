@@ -132,5 +132,6 @@ packages are the four crates, `opentelemetry-http`, `opentelemetry-proto`, `pros
 `cargo test -p openbilling-telemetry`: settings and their refusals (the unsupported variables, the sampler, the CA, one signal alone), the metrics registry and its `Recorder` seam, the pipeline against in-memory exporters (`src/pipeline_tests.rs`: the allowlist,
 parents, a failure marking its span, sampling, the database histogram, a full queue dropping and counting), the exporter against a collector in the process
 (`tests/export.rs`: what arrives, the headers, the resource, the exporter's own metrics, and no byte of a sentinel), a collector that never answers (`tests/hang.rs`: recording is instant and `shutdown` ends by its deadline), a full queue (a unit test), and the dashboards against the service (`tests/dashboards.rs`: every metric and label a panel
-queries exists, every panel is described, the chart's copy equals the files). The flow test with a database is
-`openbilling-http/tests/otel.rs`.
+queries exists, every panel is described, the chart's copy equals the files), and the alert rules likewise (`tests/alerts.rs`:
+every metric and label an expression queries exists, every alert has a severity, a `for` and a description, each warning has its critical pair, every alert is in `deploy/alerts/README.md`, the chart's copy equals the file; the PromQL reader is `tests/common/promql.rs`). The flow test with a database is
+`openbilling-http/tests/otel.rs`. Against a real Collector, Prometheus and Grafana: `e2e/observability_stack.rs`, run by `tools/observability/run.sh` (gated; *verified locally 2026-11-28*).
