@@ -4,7 +4,7 @@
 use std::collections::BTreeSet;
 
 /// The labels the code records, and the ones a Prometheus backend adds.
-pub const LABELS: [&str; 19] = [
+pub const LABELS: [&str; 20] = [
     "job",
     "le",
     "route",
@@ -18,6 +18,7 @@ pub const LABELS: [&str; 19] = [
     "result",
     "reason",
     "outcome",
+    "field",
     "kind",
     "state",
     "operation",
