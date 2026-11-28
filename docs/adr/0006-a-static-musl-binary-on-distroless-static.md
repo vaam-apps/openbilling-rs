@@ -5,7 +5,13 @@ the image was not built where this was written (no usable build environment), so
 request's two `image` jobs, amd64 and arm64, which also run `serve` from the image against PostgreSQL. *Amended 2026-11-27
 (ANR-1329):* it has built in CI: the pull request's two `image` jobs (amd64 and arm64, which also run `serve` from the
 image against PostgreSQL) passed and the change merged as #20, and v0.4.0, the first release to carry it, was tagged
-that day; its image did not resolve yet when this was written. It stays Proposed until the owner accepts it.
+that day; its image did not resolve yet when this was written. It stays Proposed until the owner accepts it. *Accepted 2026-11-28 by the owner:* the owner's decision of that day.
+
+*Amended 2026-11-28:* it has run in release. v0.4.0's image is the static musl binary on distroless/static, and it
+is published and resolves anonymously: the image `ghcr.io/vaam-apps/openbilling-rs:0.4.0`, the chart
+`ghcr.io/vaam-apps/charts/openbilling:0.4.0` and the cosign `.sig` tag of the image digest
+`sha256:4e7da01d085078421e8d7b069ce3382e26a41ede2daf6d9f4910f0ec089fb87d` (*verified 2026-11-28* by anonymous
+manifest requests to ghcr.io).
 
 ## Summary
 
