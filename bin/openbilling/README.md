@@ -83,7 +83,7 @@ value has the default shown; a value outside its range, or a `stop_after` not lo
 at start. It logs counts only (credited, differed, failed) and counts the outcomes in `openbilling.topups.reconciled` (`credited`, `replayed` for one found credited already, `pending`, `expired` for a last read that found it still pending, `not_ours`, `canceled`, `mismatch`, `error`, which a pass that panicked also counts; the next pass runs); a
 failed pass is logged by class and counted in `openbilling.errors` (`source=reconcile`). A payment that differs from its top-up in
 any field is never credited and stays refused: the webhook acknowledges it, `reconcilePayment` answers `409`, and it is
-counted in `openbilling.payments.mismatches` and logged as a warning that names the field. **Nothing resolves a mismatch yet.**
+counted in `openbilling.payments.mismatches` and logged as a warning that names the field. An operator resolves it with `resolveTopUp` (credit the recorded terms, or dismiss); a mismatch no top-up was recorded for can only be dismissed.
 
 Each key may be left out (`at_or_above`); every comparison is plain, so under `at_or_above` a limit or cap of zero
 refuses even with nothing used. `serve` prints the policy it runs with. The environment: `OPENBILLING_DATABASE_URL` or

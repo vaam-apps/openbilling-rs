@@ -499,3 +499,58 @@ async fn a_top_up_never_read_past_the_backstop_window_is_read_not_expired() {
     assert_eq!((report.last.credited, report.expired), (1, 0), "{report:?}");
     assert_eq!(available(&ledger).await, f.amount().micros());
 }
+
+/// An operator credits the recorded terms of a top-up whose payment was altered; a refund of that payment then reverses
+/// against the credit, and the resolution is counted by its closed labels only.
+#[tokio::test]
+async fn a_refund_after_credit_recorded_reverses_the_recorded_credit() {
+    use openbilling_core::{OwnerId, Resolution};
+    let Some((ledger, f)) = ready().await else {
+        return;
+    };
+    let resolved = |outcome: &'static str, result: &'static str| {
+        openbilling_metrics::global().snapshot().counter(
+            openbilling_metrics::Counter::TopUpsResolved,
+            Some(&[("outcome", outcome), ("result", result)]),
+        )
+    };
+    let before = resolved("credit_recorded", "resolved");
+    let created = start(&ledger, &f, "k-resolve").await;
+    f.alter(&created.payment, Alteration::Amount).await;
+    f.pay(&created.payment).await;
+    assert!(matches!(
+        settle_payment(&ledger, &f.provider, &created.payment)
+            .await
+            .unwrap_err(),
+        SettleError::ReadBackMismatch(MismatchField::Amount)
+    ));
+    assert_eq!(available(&ledger).await, 0);
+
+    let operator = OwnerId::new("operator-1").unwrap();
+    let done = ledger
+        .resolve_top_up(&created.payment, Resolution::CreditRecorded, &operator)
+        .await
+        .unwrap();
+    assert!(!done.replayed);
+    assert_eq!(
+        available(&ledger).await,
+        f.amount().micros(),
+        "the recorded amount, not the altered one"
+    );
+    assert_eq!(resolved("credit_recorded", "resolved"), before + 1);
+
+    // A refund of the payment reverses against that credit.
+    let part = Amount::from_micros(2_000_000).unwrap();
+    let refund = f
+        .refund(&created.payment, part, RefundStatus::Succeeded)
+        .await;
+    let Settled::Reversed(first) = settle_refund(&ledger, &f.provider, &refund).await.unwrap()
+    else {
+        panic!("reversed")
+    };
+    assert!(!first.replayed);
+    assert_eq!(
+        available(&ledger).await,
+        f.amount().micros() - part.micros()
+    );
+}

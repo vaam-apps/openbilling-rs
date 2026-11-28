@@ -2297,6 +2297,140 @@
       "transport": "rest",
       "verb": "mutation"
     },
+    "83928ae00f699ee59a5727ee31c628d126ec5114ce81ed8944587663fe413fd3": {
+      "closure": {
+        "enums": [
+          {
+            "name": "TopUpResolution",
+            "variants": [
+              "credit_recorded",
+              "dismiss"
+            ]
+          }
+        ],
+        "models": [],
+        "types": [
+          {
+            "fields": [
+              {
+                "attributes": [],
+                "name": "outcome",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "TopUpResolution"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "payment",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              }
+            ],
+            "name": "ResolveTopUpInput"
+          },
+          {
+            "fields": [
+              {
+                "attributes": [],
+                "name": "accountId",
+                "ty": {
+                  "arity": "optional",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "field",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "outcome",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "replayed",
+                "ty": {
+                  "arity": "required",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "Boolean"
+                }
+              },
+              {
+                "attributes": [],
+                "name": "transaction",
+                "ty": {
+                  "arity": "optional",
+                  "generic_args": [],
+                  "ident_args": [],
+                  "int_args": [],
+                  "name": "String"
+                }
+              }
+            ],
+            "name": "TopUpResolved"
+          }
+        ],
+        "views": []
+      },
+      "events": null,
+      "key": "POST /$procs/resolveTopUp",
+      "kind": "unary",
+      "model": null,
+      "procedure": {
+        "args": [
+          {
+            "name": "args",
+            "ty": {
+              "arity": "required",
+              "generic_args": [],
+              "ident_args": [],
+              "int_args": [],
+              "name": "ResolveTopUpInput"
+            }
+          }
+        ],
+        "attributes": [],
+        "kind": "mutation",
+        "name": "resolveTopUp",
+        "return_type": {
+          "arity": "required",
+          "generic_args": [],
+          "ident_args": [],
+          "int_args": [],
+          "name": "TopUpResolved"
+        }
+      },
+      "transport": "rest",
+      "verb": "mutation"
+    },
     "90e29abaa7467468fe25a70d9734cb70809e86b28846b1a0f3145e75f87e90e1": {
       "closure": {
         "enums": [
@@ -4224,6 +4358,36 @@
         "POST /$procs/reconcileRefund": "a13abe1675434d57d4e63232e493a29876334b50fe985e90ecb069e6c7a6973a",
         "POST /$procs/recordRawUsage": "5a5ca7895853d230d1f5e7c3dd069cbda6c4109786253167d9954235dcfbea1a",
         "POST /$procs/recordUsage": "02bb5d84c66a32f30cc472a50b6a942cbde5b12c074fc71986d3441caf996e40",
+        "POST /$procs/setDebtLimit": "ce52473d48e835ecb95b6b87230311fbd886f49461f5f09d270c799998901666",
+        "POST /$procs/setMemberCap": "6d53a5ba7a668d1fccb3a09d6620274f5c2a9677024d43bf19994570bd2af590",
+        "POST /$procs/startTopUp": "0634f0385fa6084c534183a32bdeb4aec64890c145244254044435797c920de2"
+      }
+    },
+    {
+      "client_contract": "87ba962d780174d02a2d2d730ce8601beb9447971e2a8a7c6503e6f83210c628",
+      "locked_at": "2026-11-28",
+      "note": "resolveTopUp (ANR-1474)",
+      "ops": {
+        "GET /accounts": "bb579d8189bd2146d352887cc8f40549df5e2970aaae71067bbbd37cc505b8ee",
+        "GET /accounts/{id}": "b5acca7c50a203dada5284b8a5c9a83eaa405af998bc521d64be1d98ed0bbbfa",
+        "GET /lots": "25771176cccabd5bea211c41d5df76c07744d85ed30cbb36e9cd86058c8d776a",
+        "GET /lots/{id}": "0a3d073e6279db0fc3da8c6ad1c58fd333632851d36b35612c608c80574f5caa",
+        "GET /usage_outcomes": "90e29abaa7467468fe25a70d9734cb70809e86b28846b1a0f3145e75f87e90e1",
+        "GET /usage_outcomes/{id}": "4dba030c4e4b77a04b9975f6a22b5d6a33cbb09f198ee7ab3bc2eb538ac994ca",
+        "POST /$procs/configure": "391cf9b37331050cb6f1218512a6a33cca3055da4db6a5ead0a16340bb679d26",
+        "POST /$procs/getAllowed": "93ce51ec241f6a873d6513f90b2621c8f51452b7c23c505127bce406e098a2c8",
+        "POST /$procs/getBalance": "37be8392b8a2578c288d7753d2ef611e664e403588691c45996589e1e9a99bc1",
+        "POST /$procs/getStatement": "ab7ddfa4409db771a92107e0be2c9d317f926e28f9a659e01558fec27ec81622",
+        "POST /$procs/getUsageSeries": "bcd0a49de7d74d82a607f3ff6ec06dc398da18a6938d584ce3cd447a99867f94",
+        "POST /$procs/grantCredit": "cb9b5018195c451c2a1be264ac2b870dbbb938dd2eeba62ca74c7d11d8feb49f",
+        "POST /$procs/listCredits": "5c4ddfaf28017049b8972a6fc1c42f1214b40d7a47935c43469f2a6a3ed51601",
+        "POST /$procs/loadPriceList": "7a2017ea53a65b710b03da9bcc56827bafe33c63b1992737a12df35469a9519d",
+        "POST /$procs/openAccount": "bf3c0d6c6464bd734b701cce21bebe3b75cc974be6f3822d03faf479f60dd862",
+        "POST /$procs/reconcilePayment": "fa494cbc5451e82fb9f9f63272b84c31d8dd39c1b342e4726b1dd89816db42f7",
+        "POST /$procs/reconcileRefund": "a13abe1675434d57d4e63232e493a29876334b50fe985e90ecb069e6c7a6973a",
+        "POST /$procs/recordRawUsage": "5a5ca7895853d230d1f5e7c3dd069cbda6c4109786253167d9954235dcfbea1a",
+        "POST /$procs/recordUsage": "02bb5d84c66a32f30cc472a50b6a942cbde5b12c074fc71986d3441caf996e40",
+        "POST /$procs/resolveTopUp": "83928ae00f699ee59a5727ee31c628d126ec5114ce81ed8944587663fe413fd3",
         "POST /$procs/setDebtLimit": "ce52473d48e835ecb95b6b87230311fbd886f49461f5f09d270c799998901666",
         "POST /$procs/setMemberCap": "6d53a5ba7a668d1fccb3a09d6620274f5c2a9677024d43bf19994570bd2af590",
         "POST /$procs/startTopUp": "0634f0385fa6084c534183a32bdeb4aec64890c145244254044435797c920de2"

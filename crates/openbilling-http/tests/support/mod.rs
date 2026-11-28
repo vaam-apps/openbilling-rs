@@ -171,6 +171,14 @@ impl TopUpLedger for DownLedger {
     ) -> Result<TopUpSettled, LedgerError> {
         down()
     }
+    async fn resolve_top_up(
+        &self,
+        _: &openbilling_core::CreditId,
+        _: openbilling_core::Resolution,
+        _: &openbilling_core::OwnerId,
+    ) -> Result<openbilling_core::Resolved, LedgerError> {
+        down()
+    }
     async fn claim_pending_top_ups(
         &self,
         _: &ReconcileSettings,

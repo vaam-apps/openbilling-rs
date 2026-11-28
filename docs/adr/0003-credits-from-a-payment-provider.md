@@ -64,9 +64,9 @@ credit another amount. Points 3 and 4 are read with this note.
    keep. **Upgrade path:** a top-up started before this change has no record, so set `payments.unrecorded: credit`
    when upgrading, keep it until every top-up started before the upgrade has finished (at most `reconcile.stop_after`,
    7 days by default, after the upgrade, plus the time a payer takes to pay), then set `refuse`. **Recovering a false
-   positive** (a top-up marked mismatched that the operator has checked at vpay and finds right) is, today, manual: an
-   operator adjustment credit of the recorded amount to the recorded account, through the API's operator credit. A
-   procedure that closes a mismatched top-up and credits its recorded terms is a follow-up (the table's last rows).
+   positive** (a top-up marked mismatched that the operator has checked at vpay and finds right) is the operator's
+   `resolveTopUp` (*Amended 2026-11-28, ANR-1474*, below), which replaces the manual adjustment credit this point
+   first described.
 4. **Pending top-ups are read back on a timer** (`reconcile_pending`, `serve`, only with a provider): vpay has no
    status filter on its list, so the pending top-ups are listed from `ob_top_up`. `ob_claim_pending_top_ups` takes the
    ones due (at least `reconcile.pending_after` old, less than `stop_after` old, not read in the last `read_again_after`,
@@ -315,9 +315,9 @@ by their provider ids.
 | An `Idempotency-Key` is namespaced by the exact `Authorization` header (CrateStack 0.20.6's default fingerprint, *verified 2026-11-27* in `cratestack-axum-0.20.6/src/idempotency/fingerprint.rs`), so a retry with a refreshed token is not replayed by point 17's layer: it runs again, and the ledger's once-only ids answer it (the end-to-end suite's once-only scenario shows both) | Key the layer on the verified `sub` (`with_principal_fingerprint`, after the token is verified) so a key survives a token refresh; until then point 17's second sentence is what holds |
 | ~~Minting and rotating the vpay token~~ | ~~A `client_credentials` client with an RS256 `private_key_jwt` beside the service, or in the adapter~~ **Built 2026-11-28** (ANR-1332), in the adapter, as the owner decided; proven against the stand-in only, see the amendment at the top |
 | The token minting against a real vpay | Run `vpay-sandbox.yml` once a sandbox, a registered client and its key exist: it runs 3 of the suite's 9 cases (the others need a payer to act) |
-| ~~Payments whose `metadata` was changed at vpay~~ | ~~Record the top-up's target in openbilling when it is created, and refuse a read-back that differs~~ **Built 2026-11-28** (ANR-1405), see the amendment at the top: a mismatch is final, and no operator procedure resolves it yet |
+| ~~Payments whose `metadata` was changed at vpay~~ | ~~Record the top-up's target in openbilling when it is created, and refuse a read-back that differs~~ **Built 2026-11-28** (ANR-1405), see the amendment at the top: a mismatch is final until an operator resolves it (ANR-1474) |
 | ~~A periodic reconciliation of pending top-ups~~ | ~~List pending payments and read each back, as vpay's reconciler does for rails~~ **Built 2026-11-28** (ANR-1405), from openbilling's own table, since vpay's list has no status filter |
-| Resolving a mismatched top-up | A mismatch is sticky and only reported (a counter, a warning, a `409`). An operator procedure that closes one after a person looked (credit the recorded terms, or write it off) is not built; it needs the owner's rule for who may decide |
+| ~~Resolving a mismatched top-up~~ | ~~An operator procedure that closes one after a person looked (credit the recorded terms, or write it off)~~ **Built 2026-11-28** (ANR-1474), see the last amendment: who may decide is the `operator` role, which the deployer's `OPENBILLING_AUTH_ROLE_MAP` already maps from the issuer's claim |
 | An unrecorded payment: one vpay holds that openbilling never recorded | `startTopUp` records after vpay answers; a crash between the two leaves a payment vpay holds and openbilling never recorded, which `payments.unrecorded` then decides (under `refuse` it is kept as a mismatched top-up for the operator). Recording first needs a payment id vpay has not given yet |
 | Payment ids of two providers in one ledger | A provider prefix in the credit id when a second adapter comes |
 | Chargebacks from vpay | vpay has none; map them when a provider reports them |
@@ -388,3 +388,26 @@ payments (the last reads first, then the due ones). Metrics add no label: `openb
 outcome `expired` (a last read found it still pending) and its other outcomes count last reads too;
 `openbilling.topups.expired` counts every move to `expired`, after a last read, unread, or by the backstop. Proven
 against the stand-in only.
+
+*Amended 2026-11-28 (ANR-1474, an operator resolves a mismatched top-up):* the false positive of point 3 now has a
+procedure, `resolveTopUp(payment, outcome)`, `@allow(hasRole("operator"))` (who may decide is configuration already:
+the `operator` role comes from the issuer's claim through `OPENBILLING_AUTH_ROLE_MAP`; there is no second list). Two
+outcomes, each once: `credit_recorded` credits the top-up's **recorded** terms (owner, label, currency, amount as
+`startTopUp` recorded them, never what the provider reports) through `ob_credit` with the payment id as the credit id,
+so a webhook or a read afterwards answers it as the replay of that credit; `dismiss` closes the top-up with no credit.
+So an operator who credits a mismatch of the **amount** credits the recorded amount: the choice of the amount is the
+operator's, taken after looking at the payment at the provider. **`credit_recorded` needs a paid payment**: the procedure reads the payment back from the provider first and refuses with `409` unless it reports `succeeded`, so a payer who altered the terms and never paid leaves a mismatch that can only be dismissed (the provider read is the composition's, like `reconcilePayment`'s; the ledger rule stays in SQL). The decision is the top-up's state (`resolved_credited`,
+`resolved_dismissed`, both final, the mismatched field kept on the row), with `resolved_at` and `resolved_by`, the
+operator's token subject. `resolved_by` is kept in `ob_top_up` for audit and is read by nothing else: it is never in a
+log, a metric or an answer. `ob_resolve_top_up` locks the row, so two operators at once credit once; the same outcome
+again answers the first (`replayed`), the other outcome is `OB013` `resolution_conflict` (`409`), a top-up that is not
+mismatched is `OB012` `top_up_not_mismatched` (`409`), no such top-up is `OB007` (`422`). The guard trigger allows
+exactly one more move, `mismatched` to a resolved state with the terms, key, field and last read unchanged and the
+resolution set once, and nothing else sets a resolution. **A mismatch no top-up was recorded for** (`unrecorded`, no
+idempotency key) **can only be dismissed**: `credit_recorded` is `OB014` `no_recorded_terms` (`422`), because its terms
+are the provider's read-back, which this whole defence does not trust; the recoveries that remain are a late record with
+the very terms (point 3's upgrade, before the dismissal) and the operator's adjustment credit. Dismissing an unrecorded
+row is final: a record with the same terms afterwards is `OB011`. Observability: `openbilling.topups.resolved`
+(`outcome` is `credit_recorded` or `dismiss`, `result` is `resolved` or `replayed`) and one info log with
+`openbilling.resolution`, the mismatched field and `replayed`, and no id, owner, subject or amount. Proven against the
+stand-in only.

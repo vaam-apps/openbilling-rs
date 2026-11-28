@@ -56,7 +56,7 @@ pub const API_PREFIX: &str = "/v1";
 pub const WEBHOOK_PATH: &str = "/webhooks/payments";
 
 /// The mutation procedures: each needs an `Idempotency-Key` header. Held equal to the schema by a test.
-pub const MUTATIONS: [&str; 11] = [
+pub const MUTATIONS: [&str; 12] = [
     "configure",
     "openAccount",
     "grantCredit",
@@ -64,6 +64,7 @@ pub const MUTATIONS: [&str; 11] = [
     "startTopUp",
     "reconcilePayment",
     "reconcileRefund",
+    "resolveTopUp",
     "recordRawUsage",
     "setDebtLimit",
     "setMemberCap",

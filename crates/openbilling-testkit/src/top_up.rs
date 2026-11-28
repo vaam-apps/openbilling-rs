@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use openbilling_core::{
     IdempotencyKey, LedgerStore, MismatchField, PaymentStatus, PaymentTarget, PaymentView,
-    ReconcileSettings, Rule, TopUp, TopUpLedger, TopUpSettled, UnrecordedTopUps,
+    ReconcileSettings, Resolution, Rule, TopUp, TopUpLedger, TopUpSettled, UnrecordedTopUps,
 };
 
 use crate::fixtures::{credit_id, eur, label, micros, net, open, owner, rule_of, setup, usd};
@@ -779,4 +779,173 @@ pub async fn the_backstop_expires_only_what_had_a_last_read_attempt<S: TopUpStor
         ["b3"],
         "the one never read is claimed for its last read, not expired"
     );
+}
+
+/// An operator's choice closes a mismatched top-up once: `CreditRecorded` books the RECORDED terms (not what the
+/// provider reported), `Dismiss` books nothing, the same choice again is its replay, the other one is a conflict, a
+/// top-up that is not mismatched is refused, and neither a later webhook nor the provider's now agreeing view changes it.
+pub async fn a_mismatch_is_resolved_once_by_the_operators_choice<S: TopUpStore>(
+    make: impl AsyncFn(UnrecordedTopUps) -> Option<S>,
+) {
+    let Some(store) = make(UnrecordedTopUps::Refuse).await else {
+        return;
+    };
+    ready(&store).await;
+    let operator = owner("operator-1");
+    for id in ["c1", "d1", "pend"] {
+        assert!(!store.record_top_up(&top_up(id)).await.unwrap());
+    }
+    for id in ["c1", "d1"] {
+        let mut altered = view(id, PaymentStatus::Succeeded);
+        altered.amount = micros(AMOUNT * 100);
+        assert_eq!(
+            store.settle_top_up(&altered).await.unwrap(),
+            TopUpSettled::Mismatch(MismatchField::Amount)
+        );
+    }
+    // A pending top-up, and a payment nobody recorded, are not resolvable.
+    assert_eq!(
+        rule_of(
+            store
+                .resolve_top_up(&credit_id("pend"), Resolution::Dismiss, &operator)
+                .await
+        ),
+        Rule::TopUpNotMismatched
+    );
+    assert_eq!(
+        rule_of(
+            store
+                .resolve_top_up(&credit_id("nobody"), Resolution::Dismiss, &operator)
+                .await
+        ),
+        Rule::UnknownPayment
+    );
+
+    // Credit: the recorded terms, once, and the same choice again is the first one's replay.
+    let first = store
+        .resolve_top_up(&credit_id("c1"), Resolution::CreditRecorded, &operator)
+        .await
+        .unwrap();
+    assert_eq!(
+        (first.resolution, first.field, first.replayed),
+        (Resolution::CreditRecorded, MismatchField::Amount, false)
+    );
+    let booked = first.credited.expect("a credit");
+    assert!(!booked.replayed);
+    assert_eq!(
+        net(&store, "o1").await,
+        AMOUNT,
+        "the recorded amount, not the read one"
+    );
+    let again = store
+        .resolve_top_up(
+            &credit_id("c1"),
+            Resolution::CreditRecorded,
+            &owner("operator-2"),
+        )
+        .await
+        .unwrap();
+    assert!(again.replayed);
+    assert_eq!(
+        again.credited.expect("a credit").transaction,
+        booked.transaction
+    );
+    assert_eq!(
+        rule_of(
+            store
+                .resolve_top_up(&credit_id("c1"), Resolution::Dismiss, &operator)
+                .await
+        ),
+        Rule::ResolutionConflict
+    );
+    // A webhook or a read afterwards answers the credit as a replay, whatever it reports, and books nothing more.
+    for amount in [AMOUNT, AMOUNT * 100] {
+        let mut later = view("c1", PaymentStatus::Succeeded);
+        later.amount = micros(amount);
+        let TopUpSettled::Credited(replay) = store.settle_top_up(&later).await.unwrap() else {
+            panic!("credited")
+        };
+        assert!(replay.replayed);
+    }
+    assert_eq!(net(&store, "o1").await, AMOUNT);
+
+    // Dismiss: nothing is booked, and the choice is final the same way.
+    let dismissed = store
+        .resolve_top_up(&credit_id("d1"), Resolution::Dismiss, &operator)
+        .await
+        .unwrap();
+    assert_eq!(
+        (dismissed.resolution, dismissed.credited, dismissed.replayed),
+        (Resolution::Dismiss, None, false)
+    );
+    assert!(
+        store
+            .resolve_top_up(&credit_id("d1"), Resolution::Dismiss, &operator)
+            .await
+            .unwrap()
+            .replayed
+    );
+    assert_eq!(
+        rule_of(
+            store
+                .resolve_top_up(&credit_id("d1"), Resolution::CreditRecorded, &operator)
+                .await
+        ),
+        Rule::ResolutionConflict
+    );
+    assert_eq!(
+        store
+            .settle_top_up(&view("d1", PaymentStatus::Succeeded))
+            .await
+            .unwrap(),
+        TopUpSettled::Mismatch(MismatchField::Amount),
+        "still refused"
+    );
+    assert_eq!(net(&store, "o1").await, AMOUNT, "nothing was credited");
+}
+
+/// A mismatch no top-up was recorded for holds the terms the provider read back, which are not trusted: it can only be
+/// dismissed, never credited.
+pub async fn an_unrecorded_mismatch_can_only_be_dismissed<S: TopUpStore>(
+    make: impl AsyncFn(UnrecordedTopUps) -> Option<S>,
+) {
+    let Some(store) = make(UnrecordedTopUps::Refuse).await else {
+        return;
+    };
+    ready(&store).await;
+    let operator = owner("operator-1");
+    for id in ["u1", "u2"] {
+        assert_eq!(
+            store
+                .settle_top_up(&view(id, PaymentStatus::Succeeded))
+                .await
+                .unwrap(),
+            TopUpSettled::Mismatch(MismatchField::Unrecorded)
+        );
+    }
+    assert_eq!(
+        rule_of(
+            store
+                .resolve_top_up(&credit_id("u1"), Resolution::CreditRecorded, &operator)
+                .await
+        ),
+        Rule::NoRecordedTerms
+    );
+    assert_eq!(net(&store, "o1").await, 0);
+    let dismissed = store
+        .resolve_top_up(&credit_id("u1"), Resolution::Dismiss, &operator)
+        .await
+        .unwrap();
+    assert_eq!(
+        (dismissed.field, dismissed.credited, dismissed.replayed),
+        (MismatchField::Unrecorded, None, false)
+    );
+    // Dismissed for good: a late record with the very terms no longer upgrades it.
+    assert_eq!(
+        rule_of(store.record_top_up(&top_up("u1")).await),
+        Rule::TopUpConflict
+    );
+    // The other one is untouched: a late record still upgrades it.
+    assert!(!store.record_top_up(&top_up("u2")).await.unwrap());
+    assert_eq!(net(&store, "o1").await, 0);
 }
