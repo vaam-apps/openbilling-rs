@@ -1584,7 +1584,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "openbilling"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anstream",
  "anstyle",
@@ -1611,14 +1611,14 @@ dependencies = [
 
 [[package]]
 name = "openbilling-core"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "openbilling-http"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "cratestack-pg",
  "openbilling-core",
@@ -1638,7 +1638,7 @@ dependencies = [
 
 [[package]]
 name = "openbilling-jwt"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -1658,11 +1658,11 @@ dependencies = [
 
 [[package]]
 name = "openbilling-metrics"
-version = "0.4.0"
+version = "0.5.0"
 
 [[package]]
 name = "openbilling-pg"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "openbilling-core",
  "openbilling-metrics",
@@ -1677,7 +1677,7 @@ dependencies = [
 
 [[package]]
 name = "openbilling-telemetry"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "axum",
  "openbilling-core",
@@ -1699,7 +1699,7 @@ dependencies = [
 
 [[package]]
 name = "openbilling-testkit"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "openbilling-core",
  "tokio",
@@ -1707,7 +1707,7 @@ dependencies = [
 
 [[package]]
 name = "openbilling-vpay"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
