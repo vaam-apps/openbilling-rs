@@ -1688,6 +1688,7 @@ dependencies = [
  "opentelemetry_sdk",
  "reqwest",
  "rustls",
+ "serde-saphyr",
  "serde_json",
  "thiserror",
  "tokio",

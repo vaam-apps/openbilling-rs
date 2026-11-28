@@ -1,0 +1,10 @@
+# The alert rules shipped as a PrometheusRule, labelled the way a Prometheus's ruleSelector might ask.
+openbilling:
+  database:
+    existingSecret: billing-db-app
+    key: uri
+prometheusRule:
+  enabled: true
+  labels:
+    release: prometheus
+    app.kubernetes.io/instance: overlaps-a-fixed-label

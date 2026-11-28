@@ -6,6 +6,7 @@ Every metric is the Prometheus name of an instrument of the service (crates/open
 (crates/openbilling-telemetry/tests/dashboards.rs) holds each query to that list.
 """
 
+import thresholds
 from lib import dashboard, row, stat, timeseries, write
 
 PANELS = [
@@ -30,7 +31,7 @@ PANELS = [
         (0, 9, 6, 5),
         ['sum(rate(http_server_request_duration_seconds_count{job=~"$job",status="5xx"}[$__rate_interval])) / sum(rate(http_server_request_duration_seconds_count{job=~"$job"}[$__rate_interval]))'],
         unit='percentunit',
-        steps=[(None, 'green'), (0.001, 'orange'), (0.01, 'red')],
+        steps=thresholds.steps('http_5xx_ratio'),
     ),
     stat(
         '4xx ratio',
@@ -38,7 +39,7 @@ PANELS = [
         (6, 9, 6, 5),
         ['sum(rate(http_server_request_duration_seconds_count{job=~"$job",status="4xx"}[$__rate_interval])) / sum(rate(http_server_request_duration_seconds_count{job=~"$job"}[$__rate_interval]))'],
         unit='percentunit',
-        steps=[(None, 'green'), (0.05, 'orange'), (0.2, 'red')],
+        steps=thresholds.steps('http_4xx_ratio'),
     ),
     timeseries(
         'Errors by class and source',
@@ -76,7 +77,7 @@ PANELS = [
         (12, 27, 6, 8),
         ['sum(rate(openbilling_allowed_checks_total{job=~"$job",verdict="refused"}[$__rate_interval])) / sum(rate(openbilling_allowed_checks_total{job=~"$job"}[$__rate_interval]))'],
         unit='percentunit',
-        steps=[(None, 'green'), (0.2, 'orange'), (0.5, 'red')],
+        steps=thresholds.steps('allowed_refused_ratio'),
     ),
     timeseries(
         'Ledger postings by kind',
