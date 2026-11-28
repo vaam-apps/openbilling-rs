@@ -28,7 +28,9 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use openbilling_core::{AllowedPolicy, CurrencyCode, RefuseWhen};
 use openbilling_jwt::{JwtConfig, RoleMap};
-use openbilling_vpay::{Credential, CurrencyUnit, VpayConfig, WebhookSecret, webhook};
+use openbilling_vpay::{
+    ClientCredentials, Credential, CurrencyUnit, KeySource, VpayConfig, WebhookSecret, webhook,
+};
 
 /// The default address: this machine only. With an issuer configured, set `OPENBILLING_LISTEN` to serve beyond it.
 pub const DEFAULT_LISTEN: &str = "127.0.0.1:8080";
@@ -230,9 +232,74 @@ fn auth(get: &impl Fn(&str) -> Option<String>) -> Result<Option<JwtConfig>> {
     Ok(Some(config))
 }
 
+/// How the adapter gets its bearer token: a file somebody else keeps fresh, or a client key it mints one with.
+fn vpay_credential(get: &impl Fn(&str) -> Option<String>) -> Result<Credential> {
+    const MINTING: [&str; 8] = [
+        "OPENBILLING_VPAY_CLIENT_ID",
+        "OPENBILLING_VPAY_CLIENT_KEY_FILE",
+        "OPENBILLING_VPAY_CLIENT_KEY_ID",
+        "OPENBILLING_VPAY_TOKEN_URL",
+        "OPENBILLING_VPAY_ASSERTION_AUDIENCE",
+        "OPENBILLING_VPAY_TOKEN_AUDIENCE",
+        "OPENBILLING_VPAY_TOKEN_SCOPE",
+        "OPENBILLING_VPAY_TOKEN_REFRESH_SKEW_SECS",
+    ];
+    const MINTING_TUNING: [&str; 2] = [
+        "OPENBILLING_VPAY_TOKEN_RETRIES",
+        "OPENBILLING_VPAY_TOKEN_RETRY_BACKOFF_MS",
+    ];
+    let token_file = get("OPENBILLING_VPAY_TOKEN_FILE");
+    let minting = MINTING
+        .iter()
+        .chain(&MINTING_TUNING)
+        .any(|name| get(name).is_some());
+    match (token_file, minting) {
+        (Some(_), true) => bail!(
+            "OPENBILLING_VPAY_TOKEN_FILE and the OPENBILLING_VPAY_CLIENT_* settings are two ways to get a token: set one"
+        ),
+        (Some(path), false) => Ok(Credential::TokenFile(PathBuf::from(path))),
+        (None, false) => bail!(
+            "OPENBILLING_VPAY_TOKEN_FILE, or OPENBILLING_VPAY_CLIENT_ID and OPENBILLING_VPAY_CLIENT_KEY_FILE, is needed with OPENBILLING_VPAY_BASE_URL"
+        ),
+        (None, true) => {
+            let client_id = get("OPENBILLING_VPAY_CLIENT_ID")
+                .context("OPENBILLING_VPAY_CLIENT_ID is needed to mint a vpay token")?;
+            let key = get("OPENBILLING_VPAY_CLIENT_KEY_FILE")
+                .context("OPENBILLING_VPAY_CLIENT_KEY_FILE is needed to mint a vpay token")?;
+            let mut settings =
+                ClientCredentials::new(client_id, KeySource::File(PathBuf::from(key)));
+            settings.key_id = get("OPENBILLING_VPAY_CLIENT_KEY_ID");
+            settings.token_url = get("OPENBILLING_VPAY_TOKEN_URL");
+            settings.assertion_audience = get("OPENBILLING_VPAY_ASSERTION_AUDIENCE");
+            if let Some(audience) = get("OPENBILLING_VPAY_TOKEN_AUDIENCE") {
+                settings.audience = audience;
+            }
+            settings.scope = get("OPENBILLING_VPAY_TOKEN_SCOPE");
+            let number = |name: &str| -> Result<Option<u64>> {
+                get(name)
+                    .map(|v| {
+                        v.parse()
+                            .with_context(|| format!("{name} is not a whole number"))
+                    })
+                    .transpose()
+            };
+            if let Some(secs) = number("OPENBILLING_VPAY_TOKEN_REFRESH_SKEW_SECS")? {
+                settings.refresh_skew = Duration::from_secs(secs);
+            }
+            if let Some(retries) = number("OPENBILLING_VPAY_TOKEN_RETRIES")? {
+                settings.retries = u32::try_from(retries)
+                    .context("OPENBILLING_VPAY_TOKEN_RETRIES is not a small whole number")?;
+            }
+            if let Some(ms) = number("OPENBILLING_VPAY_TOKEN_RETRY_BACKOFF_MS")? {
+                settings.retry_backoff = Duration::from_millis(ms);
+            }
+            Ok(Credential::ClientCredentials(settings))
+        }
+    }
+}
+
 fn vpay(base_url: String, get: &impl Fn(&str) -> Option<String>) -> Result<VpayConfig> {
-    let token = get("OPENBILLING_VPAY_TOKEN_FILE")
-        .context("OPENBILLING_VPAY_TOKEN_FILE is needed with OPENBILLING_VPAY_BASE_URL")?;
+    let credential = vpay_credential(get)?;
     let secrets_file = get("OPENBILLING_VPAY_WEBHOOK_SECRETS_FILE").context(
         "OPENBILLING_VPAY_WEBHOOK_SECRETS_FILE is needed with OPENBILLING_VPAY_BASE_URL",
     )?;
@@ -271,7 +338,7 @@ fn vpay(base_url: String, get: &impl Fn(&str) -> Option<String>) -> Result<VpayC
     };
     Ok(VpayConfig {
         base_url,
-        credential: Credential::TokenFile(PathBuf::from(token)),
+        credential,
         webhook_secrets,
         webhook_tolerance_secs,
         currencies,
@@ -421,6 +488,87 @@ mod tests {
         let mut bad = base.to_vec();
         bad[4] = ("OPENBILLING_VPAY_CURRENCIES", "EUR");
         assert!(settings(&bad).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_vpay_token_is_a_file_or_minted_from_a_client_key_never_both() {
+        let dir = std::env::temp_dir().join(format!("ob-config-mint-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let secrets = dir.join("secrets");
+        std::fs::write(&secrets, "whsec_a\n").unwrap();
+        let secrets = secrets.to_str().unwrap();
+        let common = [
+            ("OPENBILLING_DATABASE_URL", "postgres://db/x"),
+            ("OPENBILLING_VPAY_BASE_URL", "https://vpay.example"),
+            ("OPENBILLING_VPAY_WEBHOOK_SECRETS_FILE", secrets),
+            ("OPENBILLING_VPAY_CURRENCIES", "EUR:2"),
+            ("OPENBILLING_VPAY_PAYMENT_METHOD_TYPES", "rail_a"),
+        ];
+        let with = |extra: &[(&'static str, &'static str)]| {
+            let mut all = common.to_vec();
+            all.extend_from_slice(extra);
+            settings(&all)
+        };
+        let minting = [
+            ("OPENBILLING_VPAY_CLIENT_ID", "merchant"),
+            ("OPENBILLING_VPAY_CLIENT_KEY_FILE", "/run/key.pem"),
+        ];
+        let Credential::ClientCredentials(c) = with(&minting).unwrap().vpay.unwrap().credential
+        else {
+            panic!("a client key mints");
+        };
+        assert_eq!(c.client_id, "merchant");
+        assert_eq!(c.audience, openbilling_vpay::DEFAULT_AUDIENCE);
+        assert_eq!(c.refresh_skew, openbilling_vpay::DEFAULT_REFRESH_SKEW);
+        assert_eq!(c.retries, openbilling_vpay::DEFAULT_RETRIES);
+        assert!(c.scope.is_none() && c.key_id.is_none() && c.token_url.is_none());
+        assert!(!format!("{c:?}").contains("hunter"));
+
+        let mut tuned = minting.to_vec();
+        tuned.extend([
+            ("OPENBILLING_VPAY_CLIENT_KEY_ID", "k1"),
+            ("OPENBILLING_VPAY_TOKEN_URL", "https://auth.example/token"),
+            (
+                "OPENBILLING_VPAY_ASSERTION_AUDIENCE",
+                "https://vpay.example/v1/oauth",
+            ),
+            ("OPENBILLING_VPAY_TOKEN_AUDIENCE", "vpay:v1"),
+            (
+                "OPENBILLING_VPAY_TOKEN_SCOPE",
+                "payments:write payments:read",
+            ),
+            ("OPENBILLING_VPAY_TOKEN_REFRESH_SKEW_SECS", "90"),
+            ("OPENBILLING_VPAY_TOKEN_RETRIES", "4"),
+            ("OPENBILLING_VPAY_TOKEN_RETRY_BACKOFF_MS", "50"),
+        ]);
+        let Credential::ClientCredentials(c) = with(&tuned).unwrap().vpay.unwrap().credential
+        else {
+            panic!("a client key mints");
+        };
+        assert_eq!(c.key_id.as_deref(), Some("k1"));
+        assert_eq!(c.token_url.as_deref(), Some("https://auth.example/token"));
+        assert_eq!(c.scope.as_deref(), Some("payments:write payments:read"));
+        assert_eq!(c.refresh_skew, Duration::from_secs(90));
+        assert_eq!((c.retries, c.retry_backoff), (4, Duration::from_millis(50)));
+
+        // Both ways, neither, half of the minting pair, and a number that is not one: all refused.
+        let mut both = minting.to_vec();
+        both.push(("OPENBILLING_VPAY_TOKEN_FILE", "/run/token"));
+        assert!(with(&both).is_err());
+        assert!(with(&[]).is_err());
+        assert!(with(&minting[..1]).is_err());
+        assert!(with(&minting[1..]).is_err());
+        let mut tuning_alone = vec![("OPENBILLING_VPAY_TOKEN_RETRIES", "2")];
+        assert!(with(&tuning_alone).is_err(), "tuning with no client key");
+        tuning_alone.clear();
+        let mut bad = minting.to_vec();
+        bad.push(("OPENBILLING_VPAY_TOKEN_REFRESH_SKEW_SECS", "soon"));
+        let text = format!("{:#}", with(&bad).unwrap_err());
+        assert!(
+            text.contains("OPENBILLING_VPAY_TOKEN_REFRESH_SKEW_SECS"),
+            "{text}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

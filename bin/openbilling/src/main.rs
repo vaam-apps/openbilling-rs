@@ -59,7 +59,27 @@ environment. No setting is read from both:
   OPENBILLING_VPAY_BASE_URL
       vpay's base URL. Unset: no payment provider, and top-ups and webhooks answer 503.
   OPENBILLING_VPAY_TOKEN_FILE
-      A file holding the bearer token for vpay's /v1, read on every call.
+      A file holding the bearer token for vpay's /v1, read on every call: something else mints it.
+      Or let openbilling mint it (client_credentials with an RS256 private_key_jwt); not both:
+  OPENBILLING_VPAY_CLIENT_ID, OPENBILLING_VPAY_CLIENT_KEY_FILE
+      The client id vpay registered, and a PEM file holding its RSA private key (PKCS#8 or PKCS#1),
+      read at each mint. Never printed.
+  OPENBILLING_VPAY_CLIENT_KEY_ID
+      The key's kid, when vpay holds several keys for the client; default none.
+  OPENBILLING_VPAY_TOKEN_URL
+      vpay's token endpoint; default <base URL>/v1/oauth/token.
+  OPENBILLING_VPAY_ASSERTION_AUDIENCE
+      The assertion's aud: vpay's own name for its token endpoint or issuer, when vpay is reached by
+      another URL than the one it publishes; default the token endpoint.
+  OPENBILLING_VPAY_TOKEN_AUDIENCE
+      The audience of the token asked for; default vpay:v1.
+  OPENBILLING_VPAY_TOKEN_SCOPE
+      The scope asked for; default none, which grants the client's registered scopes.
+  OPENBILLING_VPAY_TOKEN_REFRESH_SKEW_SECS
+      How long before expiry a token is replaced (at most half its life); default 30, at most 600.
+  OPENBILLING_VPAY_TOKEN_RETRIES, OPENBILLING_VPAY_TOKEN_RETRY_BACKOFF_MS
+      Retries of a transient failure of the token endpoint, default 2 (at most 10), and the pause before
+      the first, default 200, doubling (at most 5000).
   OPENBILLING_VPAY_WEBHOOK_SECRETS_FILE
       A file holding vpay's webhook secrets, one per line.
   OPENBILLING_VPAY_CURRENCIES

@@ -38,6 +38,12 @@ only), the token verifier's `OPENBILLING_AUTH_ISSUER` and `OPENBILLING_AUTH_AUDI
 every `/v1` call is a `401`, and `serve` says so on start; an empty value is unset) with the optional `OPENBILLING_AUTH_JWKS_URL`,
 `OPENBILLING_AUTH_ROLES_CLAIM` and `OPENBILLING_AUTH_ROLE_MAP` ([`openbilling-jwt`](../../crates/openbilling-jwt/README.md)),
 and the vpay adapter's `OPENBILLING_VPAY_*` (all of them, or none: without them top-ups and webhooks answer `503`).
+The vpay token is either a file somebody else keeps fresh (`OPENBILLING_VPAY_TOKEN_FILE`) or minted by the service:
+`OPENBILLING_VPAY_CLIENT_ID` and `OPENBILLING_VPAY_CLIENT_KEY_FILE` (a PEM file, read at each mint), with the optional
+`OPENBILLING_VPAY_CLIENT_KEY_ID`, `_TOKEN_URL` (default `<base URL>/v1/oauth/token`), `_ASSERTION_AUDIENCE` (default the
+token URL), `_TOKEN_AUDIENCE` (`vpay:v1`), `_TOKEN_SCOPE` (none), `_TOKEN_REFRESH_SKEW_SECS` (30, at most 600),
+`_TOKEN_RETRIES` (2, at most 10) and `_TOKEN_RETRY_BACKOFF_MS` (200, at most 5000). Both ways at once, or minting
+settings without a client id and key, are refused at start; no value is printed.
 
 OpenTelemetry is configured by the standard `OTEL_*` variables (**off unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set**; the
 [crate's README](../../crates/openbilling-telemetry/README.md) lists them and what is refused). `serve` starts the
