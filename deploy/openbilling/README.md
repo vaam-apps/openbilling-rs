@@ -78,7 +78,10 @@ see [values.yaml](values.yaml)), plus:
 | `controllers.main.containers.main.image.digest` | empty in git; the release's digest in a published chart | `sha256:…` |
 
 The vpay adapter's settings (`OPENBILLING_VPAY_*`, `bin/openbilling/README.md`) go under
-`controllers.main.containers.main.env`, the files they name mounted with `persistence` from Secrets of your own.
+`controllers.main.containers.main.env`, the files they name mounted with `persistence` from Secrets of your own: the
+webhook secrets, and either the token file or, for a token the service mints, the client's private key
+(`OPENBILLING_VPAY_CLIENT_KEY_FILE`). The chart renders none of them itself, so it needs no new value; the
+template's refusals do not know them.
 
 ## OpenTelemetry
 

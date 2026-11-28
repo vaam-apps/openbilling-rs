@@ -5,6 +5,20 @@ confirm. *Amended 2026-11-27 (ANR-1329):* the decision is built: the port, the v
 shipped in v0.1.1, the token verifier in v0.2.0 (both in every release since), yet it stays Proposed until the owner
 accepts it.
 
+*Amended 2026-11-28 (ANR-1332, the token is minted in the adapter):* the owner decided on 2026-11-28 that **the vpay
+token is minted inside the adapter**, and it is built: `openbilling-vpay` mints a `vpay:v1` token with an OAuth 2.0
+`client_credentials` grant whose client authenticates with an RS256 `private_key_jwt` (RFC 7523). Point 11 and the
+*Still open* row about minting are read with this note: `OPENBILLING_VPAY_TOKEN_FILE` still works (something else
+mints the token), and the client key (`OPENBILLING_VPAY_CLIENT_ID`, `OPENBILLING_VPAY_CLIENT_KEY_FILE`) is the
+other way, never both. The token is minted on first use, replaced before it expires by a configured margin, minted
+by one caller while the others wait, retried with a bounded backoff on a transient failure, and a refusal (`400`,
+`401`) is a classed error that names vpay's RFC 6749 error code and holds no secret and no token. The endpoint, the
+assertion audience, the `kid`, the scope, the margin and the retries are configuration with documented defaults
+(`bin/openbilling/README.md`). **It is proven only against the stand-in**, whose token endpoint verifies the
+assertion's signature and claims as vpay's OP does; it has not met a real vpay. The gated workflow
+`vpay-sandbox.yml` runs the three conformance cases that need no payer against a real vpay once its variables and
+secrets exist, and until it has run green this stays unverified. The original text below is not rewritten.
+
 *Amended 2026-11-27 (ANR-1142, a token verifier):* the verifier point 16 waited for is built, as
 `crates/openbilling-jwt`, behind the same `TokenVerifier` port. Point 16 carries a marker. What it is:
 
@@ -90,7 +104,8 @@ this record says about it was read in vpay's source at `8b56831` and in its skil
     over the literal `t` text, `.` and the raw body, any configured secret against any `v1`, in constant time, within
     300 seconds either way, and the body parsed only afterwards. Two `Vpay-Signature` headers are refused.
 11. **Authentication to vpay is a bearer token read from a file on every call**, so whatever mints and rotates it
-    runs beside the service. The vpay deployment must permit `machine_tokens`.
+    runs beside the service. The vpay deployment must permit `machine_tokens`. *(2026-11-28: the adapter can also
+    mint the token itself; see the amendment at the top.)*
 
 ### The external API
 
@@ -199,7 +214,8 @@ by their provider ids.
   credits another account of the same owner, or none.
 - **vpay's refunds never reach `succeeded` today** (*verified*, below): no reversal will be booked from vpay until it
   settles refunds.
-- **The vpay token is minted outside the service.** If it expires, top-ups and reads answer `503` or `500` until it
+- **The vpay token is minted outside the service** (*2026-11-28: unless a client key is configured, see the amendment
+  at the top*). If it expires, top-ups and reads answer `503` or `500` until it
   is rotated.
 - **CrateStack's `query` blocks are not HTTP routes**, so each read that is not a model needs a read procedure that
   forwards to it.
@@ -225,7 +241,8 @@ by their provider ids.
 | ~~A real token verifier: a JWT against an issuer's keys~~ | ~~Authkestra's resource server or CrateStack's multi-issuer JWKS verifier behind the `TokenVerifier` port; then bind beyond `127.0.0.1`~~ **Built 2026-11-27** (D1 to D6): `openbilling-jwt`, on jsonwebtoken and ring |
 | Several issuers, DPoP-bound tokens | One issuer, plain bearer tokens, as built; add a trust map and DPoP when a deployment needs them |
 | An `Idempotency-Key` is namespaced by the exact `Authorization` header (CrateStack 0.20.6's default fingerprint, *verified 2026-11-27* in `cratestack-axum-0.20.6/src/idempotency/fingerprint.rs`), so a retry with a refreshed token is not replayed by point 17's layer: it runs again, and the ledger's once-only ids answer it (the end-to-end suite's once-only scenario shows both) | Key the layer on the verified `sub` (`with_principal_fingerprint`, after the token is verified) so a key survives a token refresh; until then point 17's second sentence is what holds |
-| Minting and rotating the vpay token | A `client_credentials` client with an RS256 `private_key_jwt` beside the service, or in the adapter |
+| ~~Minting and rotating the vpay token~~ | ~~A `client_credentials` client with an RS256 `private_key_jwt` beside the service, or in the adapter~~ **Built 2026-11-28** (ANR-1332), in the adapter, as the owner decided; proven against the stand-in only, see the amendment at the top |
+| The token minting against a real vpay | Run `vpay-sandbox.yml` once a sandbox, a registered client and its key exist: it runs 3 of the suite's 7 cases (the others need a payer to act) |
 | Payments whose `metadata` was changed at vpay | Record the top-up's target in openbilling when it is created, and refuse a read-back that differs |
 | A periodic reconciliation of pending top-ups | List pending payments and read each back, as vpay's reconciler does for rails |
 | Payment ids of two providers in one ledger | A provider prefix in the credit id when a second adapter comes |
@@ -253,6 +270,20 @@ Each fact about vpay, *verified 2026-11-27* in vpay `8b56831` unless marked othe
 | A refund is created `pending` and nothing settles it; `succeeded` is reached by nothing a merchant can cause | `vpay-merchant-api` and `vpay-webhooks` skills (vpay-skills `19f15ba`) |
 | Callbacks are hints: only the authenticated status query moves money | `vpay` skill (vpay-skills `19f15ba`) |
 | CrateStack 0.20.6: models `@@map` onto existing tables; `view`s are database views created by its migrations; `query` blocks run through `db.queries()` and have no route; no OpenAPI, a contract lock and `contract ops` | `.agents/skills/cratestack-*`, `cratestack-macros-0.20.6/src/view/descriptor.rs`, `src/query/accessor.rs` |
+
+Added 2026-11-28 (ANR-1332), each *verified 2026-11-28* in vpay `7a9fee5` (`master`) unless marked otherwise:
+
+| Fact | File |
+|---|---|
+| The token endpoint is `{public_base_url}/v1/oauth/token`, a form `POST`: `grant_type=client_credentials`, `client_id`, `client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer`, `client_assertion`, `audience=vpay:v1`, and `scope` only when the client asks for one | `docs/flows/merchant-auth.md`, `backends/crates/vpay-api/src/op/token.rs` |
+| Without `audience=vpay:v1` the token has `aud = client_id` and every `/v1` call is a bare `401` | `docs/flows/merchant-auth.md` |
+| The assertion: RS256, `iss` = `sub` = `client_id`, `aud` the token endpoint URL or the issuer `{public_base_url}/v1/oauth` as one string, `jti` fresh and spent once, `exp` 1 to 300 s from now (60 by default), `iat`; `kid` optional with one registered key and required with several | `docs/flows/merchant-auth.md`, `backends/crates/vpay-api/src/op/clients.rs` |
+| The assertion's `aud` is the OP's name for itself, not the URL posted to: a merchant that reaches vpay by another URL must say so | `docs/flows/merchant-auth.md` |
+| The grant is `client_credentials` alone; the client authentication method is `private_key_jwt` alone | `backends/crates/vpay-api/src/op/mod.rs` (`OP_GRANT_TYPES`, `OP_TOKEN_ENDPOINT_AUTH_METHOD`) |
+| A token request that names no `scope` is granted the client's registered scopes | `backends/crates/vpay-api/src/op/token.rs` |
+| The answer is `{access_token, token_type: "Bearer", expires_in, scope}`, `expires_in` 900 and not configurable, no refresh token; an error is RFC 6749's `{error, error_description}` with `400` or `401` | `backends/crates/vpay-api/src/op/mod.rs` (`ACCESS_TOKEN_TTL_SECS`), `docs/flows/merchant-auth.md` |
+| The endpoint exists only where `auth.methods` permits `machine_tokens` (otherwise `404`); the SDKs cache a token until `expires_in` minus 30 s | `docs/adr/0037-authentication-methods-are-deployment-configuration.md`, `op/mod.rs` |
+| *Unverified:* that a real vpay sandbox accepts an assertion from this adapter; that its `kid` and registered scopes match a configuration; that `docs/flows/merchant-auth.md`, which calls the OP's door "closing" (VP-4), describes a deployment that still serves it | none: run `vpay-sandbox.yml` |
 
 The webhook test vector (`crates/openbilling-vpay/tests/vectors/vpay-signature.hex`) is the HMAC-SHA256 of
 `1753401600.` and the body of vpay's own verifier tests under their secret, computed with `openssl dgst` on
