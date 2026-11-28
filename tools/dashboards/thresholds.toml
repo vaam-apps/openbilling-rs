@@ -50,6 +50,20 @@ warning = 0.7
 critical = 0.9
 for = "10m"
 
+# Payments, counted over the last hour (the counters are `increase`d over 1h, not over `window`). A payment that
+# differs from its top-up is never expected: `warning = 1` is "at least one" (a counter's first event reads exactly 1,
+# see deploy/alerts/README.md). Expired top-ups are pending top-ups the reconciler stopped reading: a few are a customer who never paid,
+# many are a webhook that never arrives.
+[signals.payment_mismatches]
+warning = 1
+critical = 10
+for = "1m"
+
+[signals.topups_expired]
+warning = 5
+critical = 50
+for = "1m"
+
 # The service stopped reporting: `absent_over_time(openbilling_drain_lag_seconds[window])` is true, so the alerts above,
 # which need a series, cannot fire. Critical only. `window` is how long the metric must be missing from the query's
 # range (it must exceed the scrape and export interval); `for` is how long that must hold.
