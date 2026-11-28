@@ -1,0 +1,10 @@
+# A partial thresholds file (tools/dashboards/alerts.py --thresholds) for the alert-delivery proof of
+# e2e/observability_stack.rs, test only and never shipped: run.sh generates a second rules file from it, loaded beside
+# deploy/alerts/openbilling.rules.yaml. Everything it does not name keeps the defaults of tools/dashboards/thresholds.toml.
+# A 10 s window and a 2 s `for`, so that the proof takes a minute and not a quarter of an hour: the 4xx ratio crosses
+# `critical` (0.2) as soon as the test sends refused requests, and leaves it once the window holds none.
+[defaults]
+window = "10s"
+
+[signals.http_4xx_ratio]
+for = "2s"

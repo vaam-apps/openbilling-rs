@@ -9,7 +9,10 @@
 //! without it; under `OPENBILLING_OBS_REQUIRE=1` it fails instead. A database is also needed, as for every scenario.
 
 use std::collections::BTreeSet;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::TcpListener;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use openbilling_telemetry::exposed_names;
@@ -43,6 +46,72 @@ const EXPECTED_ABSENT: [&str; 4] = [
     "openbilling_topups_reconciled_total",
     "openbilling_topups_expired_total",
 ];
+
+/// The webhook receiver Alertmanager posts to: a std `TcpListener` on a thread of this test, which keeps every JSON body
+/// it is sent. It is in the test (not a script of run.sh) so that the test owns what it asserts on and needs no file
+/// handoff or extra interpreter; run.sh only picks a free port for it and writes it into Alertmanager's configuration.
+/// Alertmanager retries a webhook that was refused, so it does not matter that it starts first. One request per
+/// connection, `Connection: close`: all Alertmanager needs.
+struct Sink {
+    bodies: Arc<Mutex<Vec<Value>>>,
+}
+
+impl Sink {
+    fn start(port: u16) -> Self {
+        let listener = TcpListener::bind(("127.0.0.1", port))
+            .unwrap_or_else(|e| panic!("the alert sink cannot bind 127.0.0.1:{port}: {e}"));
+        let bodies = Arc::new(Mutex::new(Vec::new()));
+        let kept = bodies.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let mut reader = BufReader::new(stream);
+                let mut length = 0usize;
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 || line.trim().is_empty() {
+                        break;
+                    }
+                    if let Some((name, value)) = line.split_once(':')
+                        && name.eq_ignore_ascii_case("content-length")
+                    {
+                        length = value.trim().parse().unwrap_or(0);
+                    }
+                }
+                let mut body = vec![0u8; length];
+                if reader.read_exact(&mut body).is_ok()
+                    && let Ok(json) = serde_json::from_slice::<Value>(&body)
+                {
+                    kept.lock().unwrap().push(json);
+                }
+                let _ = reader.get_mut().write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                );
+            }
+        });
+        Self { bodies }
+    }
+
+    /// Every alert received so far (a body holds a group of alerts), as `(status, alert)`.
+    fn alerts(&self) -> Vec<(String, Value)> {
+        self.bodies
+            .lock()
+            .unwrap()
+            .iter()
+            .flat_map(|body| body["alerts"].as_array().cloned().unwrap_or_default())
+            .map(|a| (a["status"].as_str().unwrap_or_default().to_owned(), a))
+            .collect()
+    }
+
+    fn has(&self, status: &str, alertname: &str) -> bool {
+        self.alerts()
+            .iter()
+            .any(|(s, a)| s == status && a["labels"]["alertname"] == alertname)
+    }
+}
+
+/// The alert the test-only rules (`tools/observability/test-thresholds.toml`: a 10 s window, `for: 2s`) fire when the
+/// 4xx ratio is at its critical threshold.
+const PROOF_ALERT: &str = "OpenbillingHttp4xxCritical";
 
 /// What the files of `deploy/dashboards` hold today (two dashboards): the panels that have targets, and the targets.
 /// A floor, so that a test which found nothing to check cannot pass; raise it with the dashboards.
@@ -443,6 +512,12 @@ async fn the_real_collector_prometheus_and_grafana_answer_what_the_dashboards_an
     }
     assert!(seen >= 16, "{seen} alert rules loaded");
 
+    // The test-only rules are loaded beside the shipped ones (the two files hold the same rule names).
+    assert!(
+        seen >= 32,
+        "{seen} rules loaded, the shipped and the test-only files"
+    );
+
     // Grafana: each dashboard is provisioned with its panels, and every target answers.
     let ms = |at: SystemTime| at.duration_since(UNIX_EPOCH).unwrap().as_millis();
     let to = SystemTime::now();
@@ -511,4 +586,86 @@ async fn the_real_collector_prometheus_and_grafana_answer_what_the_dashboards_an
             "EXPECTED_EMPTY lists {title:?}, which no panel has"
         );
     }
+
+    // Phase C, alert delivery: a threshold crossed on the live service reaches Alertmanager's webhook as `firing`,
+    // and as `resolved` once the traffic stops. Nothing here is a unit test of a rule: Prometheus evaluates the test
+    // rules, sends to Alertmanager, which notifies the sink.
+    let alertmanager = setting("OPENBILLING_OBS_ALERTMANAGER_URL")
+        .expect("OPENBILLING_OBS_ALERTMANAGER_URL is set by run.sh");
+    let sink_port: u16 = setting("OPENBILLING_OBS_SINK_PORT")
+        .and_then(|p| p.parse().ok())
+        .expect("OPENBILLING_OBS_SINK_PORT is set by run.sh");
+    let sink = Sink::start(sink_port);
+    let ready = stack
+        .http
+        .get(format!("{alertmanager}/-/ready"))
+        .send()
+        .await
+        .unwrap();
+    assert!(ready.status().is_success(), "Alertmanager is not ready");
+    // Every request here is a 409 (a conflict is a 4xx), so the ratio of 4xx stays near 1 over the 10 s window,
+    // far above the critical 0.2; the loop ends as soon as the alert has been delivered.
+    let started = Instant::now();
+    let deadline = started + Duration::from_secs(90);
+    while !sink.has("firing", PROOF_ALERT) {
+        assert!(
+            Instant::now() < deadline,
+            "{PROOF_ALERT} was not delivered firing in 90 s; received: {:?}",
+            sink.alerts()
+        );
+        let refused = d
+            .usage(vec![priced("evt-obs-0", OWNER, MEMBER, 7_000_000, t)])
+            .await;
+        assert_eq!(refused.status, 409, "{}", refused.text);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    eprintln!("alert firing delivered after {:?}", started.elapsed());
+    // What was delivered: the name, the severity and the job, and nothing that identifies a person or an amount.
+    let (_, firing) = sink
+        .alerts()
+        .into_iter()
+        .find(|(s, a)| s == "firing" && a["labels"]["alertname"] == PROOF_ALERT)
+        .unwrap();
+    assert_eq!(firing["labels"]["severity"], "critical");
+    assert_eq!(firing["labels"]["job"], "openbilling");
+    for (_, alert) in sink.alerts() {
+        let keys: BTreeSet<&str> = alert["labels"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            keys,
+            BTreeSet::from(["alertname", "job", "severity"]),
+            "labels of {alert}"
+        );
+        assert_eq!(alert["labels"]["alertname"], PROOF_ALERT, "{alert}");
+    }
+    let everything = serde_json::to_string(&*sink.bodies.lock().unwrap()).unwrap();
+    for secret in [
+        "evt-obs",
+        OWNER,
+        MEMBER,
+        "acct-obs",
+        "7000000",
+        "credit-obs",
+    ] {
+        assert!(
+            !everything.contains(secret),
+            "{secret} is in what the webhook received: {everything}"
+        );
+    }
+    // Traffic has stopped: the 10 s window empties, the ratio has no value, the alert ends and Alertmanager says so.
+    let stopped = Instant::now();
+    wait_until(
+        "the alert is delivered resolved",
+        Duration::from_secs(90),
+        || async { sink.has("resolved", PROOF_ALERT) },
+    )
+    .await;
+    eprintln!(
+        "alert resolved delivered {:?} after traffic stopped",
+        stopped.elapsed()
+    );
 }

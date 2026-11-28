@@ -10,10 +10,14 @@
 # `otlp`: no exporter and no scrape job; the Collector's `otlphttp` exporter pushes to Prometheus's own OTLP receiver
 # (`--web.enable-otlp-receiver`, /api/v1/otlp/v1/metrics), configured by prometheus-otlp.yaml (ADR 0007).
 #
+# Alertmanager (v0.35.1) runs beside Prometheus, with one webhook receiver: a sink the e2e test itself serves on
+# OBS_SINK_PORT (default: a free port picked here), so that the test can prove an alert fires and resolves (ADR 0007).
+# Prometheus also loads test-only rules, generated here from test-thresholds.toml.
+#
 # Needs: python3, curl, tar, cargo, and OPENBILLING_TEST_DATABASE_URL (a PostgreSQL 19 whose user may create
 # databases). Binaries are fetched by tools/observability/fetch.py at the pins of versions.env into
 # OBS_CACHE (default ~/.cache/openbilling-observability) and checked by digest. Ports (change them if taken):
-# OBS_OTLP_PORT 4318, OBS_EXPORTER_PORT 8889 (scrape leg only), OBS_PROMETHEUS_PORT 9090, OBS_GRAFANA_PORT 3000.
+# OBS_OTLP_PORT 4318, OBS_EXPORTER_PORT 8889 (scrape leg only), OBS_PROMETHEUS_PORT 9090, OBS_GRAFANA_PORT 3000, OBS_ALERTMANAGER_PORT 9093, OBS_SINK_PORT (free).
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -29,15 +33,18 @@ otlp_port=${OBS_OTLP_PORT:-4318}
 exporter_port=${OBS_EXPORTER_PORT:-8889}
 prom_port=${OBS_PROMETHEUS_PORT:-9090}
 grafana_port=${OBS_GRAFANA_PORT:-3000}
+am_port=${OBS_ALERTMANAGER_PORT:-9093}
 
 mkdir -p "$cache"
 otelcol_dir=$cache/otelcol-$OTELCOL_TAG
 prom_dir=$cache/prometheus-$PROMETHEUS_TAG
+am_dir=$cache/alertmanager-$ALERTMANAGER_TAG
 grafana_tar=$cache/grafana-$GRAFANA_VERSION.tar.gz
 grafana_dir=$cache/grafana-$GRAFANA_VERSION
 
 python3 -I "$here/fetch.py" image "$OTELCOL_REPO" "$OTELCOL_DIGEST" "$otelcol_dir" otelcol-contrib
 python3 -I "$here/fetch.py" image "$PROMETHEUS_REPO" "$PROMETHEUS_DIGEST" "$prom_dir" bin/prometheus bin/promtool
+python3 -I "$here/fetch.py" image "$ALERTMANAGER_REPO" "$ALERTMANAGER_DIGEST" "$am_dir" bin/alertmanager
 python3 -I "$here/fetch.py" url "https://dl.grafana.com/oss/release/grafana-$GRAFANA_VERSION.linux-amd64.tar.gz" \
   "$GRAFANA_SHA256" "$grafana_tar"
 # The extracted tree carries the sha256 of the tarball it came from; any other stamp (or none) extracts it again.
@@ -66,7 +73,7 @@ cleanup() {
     kill -9 "$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true
   done
-  for log in otelcol prometheus grafana; do
+  for log in otelcol prometheus alertmanager grafana; do
     if [ "$status" -ne 0 ] && [ -f "$work/$log.log" ]; then
       echo "----- $log.log (last 60 lines) -----"
       tail -n 60 "$work/$log.log"
@@ -99,15 +106,31 @@ port_free "the Collector's OTLP receiver" "$otlp_port"
 [ "$leg" = scrape ] && port_free "the Collector's exporter" "$exporter_port"
 port_free Prometheus "$prom_port"
 port_free Grafana "$grafana_port"
+port_free Alertmanager "$am_port"
+sink_port=${OBS_SINK_PORT:-$(python3 -I -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')}
+port_free "the alert sink" "$sink_port"
+
+# The test-only rules: the shipped generator over a partial thresholds file (a 10 s window, a 2 s `for`).
+python3 -B "$root/tools/dashboards/alerts.py" --thresholds "$here/test-thresholds.toml" --out "$work/test-rules"
+
+start_alertmanager() {
+  sed "s/@SINK_PORT@/$sink_port/" "$here/alertmanager.yml" >"$work/alertmanager.yml"
+  # --cluster.listen-address= switches clustering off: one instance, nothing else bound.
+  "$am_dir/alertmanager" --config.file="$work/alertmanager.yml" --storage.path="$work/alertmanager" \
+    --web.listen-address="127.0.0.1:$am_port" --cluster.listen-address= >"$work/alertmanager.log" 2>&1 &
+  pid=$!
+  pids="$pids $pid"
+  wait_for Alertmanager "http://127.0.0.1:$am_port/-/ready" "$pid"
+}
 
 start_prometheus() {
-  # Prometheus, with the shipped alert rules.
+  # Prometheus, with the shipped alert rules and the test-only ones, sending alerts to Alertmanager.
+  rules="s#@RULES@#$root/deploy/alerts/openbilling.rules.yaml#; s#@TEST_RULES@#$work/test-rules/openbilling.rules.yaml#; s/127.0.0.1:9093/127.0.0.1:$am_port/"
   if [ "$leg" = scrape ]; then
-    sed "s#@RULES@#$root/deploy/alerts/openbilling.rules.yaml#; s/127.0.0.1:8889/127.0.0.1:$exporter_port/" \
-      "$here/prometheus.yaml" >"$work/prometheus.yaml"
+    sed "$rules; s/127.0.0.1:8889/127.0.0.1:$exporter_port/" "$here/prometheus.yaml" >"$work/prometheus.yaml"
     flags=""
   else
-    sed "s#@RULES@#$root/deploy/alerts/openbilling.rules.yaml#" "$here/prometheus-otlp.yaml" >"$work/prometheus.yaml"
+    sed "$rules" "$here/prometheus-otlp.yaml" >"$work/prometheus.yaml"
     flags="--web.enable-otlp-receiver"
   fi
   "$prom_dir/promtool" check config "$work/prometheus.yaml"
@@ -144,6 +167,7 @@ start_collector() {
   fi
 }
 
+start_alertmanager
 # The otlp leg starts Prometheus first: the Collector pushes to it.
 if [ "$leg" = scrape ]; then
   start_collector
@@ -177,6 +201,8 @@ OPENBILLING_TEST_REQUIRE_DB=${OPENBILLING_TEST_REQUIRE_DB:-1} \
 OPENBILLING_OBS_REQUIRE=1 \
 OPENBILLING_OBS_OTLP_URL="http://127.0.0.1:$otlp_port" \
 OPENBILLING_OBS_PROMETHEUS_URL="http://127.0.0.1:$prom_port" \
+OPENBILLING_OBS_ALERTMANAGER_URL="http://127.0.0.1:$am_port" \
+OPENBILLING_OBS_SINK_PORT="$sink_port" \
 OPENBILLING_OBS_GRAFANA_URL="http://127.0.0.1:$grafana_port" \
 OPENBILLING_OBS_GRAFANA_PASSWORD="$password" \
   cargo test -p openbilling --locked --test e2e observability_stack -- --nocapture

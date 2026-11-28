@@ -8,6 +8,8 @@ flowchart LR
   S[openbilling serve] -- OTLP/HTTP --> C[OpenTelemetry Collector contrib]
   C -- prometheus exporter :8889 --> P[Prometheus]
   P -- rules from deploy/alerts --> P
+  P -- alerts --> A[Alertmanager]
+  A -- webhook --> K[sink in the test]
   P --> G[Grafana, dashboards from deploy/dashboards]
   T[e2e/observability_stack.rs] -. HTTP APIs .-> P
   T -. HTTP APIs .-> G
@@ -44,7 +46,7 @@ recorded beside it (`<file>.sha256`), the Grafana tarball against its pin, and t
 of that tarball's digest (a mismatch fetches or extracts again; a cache hit reads no registry). The script refuses to
 start when something already answers on one of its ports, fails at once when a server dies, and builds the test
 binary before starting the stack. Ports are `OBS_OTLP_PORT` 4318, `OBS_EXPORTER_PORT` 8889,
-`OBS_PROMETHEUS_PORT` 9090 and `OBS_GRAFANA_PORT` 3000: set others when those are taken. On a failure the script prints
+`OBS_PROMETHEUS_PORT` 9090, `OBS_GRAFANA_PORT` 3000, `OBS_ALERTMANAGER_PORT` 9093 and `OBS_SINK_PORT` (a free port by default): set others when those are taken. On a failure the script prints
 the tail of each component's log. `.github/workflows/observability.yml` runs this same script.
 
 ## The pins
@@ -55,6 +57,7 @@ the tail of each component's log. `.github/workflows/observability.yml` runs thi
 |---|---|---|
 | OpenTelemetry Collector contrib | `otel/opentelemetry-collector-contrib` 0.142.0, `sha256:38c349c3b7a2fd7ea46700cde8fa13d35b699ef2ce245bdf34dae2a413512f76` | Docker Hub, the multi-platform index |
 | Prometheus and promtool | `prom/prometheus` v3.16.0, `sha256:e04987641b57704f408e31f6373ba4138ecf27cb4a165d24aabb6c38fddd0f06` | Docker Hub, the multi-platform index |
+| Alertmanager | `prom/alertmanager` v0.35.1, `sha256:4e3d029e69c7f61dd53a2b31a3dc427a2b81736cffca185c0854075e07969e36` | Docker Hub, the multi-platform index |
 | Grafana | 13.3.1 linux-amd64, `sha256:6acf8939dd2f73332cbcafc27a33973fb1115b8867e7ffa3223c6e2ecbed8531` | `dl.grafana.com/oss/release/` (the sha256 its `.sha256` file lists) |
 
 [`fetch.py`](fetch.py) (standard library) reads the registry's v2 API: the index must hash to the pinned digest, then
@@ -72,6 +75,8 @@ refused clearly otherwise. Move a pin by reading the new digest from the registr
 | `prometheus.yaml` | Scrape leg: scrape the exporter every 2 s with `honor_labels: true`, load `deploy/alerts/openbilling.rules.yaml` |
 | `otelcol-otlp.yaml` | OTLP leg: OTLP/HTTP in, the `otlphttp` exporter out to Prometheus's `/api/v1/otlp/v1/metrics` (`metrics_endpoint`, `encoding: proto`) |
 | `prometheus-otlp.yaml` | OTLP leg: no scrape job; `otlp.translation_strategy: UnderscoreEscapingWithSuffixes`; run.sh starts it with `--web.enable-otlp-receiver` |
+| `alertmanager.yml` | One webhook receiver (`send_resolved`) to the test's sink, `group_wait` 1 s, `group_interval` 2 s, `repeat_interval` 1 m: test values |
+| `test-thresholds.toml` | A partial thresholds file (10 s window, `for: 2s` on the 4xx ratio); `run.sh` generates test-only rules from it with `alerts.py --out` and Prometheus loads them beside the shipped ones |
 | `grafana/provisioning/` | The Prometheus data source (uid `prometheus`, `timeInterval: 2s`) and a file provider on `deploy/dashboards`, unmodified |
 
 ## The OTLP leg's settings
@@ -89,9 +94,18 @@ the v0.142.0 `otlphttpexporter` README, and by running the pinned binaries (`pro
   `encoding` defaults to `proto`.
 - Delta metrics are dropped unless `--enable-feature=otlp-deltatocumulative`; the SDK exports cumulative (unrun).
 
-The test makes no leg-specific assertion. The one difference is that this leg has no scrape `up` series.
+## The alert-delivery proof
+
+Both legs. `run.sh` starts Alertmanager, generates the test-only rules and picks a free port for the sink. The test
+serves the sink itself (a `std::net::TcpListener` thread: it owns what it asserts on, with no file handoff, and
+Alertmanager retries a webhook until the sink is up), drives 409 conflicts until `OpenbillingHttp4xxCritical` is
+delivered `firing`, checks its labels and that no identity or amount reached the webhook, stops, and waits (at most
+90 s) for `resolved`. Locally: firing after about 2 s, resolved about 12 s later. Alertmanager's flags and routing
+fields are *verified 2026-11-28* by running the pinned binary.
+
+The test makes no other leg-specific assertion. The one difference is that this leg has no scrape `up` series.
 
 ## What it does not cover
 
-OpenObserve, Mimir and VictoriaMetrics; alert delivery (no Alertmanager runs); a threshold crossed on a live service
-(that is `promtool test rules`); and Grafana's rendering in a browser. See ADR 0007, *Still open*.
+OpenObserve, Mimir and VictoriaMetrics; receivers other than a webhook; the shipped thresholds' minutes-long windows on a live service
+(that is `promtool test rules`; the live proof uses test thresholds); and Grafana's rendering in a browser. See ADR 0007, *Still open*.

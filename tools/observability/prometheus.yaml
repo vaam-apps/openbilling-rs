@@ -1,11 +1,18 @@
-# Scrapes the Collector's Prometheus exporter every 2 s and evaluates the shipped alert rules. `honor_labels` keeps
-# the `job` the exporter derives from service.name (without it the label would be `exported_job`).
-# run.sh replaces @RULES@ with the absolute path of deploy/alerts/openbilling.rules.yaml.
+# Scrapes the Collector's Prometheus exporter every 2 s and evaluates the shipped alert rules, plus the test-only rules
+# of test-thresholds.toml, and sends what fires to Alertmanager. `honor_labels` keeps the `job` the exporter derives from
+# service.name (without it the label would be `exported_job`).
+# run.sh replaces @RULES@ with the absolute path of deploy/alerts/openbilling.rules.yaml, @TEST_RULES@ with that of the
+# test-only rules, and the ports 8889 (exporter) and 9093 (Alertmanager) with the real ones.
 global:
   scrape_interval: 2s
   evaluation_interval: 2s
 rule_files:
   - "@RULES@"
+  - "@TEST_RULES@"
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["127.0.0.1:9093"]
 scrape_configs:
   - job_name: otelcol
     honor_labels: true
