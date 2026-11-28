@@ -18,7 +18,8 @@ identity provider (a test issuer only). The latest release is v0.6.0. The design
 [ADR 0003](docs/adr/0003-credits-from-a-payment-provider.md) and [ADR 0004](docs/adr/0004-a-versioned-price-book-in-sql.md);
 the releases are [ADR 0005](docs/adr/0005-release-fixed-versions-image-and-chart.md) and
 [ADR 0006](docs/adr/0006-a-static-musl-binary-on-distroless-static.md), the telemetry
-[ADR 0007](docs/adr/0007-opentelemetry-through-a-layer-over-cratestacks-spans.md).
+[ADR 0007](docs/adr/0007-opentelemetry-through-a-layer-over-cratestacks-spans.md), the Rust SDK
+[ADR 0008](docs/adr/0008-a-rust-sdk-on-crates-io.md).
 
 ## What is ready
 
@@ -44,6 +45,7 @@ Legend: ✅ built and tested in CI · ⚠️ built, but partial or not yet prove
 | Feature | Status |
 |---|---|
 | External API (CrateStack) with contract checks | ✅ |
+| Rust SDK (`openbilling-sdk`), generated from the schema | ⚠️ not yet published to crates.io |
 | Fail-closed bearer authentication (JWT verifier) | ⚠️ test issuer only |
 | `openbilling serve`, the drain loop, clean stop on `SIGTERM` | ⚠️ never in a real cluster |
 | End-to-end suite against the real service and PostgreSQL 19 | ✅ |

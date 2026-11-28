@@ -9,6 +9,7 @@ members = [
     "crates/openbilling-metrics",
     "crates/openbilling-telemetry",
     "crates/openbilling-jwt",
+    "crates/openbilling-sdk",
     "bin/openbilling",
 ]
 
@@ -30,6 +31,7 @@ openbilling-http = { path = "crates/openbilling-http" }
 openbilling-metrics = { path = "crates/openbilling-metrics" }
 openbilling-telemetry = { path = "crates/openbilling-telemetry" }
 openbilling-jwt = { path = "crates/openbilling-jwt" }
+openbilling-sdk = { path = "crates/openbilling-sdk" }
 
 anstream = "1.0.0"
 anstyle = "1.0.14"

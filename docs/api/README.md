@@ -21,5 +21,7 @@ file chooses (`OPENBILLING_CONFIG`; `at_or_above` for every check by default), n
 rule of its own, an external policy engine for example, reads the numbers and ignores the verdict (the owner's
 decision of 2026-11-27, [ADR 0001](../adr/0001-postgres-is-the-queue.md), amended, F1 to F4).
 
-Typed clients come from the same schema: `include_client_schema!` for Rust, `cratestack generate-typescript` and
-`generate-dart` for the others. None is generated in this repository yet.
+Typed clients come from the same schema. **Rust:** [`openbilling-sdk`](../../crates/openbilling-sdk/README.md), which
+generates its client from a copy of the schema with `include_client_schema!` and is published to crates.io on a release
+([ADR 0008](../adr/0008-a-rust-sdk-on-crates-io.md); not yet published). **Other languages:** `cratestack
+generate-typescript` and `generate-dart` on the same schema; none is generated in this repository.

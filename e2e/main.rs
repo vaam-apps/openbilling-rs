@@ -24,5 +24,6 @@ mod organisation;
 mod payments;
 mod prepaid_balance;
 mod price_versions;
+mod sdk;
 mod statements;
 mod telemetry;
