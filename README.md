@@ -27,6 +27,8 @@ in a real cluster.
 
 ## Features
 
+What is missing, half done and slow is in [ROADMAP.md](ROADMAP.md).
+
 Legend: ✅ built and tested in CI · ⚠️ built, but partial or not yet proven end to end · 🚧 being built ·
 📋 planned · ⏸️ on hold. Updated with every change that moves a row.
 
