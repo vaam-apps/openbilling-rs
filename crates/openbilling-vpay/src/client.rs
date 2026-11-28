@@ -13,6 +13,7 @@
 //!
 //! No redirect is followed, and no error message holds the token or a response body.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use openbilling_core::{ErrorClass, PaymentError, PaymentRefusal};
@@ -20,12 +21,19 @@ use reqwest::{StatusCode, Url, redirect};
 use serde::de::DeserializeOwned;
 
 use crate::form::{Form, percent_encode};
+use crate::token::{AccessToken, Minter};
 use crate::wire::ErrorEnvelope;
 use crate::{ConfigError, Credential};
 
 /// A fault of the adapter or of vpay, with fixed text.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Fault {
+    #[error("the vpay client key could not be used")]
+    ClientKey,
+    #[error("vpay refused to issue a token ({0})")]
+    TokenRefused(&'static str),
+    #[error("vpay's token endpoint answered {0}")]
+    TokenStatus(StatusCode),
     #[error("vpay could not be reached")]
     Transport(#[source] reqwest::Error),
     #[error("the vpay token could not be read")]
@@ -38,7 +46,7 @@ pub(crate) enum Fault {
     Unreadable(&'static str),
 }
 
-fn fault(class: ErrorClass, fault: Fault) -> PaymentError {
+pub(crate) fn fault(class: ErrorClass, fault: Fault) -> PaymentError {
     PaymentError::Provider {
         class,
         source: Box::new(fault),
@@ -54,10 +62,28 @@ pub(crate) fn unreadable(what: &'static str) -> PaymentError {
 pub(crate) struct Client {
     http: reqwest::Client,
     base: Url,
-    credential: Credential,
+    auth: Auth,
 }
 
-fn checked_base(raw: &str) -> Result<Url, ConfigError> {
+/// Where a request's bearer token comes from. `Debug` is written by hand: a derived one would print `Token`.
+#[derive(Clone)]
+enum Auth {
+    Token(String),
+    File(std::path::PathBuf),
+    Minted(Arc<Minter>),
+}
+
+impl std::fmt::Debug for Auth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Token(_) => f.write_str("Token(<hidden>)"),
+            Self::File(path) => f.debug_tuple("File").field(path).finish(),
+            Self::Minted(minter) => f.debug_tuple("Minted").field(minter).finish(),
+        }
+    }
+}
+
+pub(crate) fn checked_base(raw: &str) -> Result<Url, ConfigError> {
     let url = Url::parse(raw).map_err(|_| ConfigError::BaseUrl)?;
     let loopback = match url.host() {
         Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
@@ -93,11 +119,14 @@ impl Client {
             .redirect(redirect::Policy::none())
             .build()
             .map_err(|_| ConfigError::Client)?;
-        Ok(Self {
-            http,
-            base,
-            credential,
-        })
+        let auth = match credential {
+            Credential::ClientCredentials(settings) => {
+                Auth::Minted(Arc::new(Minter::new(http.clone(), &base, settings)?))
+            }
+            Credential::Token(token) => Auth::Token(token),
+            Credential::TokenFile(path) => Auth::File(path),
+        };
+        Ok(Self { http, base, auth })
     }
 
     fn url(&self, path: &str) -> Result<Url, PaymentError> {
@@ -105,19 +134,32 @@ impl Client {
         Url::parse(&format!("{base}{path}")).map_err(|_| unreadable("a URL"))
     }
 
-    async fn token(&self) -> Result<String, PaymentError> {
-        let token = match &self.credential {
-            Credential::Token(token) => token.clone(),
-            Credential::TokenFile(path) => tokio::fs::read_to_string(path)
+    async fn token(&self) -> Result<AccessToken, PaymentError> {
+        let token = match &self.auth {
+            Auth::Minted(minter) => return minter.token().await,
+            Auth::Token(token) => token.clone(),
+            Auth::File(path) => tokio::fs::read_to_string(path)
                 .await
                 .map_err(|_| fault(ErrorClass::Unavailable, Fault::Token))?
                 .trim()
                 .to_owned(),
         };
-        if token.is_empty() || !token.bytes().all(|b| b.is_ascii_graphic()) {
-            return Err(fault(ErrorClass::Internal, Fault::Token));
+        AccessToken::new(token).ok_or_else(|| fault(ErrorClass::Internal, Fault::Token))
+    }
+
+    /// Sends `request` with a bearer token, and drops a minted token vpay refused.
+    async fn send<T: DeserializeOwned>(
+        &self,
+        request: impl FnOnce(&str) -> reqwest::RequestBuilder,
+    ) -> Result<T, PaymentError> {
+        let token = self.token().await?;
+        let sent = request(token.expose()).send().await;
+        if let (Auth::Minted(minter), Ok(response)) = (&self.auth, &sent)
+            && response.status() == StatusCode::UNAUTHORIZED
+        {
+            minter.invalidate(&token).await;
         }
-        Ok(token)
+        answer(sent).await
     }
 
     /// `POST {path}` with `form` under `key`.
@@ -127,14 +169,16 @@ impl Client {
         key: &str,
         form: &Form,
     ) -> Result<T, PaymentError> {
-        let request = self
-            .http
-            .post(self.url(path)?)
-            .bearer_auth(self.token().await?)
-            .header("idempotency-key", key)
-            .header("content-type", "application/x-www-form-urlencoded")
-            .body(form.encode());
-        answer(request.send().await).await
+        let url = self.url(path)?;
+        self.send(|token| {
+            self.http
+                .post(url)
+                .bearer_auth(token)
+                .header("idempotency-key", key)
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(form.encode())
+        })
+        .await
     }
 
     /// `GET {collection}/{id}`, the id escaped as a path segment.
@@ -143,11 +187,9 @@ impl Client {
         collection: &str,
         id: &str,
     ) -> Result<T, PaymentError> {
-        let request = self
-            .http
-            .get(self.url(&format!("{collection}/{}", percent_encode(id)))?)
-            .bearer_auth(self.token().await?);
-        answer(request.send().await).await
+        let url = self.url(&format!("{collection}/{}", percent_encode(id)))?;
+        self.send(|token| self.http.get(url).bearer_auth(token))
+            .await
     }
 }
 

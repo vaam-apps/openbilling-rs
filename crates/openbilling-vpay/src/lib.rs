@@ -12,8 +12,9 @@
 //! **Authentication.** vpay's `/v1` takes a signed COSE_Sign1 message, or, where the deployment's `auth.methods`
 //! permits `machine_tokens`, a bearer token of audience `vpay:v1` minted by its `/v1/oauth/token` (*verified*,
 //! the `vpay-merchant-api` skill of `vaam-apps/vpay-skills` at `19f15ba`, and `backends/crates/vpay-api/src/resource_auth.rs`). This adapter sends a bearer
-//! token read from a file on every call, so whatever mints and rotates it (`client_credentials` with an RS256
-//! `private_key_jwt`) runs beside the service. Minting it here, and signing requests, are not built.
+//! token: one read from a file on every call (`Credential::TokenFile`), or one it mints itself
+//! (`Credential::ClientCredentials`, [`token`]: `client_credentials` with an RS256 `private_key_jwt`). Signing
+//! requests (COSE_Sign1) is not built.
 //!
 //! [ADR 0003]: https://github.com/vaam-apps/openbilling-rs/blob/main/docs/adr/0003-credits-from-a-payment-provider.md
 
@@ -31,10 +32,15 @@ mod client;
 mod form;
 #[cfg(feature = "stand-in")]
 pub mod stand_in;
+mod token;
 mod units;
 pub mod webhook;
 mod wire;
 
+pub use token::{
+    ClientCredentials, DEFAULT_AUDIENCE, DEFAULT_REFRESH_SKEW, DEFAULT_RETRIES,
+    DEFAULT_RETRY_BACKOFF, KeySource, MAX_BACKOFF, MAX_REFRESH_SKEW, MAX_RETRIES,
+};
 pub use units::MinorUnits;
 
 use client::Client;
@@ -76,6 +82,8 @@ pub enum Credential {
     TokenFile(PathBuf),
     /// A token held in memory: for tests.
     Token(String),
+    /// The adapter mints the token itself: `client_credentials` with an RS256 `private_key_jwt` ([`token`]).
+    ClientCredentials(ClientCredentials),
 }
 
 impl fmt::Debug for Credential {
@@ -83,6 +91,9 @@ impl fmt::Debug for Credential {
         match self {
             Self::TokenFile(path) => f.debug_tuple("TokenFile").field(path).finish(),
             Self::Token(_) => f.write_str("Token(<hidden>)"),
+            Self::ClientCredentials(settings) => {
+                f.debug_tuple("ClientCredentials").field(settings).finish()
+            }
         }
     }
 }
@@ -135,6 +146,18 @@ pub enum ConfigError {
     /// No payment method type.
     #[error("at least one vpay payment method type is needed")]
     NoPaymentMethodType,
+    /// The client credentials settings are not usable: an empty or non-printable id, audience, scope or `kid`, a
+    /// refresh margin, retry count or backoff above its bound.
+    #[error("the vpay client credentials settings are not usable")]
+    ClientCredentials,
+    /// The client key cannot be read now, or is not an RSA private key of 2048 to 8192 bits in PEM.
+    #[error("the vpay client key cannot be read or is not an RSA private key in PEM")]
+    ClientKey,
+    /// The token endpoint is not `https` (or `http` to a loopback address), or carries credentials.
+    #[error(
+        "the vpay token URL must be https (or http to a loopback address) and hold no credentials"
+    )]
+    TokenUrl,
     /// The HTTP client could not be built.
     #[error("the HTTP client could not be built")]
     Client,

@@ -62,6 +62,16 @@ openbilling:
       # -- The longest a retention run waits for a lock (a detach waits for every transaction on the table) or runs a
       # statement: `1s` to `1h`, like `300s` or `5m`. A run that times out is retried at the next hour.
       timeout: 5m
+    # `vpay.token`, not set by default: the tunables of a vpay token the service mints itself (only with OPENBILLING_VPAY_CLIENT_ID and
+    # OPENBILLING_VPAY_CLIENT_KEY_FILE in `controllers.main.containers.main.env`; the binary refuses them otherwise).
+    # Each key is optional and left out here, so the adapter's default stands: `audience: vpay:v1`, `scope` none (vpay
+    # grants the client's registered scopes), `refresh_skew_secs: 30` (at most 600, and at most half the token's life),
+    # `retries: 2` (at most 10), `retry_backoff_ms: 200` (at most 5000). The client's id, key and endpoints are
+    # environment variables, never here. For example:
+    #   vpay:
+    #     token:
+    #       scope: payments:write
+    #       retries: 3
 
 controllers:
   main:

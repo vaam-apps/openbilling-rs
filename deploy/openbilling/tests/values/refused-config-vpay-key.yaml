@@ -1,0 +1,6 @@
+# expect: openbilling.config.vpay.token.retrys: not a key
+openbilling:
+  config:
+    vpay:
+      token:
+        retrys: 3

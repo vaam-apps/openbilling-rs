@@ -10,17 +10,19 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+base64.workspace = true
 hex.workspace = true
 hmac.workspace = true
 openbilling-core.workspace = true
 reqwest.workspace = true
+ring.workspace = true
 rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 subtle.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["fs"] }
+tokio = { workspace = true, features = ["fs", "sync", "time"] }
 url.workspace = true
 # The stand-in for tests only (`stand-in`).
 axum = { workspace = true, optional = true }

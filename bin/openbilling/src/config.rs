@@ -21,7 +21,18 @@
 //! retention:
 //!   margin: 90d               # drop a day's usage partition this long after the intake window; 1d to 3650d
 //!   timeout: 5m               # the longest a run waits for a lock (a detach waits for every transaction on the table); 1s to 1h
+//! vpay:
+//!   token:                    # only with a client key to mint the vpay token with (OPENBILLING_VPAY_CLIENT_*)
+//!     audience: vpay:v1       # the audience of the token asked for
+//!     scope: payments:write   # the scope asked for; left out, vpay grants the client's registered scopes
+//!     refresh_skew_secs: 30   # how long before expiry a token is replaced (at most half its life; at most 600)
+//!     retries: 2              # retries of a transient failure of vpay's token endpoint (at most 10)
+//!     retry_backoff_ms: 200   # the pause before the first retry, doubling (at most 5000)
 //! ```
+//!
+//! The vpay token's identity and endpoints (the client id, its key file and `kid`, the token URL, the assertion's
+//! audience) are environment variables: they name a credential or a place. Its tunables are the file's.
+//!
 //!
 //! The retention job (ADR 0001, point 10, amended 2026-11-28) runs hourly with the partition job, so it has no
 //! interval of its own.
@@ -34,7 +45,9 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use openbilling_core::{AllowedPolicy, CurrencyCode, RefuseWhen, RetentionMargin};
 use openbilling_jwt::{JwtConfig, RoleMap};
-use openbilling_vpay::{Credential, CurrencyUnit, VpayConfig, WebhookSecret, webhook};
+use openbilling_vpay::{
+    ClientCredentials, Credential, CurrencyUnit, KeySource, VpayConfig, WebhookSecret, webhook,
+};
 
 /// The default address: this machine only. With an issuer configured, set `OPENBILLING_LISTEN` to serve beyond it.
 pub const DEFAULT_LISTEN: &str = "127.0.0.1:8080";
@@ -84,6 +97,52 @@ struct File {
     allowed: AllowedFile,
     #[serde(default)]
     retention: RetentionFile,
+    #[serde(default)]
+    vpay: VpayFile,
+}
+
+/// `vpay:`, the adapter's tunables.
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VpayFile {
+    #[serde(default)]
+    token: TokenFile,
+}
+
+/// `vpay.token:`, how the minted token is asked for and kept fresh. Every key is optional: the adapter's default
+/// (`openbilling_vpay::ClientCredentials::new`) stands for each one left out.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TokenFile {
+    audience: Option<String>,
+    scope: Option<String>,
+    refresh_skew_secs: Option<u64>,
+    retries: Option<u32>,
+    retry_backoff_ms: Option<u64>,
+}
+
+impl TokenFile {
+    fn is_empty(&self) -> bool {
+        self == &Self::default()
+    }
+
+    fn apply(&self, settings: &mut ClientCredentials) {
+        if let Some(audience) = &self.audience {
+            settings.audience.clone_from(audience);
+        }
+        if let Some(scope) = &self.scope {
+            settings.scope = Some(scope.clone());
+        }
+        if let Some(secs) = self.refresh_skew_secs {
+            settings.refresh_skew = Duration::from_secs(secs);
+        }
+        if let Some(retries) = self.retries {
+            settings.retries = retries;
+        }
+        if let Some(ms) = self.retry_backoff_ms {
+            settings.retry_backoff = Duration::from_millis(ms);
+        }
+    }
 }
 
 /// `retention:`: how long a usage partition outlives the window, as a number of days with a `d`: `90d`.
@@ -128,9 +187,10 @@ fn parse_margin(text: &str) -> Option<RetentionMargin> {
 }
 
 /// What the configuration file holds; the defaults when it names none.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileSettings {
     pub allowed: AllowedPolicy,
+    pub token: TokenFile,
     pub retention_margin: RetentionMargin,
     pub retention_timeout: Duration,
 }
@@ -142,6 +202,7 @@ impl Default for FileSettings {
     fn default() -> Self {
         Self {
             allowed: AllowedPolicy::default(),
+            token: TokenFile::default(),
             retention_margin: RetentionMargin::default(),
             retention_timeout: DEFAULT_RETENTION_TIMEOUT,
         }
@@ -193,9 +254,10 @@ pub fn parse_config(yaml: &str) -> Result<FileSettings> {
             format!(" at line {}, column {}", at.line(), at.column())
         });
         anyhow::anyhow!(
-            "OPENBILLING_CONFIG is not a valid configuration{at}: it holds only `allowed`, whose keys are \
-             debt_limit, balance and member_cap, each at_or_above, above or never, and `retention`, whose key is \
-             margin, a number of days written like 90d"
+            "OPENBILLING_CONFIG is not a valid configuration{at}: it holds `allowed` (debt_limit, balance and \
+             member_cap, each at_or_above, above or never), `retention` (margin, a number of days written like \
+             90d, and timeout, like 300s or 5m) and `vpay.token` (audience, scope, refresh_skew_secs, retries \
+             and retry_backoff_ms)"
         )
     })?;
     let retention_margin = match file.retention.margin {
@@ -216,6 +278,7 @@ pub fn parse_config(yaml: &str) -> Result<FileSettings> {
             balance: file.allowed.balance.into(),
             member_cap: file.allowed.member_cap.into(),
         },
+        token: file.vpay.token,
         retention_margin,
         retention_timeout,
     })
@@ -264,10 +327,14 @@ impl Settings {
             .unwrap_or_else(|| DEFAULT_LISTEN.to_owned())
             .parse()
             .context("OPENBILLING_LISTEN is not an address such as 127.0.0.1:8080")?;
+        let file = file_settings(&get)?;
         let vpay = match get("OPENBILLING_VPAY_BASE_URL") {
             None => None,
-            Some(base_url) => Some(vpay(base_url, &get)?),
+            Some(base_url) => Some(vpay(base_url, &file.token, &get)?),
         };
+        if vpay.is_none() && !file.token.is_empty() {
+            bail!("OPENBILLING_CONFIG: vpay.token needs OPENBILLING_VPAY_BASE_URL");
+        }
         // The error names the variable and never its value; a headers file is read here and nowhere else.
         let otel = openbilling_telemetry::Settings::from_lookup(
             &lookup,
@@ -275,7 +342,6 @@ impl Settings {
             |path| std::fs::read_to_string(path).ok(),
         )
         .context("the OpenTelemetry configuration")?;
-        let file = file_settings(&get)?;
         Ok(Self {
             database_url: DatabaseUrl(database_url),
             listen,
@@ -325,9 +391,55 @@ fn auth(get: &impl Fn(&str) -> Option<String>) -> Result<Option<JwtConfig>> {
     Ok(Some(config))
 }
 
-fn vpay(base_url: String, get: &impl Fn(&str) -> Option<String>) -> Result<VpayConfig> {
-    let token = get("OPENBILLING_VPAY_TOKEN_FILE")
-        .context("OPENBILLING_VPAY_TOKEN_FILE is needed with OPENBILLING_VPAY_BASE_URL")?;
+/// How the adapter gets its bearer token: a file somebody else keeps fresh, or a client key it mints one with.
+/// The client's identity and endpoints are the environment's; how the token is asked for and kept fresh is the
+/// configuration file's (`tuning`), and it applies to a minted token only.
+fn vpay_credential(
+    get: &impl Fn(&str) -> Option<String>,
+    tuning: &TokenFile,
+) -> Result<Credential> {
+    const MINTING: [&str; 5] = [
+        "OPENBILLING_VPAY_CLIENT_ID",
+        "OPENBILLING_VPAY_CLIENT_KEY_FILE",
+        "OPENBILLING_VPAY_CLIENT_KEY_ID",
+        "OPENBILLING_VPAY_TOKEN_URL",
+        "OPENBILLING_VPAY_ASSERTION_AUDIENCE",
+    ];
+    let token_file = get("OPENBILLING_VPAY_TOKEN_FILE");
+    let minting = MINTING.iter().any(|name| get(name).is_some());
+    match (token_file, minting) {
+        (Some(_), true) => bail!(
+            "OPENBILLING_VPAY_TOKEN_FILE and the OPENBILLING_VPAY_CLIENT_* settings are two ways to get a token: set one"
+        ),
+        (Some(_), false) if !tuning.is_empty() => bail!(
+            "OPENBILLING_CONFIG: vpay.token tunes a minted token, and OPENBILLING_VPAY_TOKEN_FILE names one minted elsewhere"
+        ),
+        (Some(path), false) => Ok(Credential::TokenFile(PathBuf::from(path))),
+        (None, false) => bail!(
+            "OPENBILLING_VPAY_TOKEN_FILE, or OPENBILLING_VPAY_CLIENT_ID and OPENBILLING_VPAY_CLIENT_KEY_FILE, is needed with OPENBILLING_VPAY_BASE_URL"
+        ),
+        (None, true) => {
+            let client_id = get("OPENBILLING_VPAY_CLIENT_ID")
+                .context("OPENBILLING_VPAY_CLIENT_ID is needed to mint a vpay token")?;
+            let key = get("OPENBILLING_VPAY_CLIENT_KEY_FILE")
+                .context("OPENBILLING_VPAY_CLIENT_KEY_FILE is needed to mint a vpay token")?;
+            let mut settings =
+                ClientCredentials::new(client_id, KeySource::File(PathBuf::from(key)));
+            settings.key_id = get("OPENBILLING_VPAY_CLIENT_KEY_ID");
+            settings.token_url = get("OPENBILLING_VPAY_TOKEN_URL");
+            settings.assertion_audience = get("OPENBILLING_VPAY_ASSERTION_AUDIENCE");
+            tuning.apply(&mut settings);
+            Ok(Credential::ClientCredentials(settings))
+        }
+    }
+}
+
+fn vpay(
+    base_url: String,
+    tuning: &TokenFile,
+    get: &impl Fn(&str) -> Option<String>,
+) -> Result<VpayConfig> {
+    let credential = vpay_credential(get, tuning)?;
     let secrets_file = get("OPENBILLING_VPAY_WEBHOOK_SECRETS_FILE").context(
         "OPENBILLING_VPAY_WEBHOOK_SECRETS_FILE is needed with OPENBILLING_VPAY_BASE_URL",
     )?;
@@ -366,7 +478,7 @@ fn vpay(base_url: String, get: &impl Fn(&str) -> Option<String>) -> Result<VpayC
     };
     Ok(VpayConfig {
         base_url,
-        credential: Credential::TokenFile(PathBuf::from(token)),
+        credential,
         webhook_secrets,
         webhook_tolerance_secs,
         currencies,
@@ -520,6 +632,138 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn a_vpay_token_is_a_file_or_minted_from_a_client_key_never_both() {
+        let dir = std::env::temp_dir().join(format!("ob-config-mint-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let secrets = dir.join("secrets");
+        std::fs::write(&secrets, "whsec_a\n").unwrap();
+        let secrets = secrets.to_str().unwrap();
+        let common = [
+            ("OPENBILLING_DATABASE_URL", "postgres://db/x"),
+            ("OPENBILLING_VPAY_BASE_URL", "https://vpay.example"),
+            ("OPENBILLING_VPAY_WEBHOOK_SECRETS_FILE", secrets),
+            ("OPENBILLING_VPAY_CURRENCIES", "EUR:2"),
+            ("OPENBILLING_VPAY_PAYMENT_METHOD_TYPES", "rail_a"),
+        ];
+        let with = |extra: &[(&'static str, &'static str)]| {
+            let mut all = common.to_vec();
+            all.extend_from_slice(extra);
+            settings(&all)
+        };
+        let minting = [
+            ("OPENBILLING_VPAY_CLIENT_ID", "merchant"),
+            ("OPENBILLING_VPAY_CLIENT_KEY_FILE", "/run/key.pem"),
+        ];
+        let Credential::ClientCredentials(c) = with(&minting).unwrap().vpay.unwrap().credential
+        else {
+            panic!("a client key mints");
+        };
+        assert_eq!(c.client_id, "merchant");
+        assert_eq!(c.audience, openbilling_vpay::DEFAULT_AUDIENCE);
+        assert_eq!(c.refresh_skew, openbilling_vpay::DEFAULT_REFRESH_SKEW);
+        assert_eq!(c.retries, openbilling_vpay::DEFAULT_RETRIES);
+        assert!(c.scope.is_none() && c.key_id.is_none() && c.token_url.is_none());
+        assert!(!format!("{c:?}").contains("hunter"));
+
+        // The identity and the endpoints are environment; the tunables are the file's, and the environment has none.
+        let mut named = minting.to_vec();
+        named.extend([
+            ("OPENBILLING_VPAY_CLIENT_KEY_ID", "k1"),
+            ("OPENBILLING_VPAY_TOKEN_URL", "https://auth.example/token"),
+            (
+                "OPENBILLING_VPAY_ASSERTION_AUDIENCE",
+                "https://vpay.example/v1/oauth",
+            ),
+        ]);
+        let Credential::ClientCredentials(c) = with(&named).unwrap().vpay.unwrap().credential
+        else {
+            panic!("a client key mints");
+        };
+        assert_eq!(c.key_id.as_deref(), Some("k1"));
+        assert_eq!(c.token_url.as_deref(), Some("https://auth.example/token"));
+        assert_eq!(
+            c.assertion_audience.as_deref(),
+            Some("https://vpay.example/v1/oauth")
+        );
+        for tunable in [
+            "OPENBILLING_VPAY_TOKEN_AUDIENCE",
+            "OPENBILLING_VPAY_TOKEN_SCOPE",
+            "OPENBILLING_VPAY_TOKEN_REFRESH_SKEW_SECS",
+            "OPENBILLING_VPAY_TOKEN_RETRIES",
+            "OPENBILLING_VPAY_TOKEN_RETRY_BACKOFF_MS",
+        ] {
+            let mut env = minting.to_vec();
+            env.push((tunable, "1"));
+            let c = with(&env).unwrap().vpay.unwrap();
+            let Credential::ClientCredentials(c) = c.credential else {
+                panic!("a client key mints");
+            };
+            assert_eq!(
+                (c.audience.as_str(), c.scope.as_deref(), c.retries),
+                (
+                    openbilling_vpay::DEFAULT_AUDIENCE,
+                    None,
+                    openbilling_vpay::DEFAULT_RETRIES
+                ),
+                "{tunable} is not read from the environment"
+            );
+        }
+
+        let dir2 = std::env::temp_dir().join(format!("ob-config-tune-{}", std::process::id()));
+        std::fs::create_dir_all(&dir2).unwrap();
+        let file = dir2.join("config.yaml");
+        std::fs::write(
+            &file,
+            "vpay:\n  token:\n    audience: vpay:v1\n    scope: payments:write payments:read\n    \
+             refresh_skew_secs: 90\n    retries: 4\n    retry_backoff_ms: 50\n",
+        )
+        .unwrap();
+        // The helper takes `&'static str`: a test's one leaked path.
+        let file: &'static str = Box::leak(file.to_str().unwrap().to_owned().into_boxed_str());
+        let mut tuned = minting.to_vec();
+        tuned.push(("OPENBILLING_CONFIG", file));
+        let Credential::ClientCredentials(c) = with(&tuned).unwrap().vpay.unwrap().credential
+        else {
+            panic!("a client key mints");
+        };
+        assert_eq!(c.audience, "vpay:v1");
+        assert_eq!(c.scope.as_deref(), Some("payments:write payments:read"));
+        assert_eq!(c.refresh_skew, Duration::from_secs(90));
+        assert_eq!((c.retries, c.retry_backoff), (4, Duration::from_millis(50)));
+        // Tunables with no minted token to tune, or with no vpay at all, are refused.
+        let mut with_file = common.to_vec();
+        with_file.extend([
+            ("OPENBILLING_VPAY_TOKEN_FILE", "/run/token"),
+            ("OPENBILLING_CONFIG", file),
+        ]);
+        let text = format!("{:#}", settings(&with_file).unwrap_err());
+        assert!(text.contains("vpay.token"), "{text}");
+        let text = format!(
+            "{:#}",
+            settings(&[
+                ("OPENBILLING_DATABASE_URL", "postgres://db/x"),
+                ("OPENBILLING_CONFIG", file)
+            ])
+            .unwrap_err()
+        );
+        assert!(text.contains("vpay.token"), "{text}");
+        let _ = std::fs::remove_dir_all(&dir2);
+
+        // Both ways, neither, half of the minting pair, and a number that is not one: all refused.
+        let mut both = minting.to_vec();
+        both.push(("OPENBILLING_VPAY_TOKEN_FILE", "/run/token"));
+        assert!(with(&both).is_err());
+        assert!(with(&[]).is_err());
+        assert!(with(&minting[..1]).is_err());
+        assert!(with(&minting[1..]).is_err());
+        assert!(
+            with(&[("OPENBILLING_VPAY_CLIENT_KEY_ID", "k1")]).is_err(),
+            "a kid with no client"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     fn policy(
         debt_limit: RefuseWhen,
         balance: RefuseWhen,
@@ -537,6 +781,7 @@ mod tests {
         use RefuseWhen::{Above, AtOrAbove, Never};
         for (yaml, expected) in [
             ("allowed: {}", AllowedPolicy::default()),
+            ("vpay: {token: {retries: 3}}", AllowedPolicy::default()),
             ("{}", AllowedPolicy::default()),
             ("# only a comment\nallowed: {}\n", AllowedPolicy::default()),
             (
@@ -634,6 +879,15 @@ mod tests {
     }
 
     #[test]
+    fn the_file_holds_the_vpay_token_tunables_and_nothing_else_of_vpay() {
+        let loaded = parse_config("vpay:\n  token:\n    scope: a:b\n    retries: 3\n").unwrap();
+        assert_eq!(loaded.token.scope.as_deref(), Some("a:b"));
+        assert_eq!(loaded.token.retries, Some(3));
+        assert!(loaded.token.audience.is_none() && loaded.token.refresh_skew_secs.is_none());
+        assert!(parse_config("allowed: {}").unwrap().token.is_empty());
+    }
+
+    #[test]
     fn the_file_refuses_what_it_does_not_know_without_quoting_it() {
         for yaml in [
             "",
@@ -648,6 +902,11 @@ mod tests {
             "allowed: never\n",
             "database_url: postgres://user:hunter2@db/x\n",
             "allowed: {}\nlisten: 0.0.0.0:8080\n",
+            "vpay:\n  token:\n    retrys: 3\n",
+            "vpay:\n  token:\n    retries: many\n",
+            "vpay:\n  token:\n    retries: -1\n",
+            "vpay:\n  webhook: {}\n",
+            "vpay: {token: {scope: hunter2, scope: x}}\n",
             "- allowed\n",
             "allowed: {debt_limit: above",
         ] {

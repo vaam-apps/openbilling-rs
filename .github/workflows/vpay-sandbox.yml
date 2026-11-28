@@ -1,0 +1,73 @@
+name: vpay sandbox
+
+# The payment conformance cases that need no payer, against a real vpay through a token the adapter mints itself
+# (ANR-1332, ADR 0003 amended 2026-11-28). Never part of the merge gate: it runs only when someone starts it, and
+# only when the repository variable VPAY_SANDBOX_URL is set. Without the secrets below it skips cleanly. Until it
+# has run green once, the minting is proven against the stand-in alone.
+#
+# Repository variables: VPAY_SANDBOX_URL (vpay's base URL), VPAY_SANDBOX_PAYMENT_METHOD_TYPE; optional
+# VPAY_SANDBOX_CURRENCY (CODE:EXPONENT, default EUR:2), VPAY_SANDBOX_KEY_ID, VPAY_SANDBOX_TOKEN_URL,
+# VPAY_SANDBOX_ASSERTION_AUDIENCE.
+# Repository secrets: VPAY_SANDBOX_CLIENT_ID, VPAY_SANDBOX_CLIENT_KEY (the PEM text of the client's RSA private key);
+# optional VPAY_SANDBOX_WEBHOOK_SECRET (without it the webhook case is skipped).
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vpay-sandbox
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: "1.98.1"
+
+jobs:
+  conformance:
+    name: Conformance against a vpay sandbox
+    if: ${{ vars.VPAY_SANDBOX_URL != '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      VPAY_SANDBOX_URL: ${{ vars.VPAY_SANDBOX_URL }}
+      VPAY_SANDBOX_PAYMENT_METHOD_TYPE: ${{ vars.VPAY_SANDBOX_PAYMENT_METHOD_TYPE }}
+      VPAY_SANDBOX_CURRENCY: ${{ vars.VPAY_SANDBOX_CURRENCY }}
+      VPAY_SANDBOX_KEY_ID: ${{ vars.VPAY_SANDBOX_KEY_ID }}
+      VPAY_SANDBOX_TOKEN_URL: ${{ vars.VPAY_SANDBOX_TOKEN_URL }}
+      VPAY_SANDBOX_ASSERTION_AUDIENCE: ${{ vars.VPAY_SANDBOX_ASSERTION_AUDIENCE }}
+    steps:
+      # The secrets are in the environment of the two steps that need them and of no other: the actions below, which
+      # are third-party code, never see them.
+      - name: Check the credentials are present
+        id: gate
+        env:
+          VPAY_SANDBOX_CLIENT_ID: ${{ secrets.VPAY_SANDBOX_CLIENT_ID }}
+          VPAY_SANDBOX_CLIENT_KEY: ${{ secrets.VPAY_SANDBOX_CLIENT_KEY }}
+        run: |
+          if [ -n "$VPAY_SANDBOX_CLIENT_ID" ] && [ -n "$VPAY_SANDBOX_CLIENT_KEY" ] && [ -n "$VPAY_SANDBOX_PAYMENT_METHOD_TYPE" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipped: the secrets VPAY_SANDBOX_CLIENT_ID and VPAY_SANDBOX_CLIENT_KEY and the variable VPAY_SANDBOX_PAYMENT_METHOD_TYPE are needed."
+          fi
+      - if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - if: steps.gate.outputs.run == 'true'
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master, 2026-11-14
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - if: steps.gate.outputs.run == 'true'
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Run the cases against the sandbox
+        if: steps.gate.outputs.run == 'true'
+        env:
+          VPAY_SANDBOX_REQUIRE: "1"
+          VPAY_SANDBOX_CLIENT_ID: ${{ secrets.VPAY_SANDBOX_CLIENT_ID }}
+          VPAY_SANDBOX_CLIENT_KEY: ${{ secrets.VPAY_SANDBOX_CLIENT_KEY }}
+          VPAY_SANDBOX_WEBHOOK_SECRET: ${{ secrets.VPAY_SANDBOX_WEBHOOK_SECRET }}
+        run: cargo test -p openbilling-vpay --features stand-in --locked --test sandbox -- --nocapture

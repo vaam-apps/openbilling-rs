@@ -35,11 +35,11 @@ The refusals values cannot say. Each names the value to change. Run before the c
   The file holds policy only; secrets and endpoints are environment variables. */ -}}
   {{- $config := dig "config" dict (.Values.openbilling | default dict) -}}
   {{- if not (kindIs "map" $config) -}}
-    {{- fail "openbilling.config: a map; it holds `allowed` and `retention`" -}}
+    {{- fail "openbilling.config: a map; it holds `allowed`, `retention` and `vpay`" -}}
   {{- end -}}
   {{- range $key, $_ := $config -}}
-    {{- if not (has $key (list "allowed" "retention")) -}}
-      {{- fail (printf "openbilling.config.%s: not a key of the configuration file, which holds only `allowed` and `retention`; secrets and endpoints are environment variables" $key) -}}
+    {{- if not (has $key (list "allowed" "retention" "vpay")) -}}
+      {{- fail (printf "openbilling.config.%s: not a key of the configuration file, which holds `allowed`, `retention` and `vpay`; secrets and endpoints are environment variables" $key) -}}
     {{- end -}}
   {{- end -}}
   {{- $allowed := dig "allowed" dict $config -}}
@@ -83,6 +83,38 @@ The refusals values cannot say. Each names the value to change. Run before the c
     {{- $secs := mul (int (trimSuffix "s" (trimSuffix "m" $timeout))) (ternary 60 1 (hasSuffix "m" $timeout)) -}}
     {{- if gt $secs 3600 -}}
       {{- fail "openbilling.config.retention.timeout: from 1s to 1h written like 300s or 5m" -}}
+    {{- end -}}
+  {{- end -}}
+
+  {{- /* vpay.token: the tunables of a minted vpay token (the binary also refuses them without a client key). */ -}}
+  {{- $vpay := dig "vpay" dict $config -}}
+  {{- if not (kindIs "map" $vpay) -}}
+    {{- fail "openbilling.config.vpay: a map holding `token`" -}}
+  {{- end -}}
+  {{- range $key, $_ := $vpay -}}
+    {{- if ne $key "token" -}}
+      {{- fail (printf "openbilling.config.vpay.%s: not a key; vpay holds only `token` (the adapter's endpoints and secrets are environment variables)" $key) -}}
+    {{- end -}}
+  {{- end -}}
+  {{- $token := dig "token" dict $vpay -}}
+  {{- if not (kindIs "map" $token) -}}
+    {{- fail "openbilling.config.vpay.token: a map of audience, scope, refresh_skew_secs, retries and retry_backoff_ms" -}}
+  {{- end -}}
+  {{- $bounds := dict "refresh_skew_secs" 600 "retries" 10 "retry_backoff_ms" 5000 -}}
+  {{- range $key, $value := $token -}}
+    {{- if has $key (list "audience" "scope") -}}
+      {{- if not (and (kindIs "string" $value) $value) -}}
+        {{- fail (printf "openbilling.config.vpay.token.%s: a non-empty string" $key) -}}
+      {{- end -}}
+    {{- else if hasKey $bounds $key -}}
+      {{- if not (or (kindIs "float64" $value) (kindIs "int64" $value) (kindIs "int" $value)) -}}
+        {{- fail (printf "openbilling.config.vpay.token.%s: a whole number" $key) -}}
+      {{- end -}}
+      {{- if or (lt (float64 $value) 0.0) (gt (float64 $value) (float64 (get $bounds $key))) (ne (float64 $value) (floor (float64 $value))) -}}
+        {{- fail (printf "openbilling.config.vpay.token.%s: a whole number from 0 to %v" $key (get $bounds $key)) -}}
+      {{- end -}}
+    {{- else -}}
+      {{- fail (printf "openbilling.config.vpay.token.%s: not a key; the keys are audience, scope, refresh_skew_secs, retries and retry_backoff_ms" $key) -}}
     {{- end -}}
   {{- end -}}
 

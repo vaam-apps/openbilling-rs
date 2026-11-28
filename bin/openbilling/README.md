@@ -21,8 +21,9 @@ does not answer) is exit 1, printed as `error: …`.
 
 `OPENBILLING_CONFIG` names the file (unset or empty: the defaults). It is checked at start, before any connection:
 an unknown key or value, an empty file or one over 64 KiB stops `serve` with exit 1, naming the variable and the
-line, never what the file holds. It holds the policy of `getAllowed` (the owner's decision of 2026-11-27, ADR 0001, amended, F1 to F4: the service
-reports the numbers and the deployer decides how they are judged) and the retention margin:
+line, never what the file holds. It holds the policy of `getAllowed` (the owner's decision of 2026-11-27,
+ADR 0001, amended, F1 to F4: the service reports the numbers and the deployer decides how they are judged), the
+retention margin and timeout, and the tunables of a minted vpay token (below):
 
 ```yaml
 allowed:
@@ -32,6 +33,13 @@ allowed:
 retention:
   margin: 90d               # drop a day's usage partition this long after the intake window (7 days); 1d to 3650d
   timeout: 5m               # the longest a retention run waits for a lock or runs a statement; 1s to 1h
+vpay:
+  token:                    # only with a client key (OPENBILLING_VPAY_CLIENT_*); each key optional
+    audience: vpay:v1
+    scope: payments:write   # default none: vpay grants the client's registered scopes
+    refresh_skew_secs: 30   # at most half the token's life, at most 600
+    retries: 2              # at most 10
+    retry_backoff_ms: 200   # doubling, at most 5000
 ```
 
 `retention.margin` is how long a day's usage partition outlives the intake window before `serve` detaches and drops it
@@ -49,6 +57,14 @@ only), the token verifier's `OPENBILLING_AUTH_ISSUER` and `OPENBILLING_AUTH_AUDI
 every `/v1` call is a `401`, and `serve` says so on start; an empty value is unset) with the optional `OPENBILLING_AUTH_JWKS_URL`,
 `OPENBILLING_AUTH_ROLES_CLAIM` and `OPENBILLING_AUTH_ROLE_MAP` ([`openbilling-jwt`](../../crates/openbilling-jwt/README.md)),
 and the vpay adapter's `OPENBILLING_VPAY_*` (all of them, or none: without them top-ups and webhooks answer `503`).
+The vpay token is either a file somebody else keeps fresh (`OPENBILLING_VPAY_TOKEN_FILE`) or minted by the service:
+`OPENBILLING_VPAY_CLIENT_ID` and `OPENBILLING_VPAY_CLIENT_KEY_FILE` (a PEM file, read at each mint), with the optional
+`OPENBILLING_VPAY_CLIENT_KEY_ID`, `_TOKEN_URL` (default `<base URL>/v1/oauth/token`) and `_ASSERTION_AUDIENCE` (default the
+token URL): the client's identity, its key and the places it talks to, which are the environment's. How the token is
+asked for and kept fresh is the configuration file's `vpay.token` (`audience` `vpay:v1`, `scope` none, `refresh_skew_secs`
+30, at most 600, `retries` 2, at most 10, and `retry_backoff_ms` 200, at most 5000), and it has no variable. Both ways at
+once, minting settings without a client id and key, and `vpay.token` with a token file or without vpay are refused at
+start; no value is printed.
 
 OpenTelemetry is configured by the standard `OTEL_*` variables (**off unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set**; the
 [crate's README](../../crates/openbilling-telemetry/README.md) lists them and what is refused). `serve` starts the

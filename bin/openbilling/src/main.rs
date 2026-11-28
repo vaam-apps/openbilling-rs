@@ -46,6 +46,13 @@ environment. No setting is read from both:
       a day's usage partition is dropped:
         retention:
           margin: 90d
+        vpay:
+          token:                    # only with a client key below; each key optional
+            audience: vpay:v1       # the audience of the token asked for
+            scope: payments:write   # the scope asked for; default none: the client's registered scopes
+            refresh_skew_secs: 30   # how long before expiry a token is replaced (at most half its life, at most 600)
+            retries: 2              # retries of a transient failure of the token endpoint (at most 10)
+            retry_backoff_ms: 200   # the pause before the first retry, doubling (at most 5000)
   OPENBILLING_DATABASE_URL, or OPENBILLING_DATABASE_URL_FILE (a file holding it)
       The PostgreSQL 19 database. Never printed.
   OPENBILLING_LISTEN
@@ -63,7 +70,18 @@ environment. No setting is read from both:
   OPENBILLING_VPAY_BASE_URL
       vpay's base URL. Unset: no payment provider, and top-ups and webhooks answer 503.
   OPENBILLING_VPAY_TOKEN_FILE
-      A file holding the bearer token for vpay's /v1, read on every call.
+      A file holding the bearer token for vpay's /v1, read on every call: something else mints it.
+      Or let openbilling mint it (client_credentials with an RS256 private_key_jwt); not both:
+  OPENBILLING_VPAY_CLIENT_ID, OPENBILLING_VPAY_CLIENT_KEY_FILE
+      The client id vpay registered, and a PEM file holding its RSA private key (PKCS#8 or PKCS#1),
+      read at each mint. Never printed.
+  OPENBILLING_VPAY_CLIENT_KEY_ID
+      The key's kid, when vpay holds several keys for the client; default none.
+  OPENBILLING_VPAY_TOKEN_URL
+      vpay's token endpoint; default <base URL>/v1/oauth/token.
+  OPENBILLING_VPAY_ASSERTION_AUDIENCE
+      The assertion's aud: vpay's own name for its token endpoint or issuer, when vpay is reached by
+      another URL than the one it publishes; default the token endpoint.
   OPENBILLING_VPAY_WEBHOOK_SECRETS_FILE
       A file holding vpay's webhook secrets, one per line.
   OPENBILLING_VPAY_CURRENCIES
