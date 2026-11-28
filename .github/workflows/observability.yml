@@ -33,9 +33,15 @@ env:
 
 jobs:
   stack:
-    name: The stack (Collector, Prometheus, Grafana)
+    name: The stack, ${{ matrix.leg }} leg (Collector, Prometheus, Grafana)
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      # scrape: the Collector's `prometheus` exporter, scraped. otlp: the `otlphttp` exporter into Prometheus's OTLP
+      # receiver. Both run tools/observability/run.sh and the same test (ADR 0007).
+      matrix:
+        leg: [scrape, otlp]
     services:
       postgres:
         # The same image as ci.yml's Test job (PostgreSQL 19 is the minimum): tag and digest, move both together.
@@ -53,6 +59,7 @@ jobs:
       OPENBILLING_TEST_DATABASE_URL: postgres://postgres@localhost:5432/postgres
       OPENBILLING_TEST_REQUIRE_DB: "1"
       OBS_CACHE: ${{ github.workspace }}/.obs-cache
+      OBS_LEG: ${{ matrix.leg }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -69,5 +76,5 @@ jobs:
         with:
           path: ${{ env.OBS_CACHE }}
           key: observability-${{ hashFiles('tools/observability/versions.env') }}
-      - name: Run the stack and the end-to-end test
+      - name: Run the stack (${{ matrix.leg }} leg) and the end-to-end test
         run: sh tools/observability/run.sh
