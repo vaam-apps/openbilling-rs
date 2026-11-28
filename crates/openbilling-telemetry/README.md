@@ -67,6 +67,7 @@ flow with sentinel values and scans every byte the collector received for each o
 | `db.query` (client) | `openbilling-pg`, one per ledger operation | `db.system.name` = `postgresql`, `db.operation.name`, and for the drain `openbilling.events.decided` |
 | `drain.cycle` | `openbilling serve`, one per drain pass | `openbilling.batch.limit`, `openbilling.events.decided`, `.applied`, `.refused` |
 | `partitions.run` | `openbilling serve`, hourly | none |
+| `retention.run` | `openbilling serve`, hourly, after `partitions.run` | none |
 
 An inbound `traceparent` is **not** read: this is a public API, and a caller must not choose the trace of its request.
 
@@ -88,7 +89,8 @@ Names below are OTLP names; a Prometheus-compatible store has them as `openbilli
 | `openbilling.allowed.checks` | counter | `verdict` (`allowed`, `refused`), `check` (`debt_limit`, `balance`, `member_cap`, `none`, `other`), `mode` (`at_or_above`, `above`, `never`: the deployer's comparison for that check; `none` when allowed) | `getAllowed` verdicts |
 | `openbilling.telemetry.dropped` | counter | `signal` (`traces`, `logs`) | Spans or logs dropped because the exporter's queue (4096) was full |
 | `openbilling.telemetry.exports` | counter | `signal` (`traces`, `metrics`, `logs`), `result` (`ok`, `failed`) | Export requests to the collector; `failed` is after the SDK's retries |
-| `openbilling.errors` | counter | `class` (`invalid`, `conflict`, `unavailable`, `internal`), `source` (`api`, `drain`, `partitions`) | Errors by class |
+| `openbilling.partitions.dropped` | counter | none | Usage partitions the retention job detached and dropped |
+| `openbilling.errors` | counter | `class` (`invalid`, `conflict`, `unavailable`, `internal`), `source` (`api`, `drain`, `partitions`, `retention`) | Errors by class |
 | `http.server.request.duration` | histogram, s | `method`, `route`, `procedure`, `status` (`2xx` …) | Requests |
 | `db.client.operation.duration` | histogram, s | `operation` (a closed list, else `other`) | Ledger database operations |
 | `db.client.connection.count` | gauge | `state` (`idle`, `used`) | The pool |
@@ -98,7 +100,7 @@ The queue and pool gauges are read every 15 s by `PgLedger::sample_metrics`.
 
 ### Logs
 
-`INFO` and above from `openbilling*` targets: `drain failed`, `preparing partitions failed`, with the error class, in
+`INFO` and above from `openbilling*` targets: `drain failed`, `preparing partitions failed`, `dropping expired partitions failed`, with the error class, in
 the trace of the span they happened in. The same lines still go to stderr, as before.
 
 ## Layout

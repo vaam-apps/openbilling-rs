@@ -55,7 +55,7 @@ const fn refused_at(rule: Rule) -> Meaning {
 }
 
 /// Every SQLSTATE the migrations raise, and what it means.
-pub const LEDGER_SQLSTATES: [(&str, Meaning); 31] = [
+pub const LEDGER_SQLSTATES: [(&str, Meaning); 32] = [
     ("OB001", refused(Rule::CreditConflict)),
     ("OB002", refused(Rule::UnknownAccount)),
     ("OB003", refused(Rule::UnknownCurrency)),
@@ -87,6 +87,7 @@ pub const LEDGER_SQLSTATES: [(&str, Meaning); 31] = [
     ("OB901", Meaning::Fault(ErrorClass::Internal)),
     ("OB902", Meaning::Fault(ErrorClass::Internal)),
     ("OB903", Meaning::Fault(ErrorClass::Internal)),
+    ("OB904", Meaning::Fault(ErrorClass::Internal)),
 ];
 
 /// The rules no SQLSTATE raises: [`Rule::MalformedPriceList`], which the store's parser decides before anything
@@ -96,7 +97,8 @@ pub const RULES_DECIDED_IN_RUST: [Rule; 1] = [Rule::MalformedPriceList];
 /// What `code` means, among the ledger's own SQLSTATEs and the standard ones the ledger relies on:
 ///
 /// - `22003` (`numeric_value_out_of_range`): a debt past the largest amount, refused as `overflow`;
-/// - `40001` and `40P01` (serialization failure, deadlock): the same call may succeed, `unavailable`;
+/// - `40001` and `40P01` (serialization failure, deadlock), `55P03` (lock timeout) and `57014` (statement timeout): the
+///   same call may succeed, `unavailable`;
 /// - connection exceptions (`08`), insufficient resources (`53`) and operator intervention (`57P01` to `57P03`):
 ///   `unavailable`.
 ///
@@ -108,7 +110,7 @@ pub fn meaning_of(code: &str) -> Option<Meaning> {
     }
     match code {
         "22003" => Some(refused(Rule::Overflow)),
-        "40001" | "40P01" | "57P01" | "57P02" | "57P03" => {
+        "40001" | "40P01" | "55P03" | "57014" | "57P01" | "57P02" | "57P03" => {
             Some(Meaning::Fault(ErrorClass::Unavailable))
         }
         _ if code.starts_with("08") || code.starts_with("53") => {
@@ -233,14 +235,16 @@ mod tests {
                 "{code}"
             );
         }
-        for code in ["OB900", "OB901", "OB902", "OB903"] {
+        for code in ["OB900", "OB901", "OB902", "OB903", "OB904"] {
             assert_eq!(
                 meaning_of(code),
                 Some(Meaning::Fault(ErrorClass::Internal)),
                 "{code}"
             );
         }
-        for code in ["40001", "40P01", "08006", "53300", "57P01"] {
+        for code in [
+            "40001", "40P01", "55P03", "57014", "08006", "53300", "57P01",
+        ] {
             assert_eq!(
                 meaning_of(code),
                 Some(Meaning::Fault(ErrorClass::Unavailable)),

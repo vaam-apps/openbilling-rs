@@ -42,6 +42,10 @@ environment. No setting is read from both:
           debt_limit: at_or_above   # the debt against its limit
           balance: at_or_above      # the debt against the drawable credit
           member_cap: at_or_above   # a member's usage this month against the cap
+      Also retention.margin (default 90d, 1d to 3650d): how long after the 7-day intake window
+      a day's usage partition is dropped:
+        retention:
+          margin: 90d
   OPENBILLING_DATABASE_URL, or OPENBILLING_DATABASE_URL_FILE (a file holding it)
       The PostgreSQL 19 database. Never printed.
   OPENBILLING_LISTEN

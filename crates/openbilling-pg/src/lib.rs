@@ -26,7 +26,7 @@ pub mod sqlstate;
 pub use ledger::{LedgerSettings, NOTIFY_CHANNEL, PgLedger, QueueStats, Wakeup, Woken};
 
 /// The migrations, in order: hand-written SQL, embedded in the binary.
-const MIGRATIONS: [(i64, &str, &str); 8] = [
+const MIGRATIONS: [(i64, &str, &str); 9] = [
     (
         20_261_127_000_001,
         "configuration and accounts",
@@ -66,6 +66,11 @@ const MIGRATIONS: [(i64, &str, &str); 8] = [
         20_261_127_000_008,
         "allowed policy",
         include_str!("../migrations/20261127000008_allowed_policy.sql"),
+    ),
+    (
+        20_261_128_000_001,
+        "partition retention",
+        include_str!("../migrations/20261128000001_partition_retention.sql"),
     ),
 ];
 
