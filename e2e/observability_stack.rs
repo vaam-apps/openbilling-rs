@@ -1,7 +1,7 @@
 //! Scenario: the observability stack. The real `openbilling serve` exports over OTLP/HTTP to a real OpenTelemetry
 //! Collector, whose Prometheus exporter a real Prometheus scrapes (leg `scrape`) or whose `otlphttp` exporter pushes to
-//! Prometheus's OTLP receiver (leg `otlp`, `OBS_LEG` of run.sh; the assertions are the same), and a real Grafana reads Prometheus with the
-//! dashboards of `deploy/dashboards` provisioned unmodified. The test asks Prometheus and Grafana, over their HTTP
+//! Prometheus's OTLP receiver (leg `otlp`, `OBS_LEG` of run.sh; the assertions are the same), and a real Grafana reads
+//! Prometheus with the dashboards of `deploy/dashboards` provisioned unmodified. The test asks Prometheus and Grafana, over their HTTP
 //! APIs, what the dashboards and the shipped alert rules ask them.
 //!
 //! Gated: it needs the stack `tools/observability/run.sh` starts (which sets `OPENBILLING_OBS_OTLP_URL`,
@@ -229,6 +229,10 @@ async fn the_real_collector_prometheus_and_grafana_answer_what_the_dashboards_an
         );
         return;
     };
+    eprintln!(
+        "observability stack, leg {}",
+        setting("OPENBILLING_OBS_LEG").unwrap_or_else(|| "unknown".to_owned())
+    );
     let otlp =
         setting("OPENBILLING_OBS_OTLP_URL").unwrap_or_else(|| "http://127.0.0.1:4318".to_owned());
     let extra = vec![
