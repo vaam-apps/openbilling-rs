@@ -35,7 +35,7 @@ use tracing::Level;
 use openbilling_metrics::{Counter, Metrics};
 
 /// The fields that may be exported, and the attribute each becomes. Everything else is dropped.
-pub const FIELDS: [(&str, &str); 18] = [
+pub const FIELDS: [(&str, &str); 19] = [
     ("cratestack_route", "http.route"),
     ("cratestack_procedure", "cratestack.procedure"),
     ("cratestack_model", "cratestack.model"),
@@ -54,6 +54,7 @@ pub const FIELDS: [(&str, &str); 18] = [
     ("openbilling.events.refused", "openbilling.events.refused"),
     ("openbilling.error.class", "openbilling.error.class"),
     ("openbilling.mismatch.field", "openbilling.mismatch.field"),
+    ("openbilling.resolution", "openbilling.resolution"),
 ];
 
 /// The attribute a field name exports as, when it is allowed.

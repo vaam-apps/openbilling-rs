@@ -105,6 +105,8 @@ cases build the provider's answer themselves, as a `PaymentView`.
 | `a_last_read_still_pending_expires_it_and_a_late_settle_still_credits` | `expire_top_up` moves a pending, old enough top-up to expired once, not a young one; it is not claimed; a settle still credits it |
 | `expire_top_up_never_moves_a_settled_top_up` | A credited or canceled top-up answers `false`, is not claimed, and stays credited once |
 | `the_backstop_expires_only_what_had_a_last_read_attempt` | `expire_stale_top_ups` waits `stop_after + last_read_for` and moves only a top-up that was claimed for its last read; one never claimed stays pending and is claimed |
+| `a_mismatch_is_resolved_once_by_the_operators_choice` | `resolve_top_up`: a pending top-up and an unknown payment are refused; `CreditRecorded` books the recorded amount once, again is a replay, `Dismiss` after it is `ResolutionConflict`; `Dismiss` books nothing and is final the same way; a later settle answers the credit as a replay or the dismissal as the mismatch |
+| `an_unrecorded_mismatch_can_only_be_dismissed` | A mismatch no top-up was recorded for: `CreditRecorded` is `NoRecordedTerms` and books nothing; `Dismiss` closes it, and a record with its terms afterwards is `TopUpConflict` |
 | `successive_claims_cover_every_due_top_up_before_repeating` | With more due than a batch, claims take the least recently read first and cover all before any repeats |
 
 ## The payment provider suite

@@ -13,8 +13,9 @@ use openbilling_core::{
     IntakeReport, LedgerConfig, LedgerError, LedgerStore, Loaded, LotKind, LotView, MemberId,
     MismatchField, NewAccount, NotAllowed, Opened, OutcomeView, OwnerId, PartitionRetention,
     PaymentView, PriceBook, PriceVersionId, PriceVersionView, Rated, RawEvent, ReconcileSettings,
-    RefusalReason, RetentionMargin, RetentionReport, Reversal, Timestamp, TopUp, TopUpLedger,
-    TopUpSettled, UnrecordedTopUps, UsageEvent, UtcDay, UtcMonth, Window, WithinKind,
+    RefusalReason, Resolution, Resolved, RetentionMargin, RetentionReport, Reversal, Timestamp,
+    TopUp, TopUpLedger, TopUpSettled, UnrecordedTopUps, UsageEvent, UtcDay, UtcMonth, Window,
+    WithinKind,
 };
 use openbilling_metrics::{Counter, Gauge, Histogram, global};
 use sqlx::PgPool;
@@ -1127,6 +1128,64 @@ impl TopUpLedger for PgLedger {
             }
             _ => Err(corrupt()),
         }
+    }
+
+    #[tracing::instrument(name = "db.query", skip_all, fields(db.system = "postgresql", db.operation = "resolve_top_up"))]
+    #[allow(clippy::type_complexity)] // one row of `ob_resolve_top_up`, read once into locals
+    async fn resolve_top_up(
+        &self,
+        payment: &CreditId,
+        resolution: Resolution,
+        by: &OwnerId,
+    ) -> Result<Resolved, LedgerError> {
+        let (outcome, field, account, txn, replayed, repaid, debt_added): (
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            bool,
+            i64,
+            i64,
+        ) = sqlx::query_as(
+            "SELECT o_outcome, o_field, o_account_id, o_txn_id::text, o_replayed, o_repaid, o_debt_added \
+             FROM ob_resolve_top_up($1, $2, $3)",
+        )
+        .bind(payment.as_str())
+        .bind(resolution.as_str())
+        .bind(by.as_str())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(ledger_error)?;
+        let taken = Resolution::from_name(&outcome).ok_or_else(corrupt)?;
+        let field = MismatchField::from_name(&field).ok_or_else(corrupt)?;
+        let credited = match (taken, account, txn) {
+            (Resolution::CreditRecorded, Some(account), Some(txn)) => {
+                Some(credited((account, txn, replayed, repaid, debt_added))?)
+            }
+            (Resolution::Dismiss, None, None) => None,
+            _ => return Err(corrupt()),
+        };
+        // A closed pair of labels, never the payment, the owner or the operator (agent guide, rule 9).
+        global().add(
+            Counter::TopUpsResolved,
+            &[
+                ("outcome", taken.as_str()),
+                ("result", if replayed { "replayed" } else { "resolved" }),
+            ],
+            1,
+        );
+        tracing::info!(
+            openbilling.resolution = taken.as_str(),
+            openbilling.mismatch.field = field.as_str(),
+            replayed,
+            "an operator resolved a mismatched top-up"
+        );
+        Ok(Resolved {
+            resolution: taken,
+            field,
+            credited,
+            replayed,
+        })
     }
 
     #[tracing::instrument(name = "db.query", skip_all, fields(db.system = "postgresql", db.operation = "expire_pending_top_ups"))]
