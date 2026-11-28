@@ -34,6 +34,7 @@ url.workspace = true
 openbilling-telemetry = { path = ".", features = ["testkit"] }
 axum.workspace = true
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
+serde-saphyr.workspace = true
 tokio = { workspace = true, features = ["macros", "net", "rt", "rt-multi-thread", "time"] }
 
 [lints]
