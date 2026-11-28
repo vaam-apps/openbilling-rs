@@ -111,6 +111,10 @@ macro_rules! top_up_conformance {
             a_late_record_upgrades_an_unrecorded_payment_only_when_the_terms_agree,
             an_expired_top_up_is_not_claimed_and_is_still_settled,
             successive_claims_cover_every_due_top_up_before_repeating,
+            a_top_up_past_stop_after_is_claimed_once_for_a_last_read,
+            a_last_read_still_pending_expires_it_and_a_late_settle_still_credits,
+            expire_top_up_never_moves_a_settled_top_up,
+            the_backstop_expires_only_what_had_a_last_read_attempt,
         );
     };
 }

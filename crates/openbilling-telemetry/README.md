@@ -92,8 +92,8 @@ Names below are OTLP names; a Prometheus-compatible store has them as `openbilli
 | `openbilling.telemetry.exports` | counter | `signal` (`traces`, `metrics`, `logs`), `result` (`ok`, `failed`) | Export requests to the collector; `failed` is after the SDK's retries |
 | `openbilling.partitions.dropped` | counter | none | Usage partitions the retention job detached and dropped |
 | `openbilling.payments.mismatches` | counter | `field` (`owner`, `label`, `currency`, `amount`, `unrecorded`) | Payments read back that differ from the top-up recorded for them: nothing is credited. Counted once, where the ledger decides; also a warning with `openbilling.mismatch.field` and the class |
-| `openbilling.topups.reconciled` | counter | `outcome` (`credited`, `replayed`, `pending`, `not_ours`, `canceled`, `mismatch`, `error`) | Pending top-ups the reconciler read back |
-| `openbilling.topups.expired` | counter | none | Pending top-ups moved to `expired` for being older than `reconcile.stop_after`; a webhook or `reconcilePayment` still settles them |
+| `openbilling.topups.reconciled` | counter | `outcome` (`credited`, `replayed`, `pending`, `not_ours`, `canceled`, `mismatch`, `expired`, `error`) | Pending top-ups the reconciler read back, by due reads and last reads at `reconcile.stop_after` alike; `expired` is a last read that still found the top-up pending |
+| `openbilling.topups.expired` | counter | none | Pending top-ups moved to `expired` after a last read at `reconcile.stop_after` found them still pending (or, unread, because the provider said no such payment or, past `last_read_for`, a failing last read was given up); a webhook or `reconcilePayment` still settles them |
 | `openbilling.errors` | counter | `class` (`invalid`, `conflict`, `unavailable`, `internal`), `source` (`api`, `drain`, `partitions`, `retention`, `reconcile`) | Errors by class |
 | `http.server.request.duration` | histogram, s | `method`, `route`, `procedure`, `status` (`2xx` …) | Requests |
 | `db.client.operation.duration` | histogram, s | `operation` (a closed list, else `other`) | Ledger database operations |

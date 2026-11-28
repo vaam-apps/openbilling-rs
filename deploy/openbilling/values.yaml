@@ -67,8 +67,9 @@ openbilling:
     # top-ups were recorded, or one openbilling never asked for): `refuse` (the default: credit nothing, count a
     # mismatch) or `credit` (as before, from what the provider reports). `reconcile` says how the service reads back a
     # pending top-up whose webhook did not come: `pending_after: 15m` (not read before it is this old, `1s` to `7d`),
-    # `read_again_after: 15m` (`1s` to `1d`), `stop_after: 7d` (no longer read, `1m` to `90d`, longer than
-    # `pending_after`), `every: 1m` (a pass, `1s` to `1h`) and `batch: 100` (`1` to `1000`). Only with a payment provider.
+    # `read_again_after: 15m` (`1s` to `1d`), `stop_after: 7d` (a last read at this age, `1m` to `90d`, longer than
+    # `pending_after`; only a top-up still pending then is `expired`), `last_read_for: 1d` (how long a failing last read is
+    # retried, `1m` to `30d`, at least `read_again_after`), `every: 1m` (a pass, `1s` to `1h`) and `batch: 100` (`1` to `1000`). Only with a payment provider.
     # `vpay.token`, not set by default: the tunables of a vpay token the service mints itself (only with OPENBILLING_VPAY_CLIENT_ID and
     # OPENBILLING_VPAY_CLIENT_KEY_FILE in `controllers.main.containers.main.env`; the binary refuses them otherwise).
     # Each key is optional and left out here, so the adapter's default stands: `audience: vpay:v1`, `scope` none (vpay

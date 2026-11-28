@@ -93,6 +93,7 @@ fn due(batch: u32) -> openbilling_core::ReconcileSettings {
         read_again_after: std::time::Duration::ZERO,
         stop_after: std::time::Duration::from_secs(3600),
         batch,
+        ..Default::default()
     }
 }
 
@@ -397,4 +398,77 @@ async fn the_guard_allows_exactly_the_documented_transitions() {
     .execute(pool)
     .await
     .unwrap();
+}
+
+/// A webhook holding the row (its credit not yet committed) while the move to `expired` waits: the move re-reads the
+/// row once the lock is released, finds it credited, answers `false` and never reaches the guard (no `OB901`).
+#[tokio::test]
+async fn a_webhook_holding_the_row_while_a_top_up_is_expired_ends_credited() {
+    use openbilling_core::{Amount, CreditId, IdempotencyKey, PaymentTarget, TopUp, TopUpLedger};
+    use openbilling_testkit::fixtures::{eur, label, owner};
+    let Some(store) = support::fresh_store().await else {
+        return;
+    };
+    let ledger = PgLedger::new(&store, LedgerSettings::default());
+    setup(&ledger).await;
+    let pool = store.pool();
+    sqlx::query("SELECT ob_open_account('a1', 'o1', 'EUR', 'main')")
+        .execute(pool)
+        .await
+        .unwrap();
+    ledger
+        .record_top_up(&TopUp {
+            payment: CreditId::new("last").unwrap(),
+            key: IdempotencyKey::new("k-last").unwrap(),
+            to: PaymentTarget {
+                owner: owner("o1"),
+                label: label("main"),
+            },
+            currency: eur(),
+            amount: Amount::from_micros(9).unwrap(),
+        })
+        .await
+        .unwrap();
+    let settings = openbilling_core::ReconcileSettings {
+        stop_after: std::time::Duration::ZERO,
+        ..due(10)
+    };
+    let mut holder = pool.begin().await.unwrap();
+    sqlx::query(
+        "SELECT o_outcome FROM ob_settle_top_up('last', 'succeeded', 'o1', 'EUR', 'main', 9, 'refuse')",
+    )
+    .execute(&mut *holder)
+    .await
+    .unwrap();
+    let expire = tokio::spawn({
+        let ledger = ledger.clone();
+        async move {
+            ledger
+                .expire_top_up(&CreditId::new("last").unwrap(), &settings)
+                .await
+        }
+    });
+    let mut waiting = 0_i64;
+    for _ in 0..200 {
+        (waiting,) = sqlx::query_as(
+            "SELECT count(*) FROM pg_stat_activity \
+             WHERE wait_event_type = 'Lock' AND query LIKE '%ob_expire_top_up%'",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        if waiting == 1 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(waiting, 1, "the move waits for the held row");
+    holder.commit().await.unwrap();
+    assert!(!expire.await.unwrap().unwrap(), "settled meanwhile");
+    let (state,): (String,) =
+        sqlx::query_as("SELECT state FROM ob_top_up WHERE payment_id = 'last'")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    assert_eq!(state, "credited");
 }

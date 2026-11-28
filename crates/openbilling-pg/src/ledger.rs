@@ -1131,13 +1131,49 @@ impl TopUpLedger for PgLedger {
 
     #[tracing::instrument(name = "db.query", skip_all, fields(db.system = "postgresql", db.operation = "expire_pending_top_ups"))]
     async fn expire_stale_top_ups(&self, settings: &ReconcileSettings) -> Result<u64, LedgerError> {
-        let n: i64 = sqlx::query_scalar("SELECT ob_expire_pending_top_ups($1, $2)")
-            .bind(micros_of(settings.stop_after))
+        let stop_after = micros_of(settings.stop_after);
+        // The SQL adds the two: keep the sum inside `bigint`.
+        let last_read_for = micros_of(settings.last_read_for).min(i64::MAX - stop_after);
+        let n: i64 = sqlx::query_scalar("SELECT ob_expire_pending_top_ups($1, $2, $3)")
+            .bind(stop_after)
             .bind(i32::try_from(settings.batch).unwrap_or(i32::MAX))
+            .bind(last_read_for)
             .fetch_one(&self.pool)
             .await
             .map_err(ledger_error)?;
         u64::try_from(n).map_err(|_| corrupt())
+    }
+
+    #[tracing::instrument(name = "db.query", skip_all, fields(db.system = "postgresql", db.operation = "claim_expiring_top_ups"))]
+    async fn claim_expiring_top_ups(
+        &self,
+        settings: &ReconcileSettings,
+    ) -> Result<Vec<CreditId>, LedgerError> {
+        let ids: Vec<String> =
+            sqlx::query_scalar("SELECT o_payment_id FROM ob_claim_expiring_top_ups($1, $2, $3)")
+                .bind(micros_of(settings.stop_after))
+                .bind(micros_of(settings.read_again_after))
+                .bind(i32::try_from(settings.batch).unwrap_or(i32::MAX))
+                .fetch_all(&self.pool)
+                .await
+                .map_err(ledger_error)?;
+        ids.into_iter()
+            .map(|id| CreditId::new(id).map_err(|_| corrupt()))
+            .collect()
+    }
+
+    #[tracing::instrument(name = "db.query", skip_all, fields(db.system = "postgresql", db.operation = "expire_top_up"))]
+    async fn expire_top_up(
+        &self,
+        payment: &CreditId,
+        settings: &ReconcileSettings,
+    ) -> Result<bool, LedgerError> {
+        sqlx::query_scalar("SELECT ob_expire_top_up($1, $2)")
+            .bind(payment.as_str())
+            .bind(micros_of(settings.stop_after))
+            .fetch_one(&self.pool)
+            .await
+            .map_err(ledger_error)
     }
 
     #[tracing::instrument(name = "db.query", skip_all, fields(db.system = "postgresql", db.operation = "claim_pending_top_ups"))]

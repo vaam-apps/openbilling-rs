@@ -85,8 +85,8 @@ credit another amount. Points 3 and 4 are read with this note.
    (expired to credited, canceled or mismatched; the guard allows nothing else out of `expired`). Counted in
    `openbilling.topups.reconciled` (label `outcome`) and, for the move to `expired`, in `openbilling.topups.expired`
    (no labels). An expired top-up whose payment succeeded but whose webhook never came is **not credited automatically**: an
-   operator watches `openbilling.topups.expired` and settles it with `reconcilePayment`. A final read at expiry would
-   close that gap; it is not built.
+   operator watches `openbilling.topups.expired` and settles it with `reconcilePayment`. *(Superseded by the amendment
+   of 2026-11-28 (ANR-1473) below: a last read now comes before expiry.)*
 5. **Proven against the stand-in only**: the stand-in can change a payment's owner, label and amount after it was
    asked for, and the suites hold the behaviour above; vpay itself has not been asked (the sandbox workflow runs
    three cases that need no payer and none of these).
@@ -362,3 +362,29 @@ Added 2026-11-28 (ANR-1332), each *verified 2026-11-28* in vpay `7a9fee5` (`mast
 The webhook test vector (`crates/openbilling-vpay/tests/vectors/vpay-signature.hex`) is the HMAC-SHA256 of
 `1753401600.` and the body of vpay's own verifier tests under their secret, computed with `openssl dgst` on
 2026-11-27.
+
+*Amended 2026-11-28 (ANR-1473, one last read at expiry):* point 4's gap is closed. A pending top-up that reaches
+`reconcile.stop_after` is read back from the provider one last time and settled; only one **still pending at the
+provider** becomes `expired`, so `expired` keeps one meaning: a last read showed it unpaid. A paid top-up that never
+got a webhook ends `credited` with no operator. How: `ob_claim_expiring_top_ups` claims the pending rows at least
+`stop_after` old and not claimed in the last `read_again_after` (the same touch of `last_read_at`, `FOR UPDATE SKIP
+LOCKED`, disjoint from the due claim, which takes the rows younger than `stop_after`); each is settled as any read
+(credited, canceled or mismatched close it); a read that still says pending moves it with `ob_expire_top_up`, an
+update that matches only a row still pending and old enough, so a webhook that credited it meanwhile makes the move
+a no-op (`false`) and the guard is never reached. *Error policy (the review of the same day):* a last read expires a top-up unread only when
+the provider answers that the payment does not exist (`PaymentRefusal::NotFound`, vpay's `404`). Every other failure
+(unavailable, internal, any other refusal, and any ledger error after a successful read) leaves the row pending,
+counted as failed, and it is claimed again after `read_again_after`, which also covers a crash between claim and settle:
+a paid top-up never expires because a read failed. The backstop `ob_expire_pending_top_ups` stays, now at `stop_after +
+reconcile.last_read_for` (default 1d, `1m` to `30d`), but it moves a row only when a last read was **attempted**:
+`last_read_at >= created_at + stop_after`, which only `ob_claim_expiring_top_ups` sets on a row that old (the due claim
+takes younger rows). A row never claimed for its last read stays pending, however old, until it is; a pass claims the
+last reads before it runs the backstop. So the backstop gives up a top-up whose provider kept failing, never one that
+nobody tried to read. The scan is bounded: `ob_top_up_pending` bounds it to the pending rows older than the window, the
+attempt test is a filter on them, and they are the queue of last reads, which each pass works off oldest first.
+`last_read_for` must be at least `read_again_after` (the binary refuses the file at start, the chart refuses the values;
+the defaults, 1d and 15m, agree), or a failed last read could not be tried again before the backstop. A pass reads at most `2 * batch`
+payments (the last reads first, then the due ones). Metrics add no label: `openbilling.topups.reconciled` gains the
+outcome `expired` (a last read found it still pending) and its other outcomes count last reads too;
+`openbilling.topups.expired` counts every move to `expired`, after a last read, unread, or by the backstop. Proven
+against the stand-in only.

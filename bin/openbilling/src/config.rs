@@ -26,7 +26,8 @@
 //! reconcile:                  # reading back the pending top-ups whose webhook did not come (only with a payment provider)
 //!   pending_after: 15m        # a top-up is not read before it is this old; 1s to 7d
 //!   read_again_after: 15m     # read again after this long while still pending; 1s to 1d
-//!   stop_after: 7d            # older than this, it becomes `expired` and is no longer read (a webhook or reconcilePayment still settles it); 1m to 90d, above pending_after
+//!   stop_after: 7d            # at this age a top-up is read back one last time; only one still pending then becomes `expired` (a webhook or reconcilePayment still settles it); 1m to 90d, above pending_after
+//!   last_read_for: 1d         # after stop_after, how long a failing last read is retried; 1m to 30d, at least read_again_after
 //!   every: 1m                 # how often a pass runs; 1s to 1h
 //!   batch: 100                # the most top-ups a pass reads; 1 to 1000
 //! vpay:
@@ -155,6 +156,7 @@ struct ReconcileFile {
     pending_after: Option<String>,
     read_again_after: Option<String>,
     stop_after: Option<String>,
+    last_read_for: Option<String>,
     every: Option<String>,
     batch: Option<u32>,
 }
@@ -226,6 +228,14 @@ impl ReconcileFile {
             90 * 86_400,
             &mut settings.stop_after,
         )?;
+        span(
+            &self.last_read_for,
+            "last_read_for",
+            "1m to 30d",
+            60,
+            30 * 86_400,
+            &mut settings.last_read_for,
+        )?;
         let mut every = DEFAULT_RECONCILE_EVERY;
         span(&self.every, "every", "1s to 1h", 1, 3600, &mut every)?;
         if let Some(batch) = self.batch {
@@ -237,6 +247,12 @@ impl ReconcileFile {
         if settings.stop_after <= settings.pending_after {
             bail!(
                 "OPENBILLING_CONFIG: reconcile.stop_after must be longer than reconcile.pending_after"
+            );
+        }
+        if settings.last_read_for < settings.read_again_after {
+            bail!(
+                "OPENBILLING_CONFIG: reconcile.last_read_for must be at least reconcile.read_again_after, \
+                 or a failed last read would never be tried again before the top-up is expired"
             );
         }
         Ok((settings, every))
@@ -1042,15 +1058,18 @@ mod tests {
         assert_eq!(none.reconcile_every, Duration::from_secs(60));
         let set = parse_config(
             "payments: {unrecorded: credit}\nreconcile:\n  pending_after: 2m\n  read_again_after: 1h\n  \
-             stop_after: 90d\n  every: 1s\n  batch: 1000\n",
+             stop_after: 90d\n  last_read_for: 2h\n  every: 1s\n  batch: 1000\n",
         )
         .unwrap();
         assert_eq!(set.unrecorded_top_ups, UnrecordedTopUps::Credit);
         assert_eq!(set.reconcile.pending_after, Duration::from_secs(120));
         assert_eq!(set.reconcile.read_again_after, Duration::from_secs(3600));
         assert_eq!(set.reconcile.stop_after, Duration::from_secs(90 * 86_400));
+        assert_eq!(set.reconcile.last_read_for, Duration::from_secs(7200));
         assert_eq!(set.reconcile.batch, 1000);
         assert_eq!(set.reconcile_every, Duration::from_secs(1));
+        // The default `last_read_for` (1d) holds the largest `read_again_after` (1d), and equal is allowed.
+        assert!(parse_config("reconcile:\n  read_again_after: 1d\n").is_ok());
         for bad in [
             "payments:\n  unrecorded: hunter2\n",
             "payments:\n  unrecorded: Credit\n",
@@ -1064,6 +1083,10 @@ mod tests {
             "reconcile:\n  stop_after: 91d\n",
             "reconcile:\n  stop_after: 1h\n  pending_after: 1h\n",
             "reconcile:\n  pending_after: 7d\n  stop_after: 5d\n",
+            "reconcile:\n  last_read_for: 30s\n",
+            "reconcile:\n  read_again_after: 2h\n  last_read_for: 1h\n",
+            "reconcile:\n  last_read_for: 10m\n",
+            "reconcile:\n  last_read_for: 31d\n",
             "reconcile:\n  every: 0s\n",
             "reconcile:\n  every: 2h\n",
             "reconcile:\n  batch: 0\n",

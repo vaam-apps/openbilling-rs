@@ -177,6 +177,19 @@ impl TopUpLedger for DownLedger {
     ) -> Result<Vec<openbilling_core::CreditId>, LedgerError> {
         down()
     }
+    async fn claim_expiring_top_ups(
+        &self,
+        _: &ReconcileSettings,
+    ) -> Result<Vec<openbilling_core::CreditId>, LedgerError> {
+        down()
+    }
+    async fn expire_top_up(
+        &self,
+        _: &openbilling_core::CreditId,
+        _: &ReconcileSettings,
+    ) -> Result<bool, LedgerError> {
+        down()
+    }
     async fn expire_stale_top_ups(&self, _: &ReconcileSettings) -> Result<u64, LedgerError> {
         down()
     }
