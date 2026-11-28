@@ -1,0 +1,51 @@
+# The default thresholds of the dashboards' stat panels and of the shipped alert rules: one file, so a panel's colour
+# and the alert beside it never disagree. A signal turns "warning" at `warning` and "critical" at `critical` (both
+# inclusive, the values are in the signal's own unit). `for` is how long the condition must hold before the alert
+# fires. `window` is the range the alert's rates are taken over.
+#
+# A deployer changes them without editing this file: `python3 tools/dashboards/alerts.py --thresholds mine.toml`
+# reads a partial file in the same shape (only the signals and keys it names change; an unknown key, a value of the
+# wrong type, or a warning at or above its critical is refused) and writes the rules for them (`--out`).
+
+[defaults]
+window = "5m"
+
+[signals.http_5xx_ratio]
+warning = 0.001
+critical = 0.01
+for = "5m"
+
+[signals.http_4xx_ratio]
+warning = 0.05
+critical = 0.2
+for = "10m"
+
+[signals.allowed_refused_ratio]
+warning = 0.2
+critical = 0.5
+for = "10m"
+
+[signals.queue_backlog]
+warning = 10000
+critical = 100000
+for = "10m"
+
+[signals.queue_oldest_age_seconds]
+warning = 30
+critical = 300
+for = "5m"
+
+[signals.drain_lag_seconds]
+warning = 30
+critical = 120
+for = "5m"
+
+[signals.drain_error_ratio]
+warning = 0.01
+critical = 0.1
+for = "5m"
+
+[signals.pool_used_ratio]
+warning = 0.7
+critical = 0.9
+for = "10m"

@@ -6,6 +6,7 @@ Every metric is the Prometheus name of an instrument of the service (crates/open
 (crates/openbilling-telemetry/tests/dashboards.rs) holds each query to that list.
 """
 
+import thresholds
 from lib import dashboard, row, stat, timeseries, write
 
 PANELS = [
@@ -16,7 +17,7 @@ PANELS = [
         (0, 1, 6, 5),
         ['max(openbilling_queue_backlog{job=~"$job"})'],
         unit='short',
-        steps=[(None, 'green'), (10000, 'orange'), (100000, 'red')],
+        steps=thresholds.steps('queue_backlog'),
     ),
     stat(
         'Oldest event age',
@@ -24,7 +25,7 @@ PANELS = [
         (6, 1, 6, 5),
         ['max(openbilling_queue_oldest_age_seconds{job=~"$job"})'],
         unit='s',
-        steps=[(None, 'green'), (30, 'orange'), (300, 'red')],
+        steps=thresholds.steps('queue_oldest_age_seconds'),
     ),
     stat(
         'Drain lag',
@@ -32,7 +33,7 @@ PANELS = [
         (12, 1, 6, 5),
         ['max(openbilling_drain_lag_seconds{job=~"$job"})'],
         unit='s',
-        steps=[(None, 'green'), (30, 'orange'), (120, 'red')],
+        steps=thresholds.steps('drain_lag_seconds'),
     ),
     stat(
         'Drain error ratio',
@@ -40,7 +41,7 @@ PANELS = [
         (18, 1, 6, 5),
         ['sum(rate(openbilling_drain_runs_total{job=~"$job",result="error"}[$__rate_interval])) / sum(rate(openbilling_drain_runs_total{job=~"$job"}[$__rate_interval]))'],
         unit='percentunit',
-        steps=[(None, 'green'), (0.01, 'orange'), (0.1, 'red')],
+        steps=thresholds.steps('drain_error_ratio'),
     ),
     timeseries(
         'Backlog and oldest age',
@@ -99,7 +100,7 @@ PANELS = [
         (12, 32, 6, 8),
         ['sum(db_client_connection_count{job=~"$job",state="used"}) / sum(db_client_connection_max{job=~"$job"})'],
         unit='percentunit',
-        steps=[(None, 'green'), (0.7, 'orange'), (0.9, 'red')], minimum=0,
+        steps=thresholds.steps('pool_used_ratio'), minimum=0,
     ),
     timeseries(
         'Database operations per second',
