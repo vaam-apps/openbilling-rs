@@ -30,6 +30,7 @@ tracing.workspace = true
 [dev-dependencies]
 openbilling-core.workspace = true
 openbilling-jwt = { workspace = true, features = ["test-issuer"] }
+openbilling-sdk.workspace = true
 openbilling-telemetry = { workspace = true, features = ["testkit"] }
 openbilling-testkit.workspace = true
 openbilling-vpay = { workspace = true, features = ["stand-in"] }

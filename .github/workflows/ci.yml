@@ -146,6 +146,35 @@ jobs:
       - name: The rules fire at their thresholds
         run: promtool test rules tools/dashboards/tests/alerts.test.yaml
 
+  sdk:
+    name: SDK (schema copy, publish dry run)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      CRATESTACK_REQUIRE_VERSION: "0.20.6"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The SDK's typed client is generated from its own copy of the server's schema (ADR 0008): the copy is the
+      # server's, byte for byte, and CrateStack's CLI accepts it.
+      - name: The SDK's schema is the server's
+        run: |
+          cmp crates/openbilling-http/schema/openbilling.cstack crates/openbilling-sdk/schema/openbilling.cstack \
+            || { echo "::error::crates/openbilling-sdk/schema/openbilling.cstack differs from the server's: cp crates/openbilling-http/schema/openbilling.cstack crates/openbilling-sdk/schema/ and commit"; exit 1; }
+      - name: Install the CrateStack CLI
+        run: npm install --global @cratestack/cli@0.20.6
+      - name: The copy passes the schema checks
+        run: cratestack check --schema crates/openbilling-sdk/schema/openbilling.cstack
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master, 2026-11-14
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # Packages the crate, builds the package on its own (no path into the repository may be needed) and stops short of
+      # uploading. It needs no credential.
+      - name: cargo publish --dry-run
+        run: cargo publish --dry-run -p openbilling-sdk --locked
+
   deny:
     name: Dependencies (cargo deny)
     runs-on: ubuntu-24.04
