@@ -102,7 +102,8 @@ The refusals values cannot say. Each names the value to change. Run before the c
   {{- end -}}
 
   {{- /* reconcile: which pending top-ups the service reads back from the provider, and how often. Each span is
-  digits and one of s, m, h or d, no leading zero, inside its range; stop_after is longer than pending_after. */ -}}
+  digits and one of s, m, h or d, no leading zero, inside its range; stop_after is longer than pending_after and
+  last_read_for is at least read_again_after. */ -}}
   {{- $reconcile := dig "reconcile" dict $config -}}
   {{- if not (kindIs "map" $reconcile) -}}
     {{- fail "openbilling.config.reconcile: a map of pending_after, read_again_after, stop_after, last_read_for, every and batch" -}}
@@ -136,6 +137,9 @@ The refusals values cannot say. Each names the value to change. Run before the c
   {{- end -}}
   {{- if le (int (dig "stop_after" 604800 $seconds)) (int (dig "pending_after" 900 $seconds)) -}}
     {{- fail "openbilling.config.reconcile.stop_after: longer than reconcile.pending_after" -}}
+  {{- end -}}
+  {{- if lt (int (dig "last_read_for" 86400 $seconds)) (int (dig "read_again_after" 900 $seconds)) -}}
+    {{- fail "openbilling.config.reconcile.last_read_for: at least reconcile.read_again_after" -}}
   {{- end -}}
 
   {{- /* vpay.token: the tunables of a minted vpay token (the binary also refuses them without a client key). */ -}}

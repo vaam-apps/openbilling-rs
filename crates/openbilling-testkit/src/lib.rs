@@ -114,7 +114,7 @@ macro_rules! top_up_conformance {
             a_top_up_past_stop_after_is_claimed_once_for_a_last_read,
             a_last_read_still_pending_expires_it_and_a_late_settle_still_credits,
             expire_top_up_never_moves_a_settled_top_up,
-            the_backstop_expires_unread_ones_after_last_read_for,
+            the_backstop_expires_only_what_had_a_last_read_attempt,
         );
     };
 }

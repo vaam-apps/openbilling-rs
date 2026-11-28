@@ -348,8 +348,24 @@ async fn the_reconciler_and_a_webhook_credit_a_paid_top_up_once() {
     assert_eq!(available(&ledger).await, 3 * f.amount().micros());
 }
 
+/// Windows in which a top-up is past `stop_after` once `OLD` has gone by: a stall in CI can only make it older, and
+/// every assertion below holds for a top-up that is older still.
+const SHORT_STOP: std::time::Duration = std::time::Duration::from_millis(20);
+const OLD: std::time::Duration = std::time::Duration::from_millis(150);
+
+fn last_read_settings(last_read_for: std::time::Duration) -> ReconcileSettings {
+    ReconcileSettings {
+        pending_after: std::time::Duration::ZERO,
+        read_again_after: std::time::Duration::from_secs(3600),
+        stop_after: SHORT_STOP,
+        last_read_for,
+        batch: 100,
+    }
+}
+
 /// A paid top-up that never got a webhook ends credited by the pass that reaches its `stop_after`, with no operator;
-/// an unpaid one ends `expired`, and a second pass books nothing more.
+/// an unpaid one ends `expired`, and a second pass books nothing more. The backstop's window is as short as it can be:
+/// the last read is still claimed first, so the paid one is read, not expired.
 #[tokio::test]
 async fn a_paid_top_up_with_no_webhook_ends_credited_after_expiry() {
     let Some((ledger, f)) = ready().await else {
@@ -358,20 +374,18 @@ async fn a_paid_top_up_with_no_webhook_ends_credited_after_expiry() {
     let paid = start(&ledger, &f, "k-late-paid").await;
     let unpaid = start(&ledger, &f, "k-late-unpaid").await;
     f.pay(&paid.payment).await;
-    let settings = ReconcileSettings {
-        pending_after: std::time::Duration::from_millis(10),
-        read_again_after: std::time::Duration::from_secs(3600),
-        stop_after: std::time::Duration::from_millis(50),
-        last_read_for: std::time::Duration::from_secs(3600),
-        batch: 100,
-    };
-    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+    let settings = last_read_settings(std::time::Duration::from_millis(10));
+    tokio::time::sleep(OLD).await;
     let report = reconcile_pending(&ledger, &f.provider, &settings)
         .await
         .unwrap();
     assert_eq!(report.last.credited, 1, "{report:?}");
     assert_eq!(report.last.pending, 1, "the unpaid one expires: {report:?}");
     assert_eq!(report.expired_unread, 0);
+    assert_eq!(
+        report.expired, 0,
+        "the backstop found nothing unread: {report:?}"
+    );
     assert_eq!(available(&ledger).await, f.amount().micros());
     let again = reconcile_pending(&ledger, &f.provider, &settings)
         .await
@@ -387,4 +401,101 @@ async fn a_paid_top_up_with_no_webhook_ends_credited_after_expiry() {
         Settled::Credited(_)
     ));
     assert_eq!(available(&ledger).await, 2 * f.amount().micros());
+}
+
+/// A provider that fails the first read of every payment with a scripted error, then answers as the stand-in does.
+struct FailsFirst<'a> {
+    inner: &'a openbilling_vpay::VpayProvider,
+    error: fn() -> openbilling_core::PaymentError,
+    failed: std::sync::atomic::AtomicBool,
+}
+
+impl PaymentProvider for FailsFirst<'_> {
+    fn name(&self) -> &'static str {
+        self.inner.name()
+    }
+    async fn create_payment(
+        &self,
+        request: &openbilling_core::PaymentRequest,
+    ) -> Result<CreatedPayment, openbilling_core::PaymentError> {
+        self.inner.create_payment(request).await
+    }
+    async fn read_payment(
+        &self,
+        id: &openbilling_core::CreditId,
+    ) -> Result<openbilling_core::PaymentView, openbilling_core::PaymentError> {
+        if !self.failed.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            return Err((self.error)());
+        }
+        self.inner.read_payment(id).await
+    }
+    async fn read_refund(
+        &self,
+        id: &openbilling_core::CreditId,
+    ) -> Result<openbilling_core::RefundView, openbilling_core::PaymentError> {
+        self.inner.read_refund(id).await
+    }
+    fn verify_webhook(
+        &self,
+        headers: &openbilling_core::WebhookHeaders,
+        body: &[u8],
+        now: openbilling_core::Timestamp,
+    ) -> Result<openbilling_core::WebhookHint, openbilling_core::PaymentError> {
+        self.inner.verify_webhook(headers, body, now)
+    }
+}
+
+/// A paid top-up whose last read fails (the provider internal, unavailable, or any refusal but "not found") stays
+/// pending, and the next pass that may read it again credits it: it is never expired unread while the backstop's
+/// window (`last_read_for`) runs.
+#[tokio::test]
+async fn a_failed_last_read_leaves_a_paid_top_up_pending_and_a_later_read_credits_it() {
+    let Some((ledger, f)) = ready().await else {
+        return;
+    };
+    let paid = start(&ledger, &f, "k-flaky").await;
+    f.pay(&paid.payment).await;
+    let flaky = FailsFirst {
+        inner: &f.provider,
+        error: || openbilling_core::PaymentError::Provider {
+            class: openbilling_core::ErrorClass::Internal,
+            source: Box::new(std::io::Error::other("boom")),
+        },
+        failed: std::sync::atomic::AtomicBool::new(false),
+    };
+    // `read_again_after` is zero so the next pass may read it at once; the backstop's window is long, as it is in
+    // production (a day against a quarter of an hour): the one failed attempt is retried, not given up on.
+    let settings = ReconcileSettings {
+        read_again_after: std::time::Duration::ZERO,
+        ..last_read_settings(std::time::Duration::from_secs(3600))
+    };
+    tokio::time::sleep(OLD).await;
+    let first = reconcile_pending(&ledger, &flaky, &settings).await.unwrap();
+    assert_eq!(first.last.failed, 1, "{first:?}");
+    assert_eq!((first.expired_unread, first.expired), (0, 0), "{first:?}");
+    assert_eq!(available(&ledger).await, 0, "still pending");
+    let second = reconcile_pending(&ledger, &flaky, &settings).await.unwrap();
+    assert_eq!(second.last.credited, 1, "{second:?}");
+    assert_eq!(available(&ledger).await, f.amount().micros());
+}
+
+/// A top-up that nothing read past `stop_after + last_read_for` is claimed for its last read and credited by the pass
+/// that finds it, not expired by the backstop.
+#[tokio::test]
+async fn a_top_up_never_read_past_the_backstop_window_is_read_not_expired() {
+    let Some((ledger, f)) = ready().await else {
+        return;
+    };
+    let paid = start(&ledger, &f, "k-never-read").await;
+    f.pay(&paid.payment).await;
+    tokio::time::sleep(OLD).await;
+    let report = reconcile_pending(
+        &ledger,
+        &f.provider,
+        &last_read_settings(std::time::Duration::from_millis(10)),
+    )
+    .await
+    .unwrap();
+    assert_eq!((report.last.credited, report.expired), (1, 0), "{report:?}");
+    assert_eq!(available(&ledger).await, f.amount().micros());
 }

@@ -27,7 +27,7 @@
 //!   pending_after: 15m        # a top-up is not read before it is this old; 1s to 7d
 //!   read_again_after: 15m     # read again after this long while still pending; 1s to 1d
 //!   stop_after: 7d            # at this age a top-up is read back one last time; only one still pending then becomes `expired` (a webhook or reconcilePayment still settles it); 1m to 90d, above pending_after
-//!   last_read_for: 1d         # after stop_after, how long a failing last read is retried before the top-up is expired unread; 1m to 30d
+//!   last_read_for: 1d         # after stop_after, how long a failing last read is retried; 1m to 30d, at least read_again_after
 //!   every: 1m                 # how often a pass runs; 1s to 1h
 //!   batch: 100                # the most top-ups a pass reads; 1 to 1000
 //! vpay:
@@ -247,6 +247,12 @@ impl ReconcileFile {
         if settings.stop_after <= settings.pending_after {
             bail!(
                 "OPENBILLING_CONFIG: reconcile.stop_after must be longer than reconcile.pending_after"
+            );
+        }
+        if settings.last_read_for < settings.read_again_after {
+            bail!(
+                "OPENBILLING_CONFIG: reconcile.last_read_for must be at least reconcile.read_again_after, \
+                 or a failed last read would never be tried again before the top-up is expired"
             );
         }
         Ok((settings, every))
@@ -1062,6 +1068,8 @@ mod tests {
         assert_eq!(set.reconcile.last_read_for, Duration::from_secs(7200));
         assert_eq!(set.reconcile.batch, 1000);
         assert_eq!(set.reconcile_every, Duration::from_secs(1));
+        // The default `last_read_for` (1d) holds the largest `read_again_after` (1d), and equal is allowed.
+        assert!(parse_config("reconcile:\n  read_again_after: 1d\n").is_ok());
         for bad in [
             "payments:\n  unrecorded: hunter2\n",
             "payments:\n  unrecorded: Credit\n",
@@ -1076,6 +1084,8 @@ mod tests {
             "reconcile:\n  stop_after: 1h\n  pending_after: 1h\n",
             "reconcile:\n  pending_after: 7d\n  stop_after: 5d\n",
             "reconcile:\n  last_read_for: 30s\n",
+            "reconcile:\n  read_again_after: 2h\n  last_read_for: 1h\n",
+            "reconcile:\n  last_read_for: 10m\n",
             "reconcile:\n  last_read_for: 31d\n",
             "reconcile:\n  every: 0s\n",
             "reconcile:\n  every: 2h\n",

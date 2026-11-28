@@ -43,3 +43,37 @@ BEGIN ATOMIC
         RETURNING 1)
     SELECT count(*) = 1 FROM moved;
 END;
+
+-- The backstop of `20261128000002_top_ups.sql`, replaced by a function that also takes `last_read_for` (the old two-argument
+-- one is dropped, so a caller of it fails loudly): it moves a pending top-up to `expired` without a read in
+-- this call only when it is at least `p_stop_after_micros + p_last_read_for_micros` old AND a last read was at least
+-- attempted: `last_read_at >= created_at + stop_after`, which only `ob_claim_expiring_top_ups` can set once the top-up
+-- reached `stop_after` (the due claim only touches younger ones, and a settle moves the row out of `pending`). A
+-- top-up never claimed for its last read therefore stays pending until it is, however old: a paid payment is never
+-- given up unread. The index `ob_top_up_pending` bounds the scan to the pending rows older than the window; the
+-- attempt test is a filter on those, and they are exactly the rows queued for a last read, which each pass works off
+-- (`ob_claim_expiring_top_ups` takes the oldest first), so the scan is bounded by that queue. Plain SQL: a
+-- SQL-standard body.
+DROP FUNCTION ob_expire_pending_top_ups(bigint, integer);
+CREATE FUNCTION ob_expire_pending_top_ups(p_stop_after_micros bigint, p_limit integer,
+                                                     p_last_read_for_micros bigint)
+    RETURNS bigint
+    LANGUAGE sql
+BEGIN ATOMIC
+    WITH stale AS MATERIALIZED (
+        SELECT d.payment_id FROM ob_top_up d
+        WHERE d.state = 'pending'
+          AND d.created_at <= now() - (make_interval(secs => ((p_stop_after_micros + p_last_read_for_micros) / 1000000)::double precision)
+                                       + ((p_stop_after_micros + p_last_read_for_micros) % 1000000) * interval '1 microsecond')
+          AND d.last_read_at >= d.created_at + (make_interval(secs => (p_stop_after_micros / 1000000)::double precision)
+                                                + (p_stop_after_micros % 1000000) * interval '1 microsecond')
+        ORDER BY d.created_at
+        LIMIT p_limit
+        FOR UPDATE SKIP LOCKED),
+    moved AS (
+        UPDATE ob_top_up t SET state = 'expired'
+        FROM stale s
+        WHERE t.payment_id = s.payment_id
+        RETURNING 1)
+    SELECT count(*) FROM moved;
+END;

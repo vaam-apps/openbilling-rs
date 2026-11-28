@@ -218,7 +218,7 @@ async fn reconcile_forever(
                     }
                 }
                 // Every top-up moved to `expired` this pass: after a last read that found it pending, unread because the
-                // read failed for good, or by the backstop.
+                // provider said there is no such payment, or by the backstop.
                 let expired = report.expired
                     + u64::from(report.last.pending)
                     + u64::from(report.expired_unread);

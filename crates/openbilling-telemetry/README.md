@@ -93,7 +93,7 @@ Names below are OTLP names; a Prometheus-compatible store has them as `openbilli
 | `openbilling.partitions.dropped` | counter | none | Usage partitions the retention job detached and dropped |
 | `openbilling.payments.mismatches` | counter | `field` (`owner`, `label`, `currency`, `amount`, `unrecorded`) | Payments read back that differ from the top-up recorded for them: nothing is credited. Counted once, where the ledger decides; also a warning with `openbilling.mismatch.field` and the class |
 | `openbilling.topups.reconciled` | counter | `outcome` (`credited`, `pending`, `canceled`, `mismatch`, `error`) | Pending top-ups the reconciler read back |
-| `openbilling.topups.expired` | counter | none | Pending top-ups moved to `expired` after a last read at `reconcile.stop_after` found them still pending (or, past `last_read_for`, unread); a webhook or `reconcilePayment` still settles them |
+| `openbilling.topups.expired` | counter | none | Pending top-ups moved to `expired` after a last read at `reconcile.stop_after` found them still pending (or, unread, because the provider said no such payment or, past `last_read_for`, a failing last read was given up); a webhook or `reconcilePayment` still settles them |
 | `openbilling.errors` | counter | `class` (`invalid`, `conflict`, `unavailable`, `internal`), `source` (`api`, `drain`, `partitions`, `retention`, `reconcile`) | Errors by class |
 | `http.server.request.duration` | histogram, s | `method`, `route`, `procedure`, `status` (`2xx` …) | Requests |
 | `db.client.operation.duration` | histogram, s | `operation` (a closed list, else `other`) | Ledger database operations |

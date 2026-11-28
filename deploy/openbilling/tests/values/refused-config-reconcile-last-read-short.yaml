@@ -1,0 +1,6 @@
+# expect: openbilling.config.reconcile.last_read_for: at least reconcile.read_again_after
+openbilling:
+  config:
+    reconcile:
+      read_again_after: 2h
+      last_read_for: 1h

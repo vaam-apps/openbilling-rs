@@ -371,10 +371,19 @@ got a webhook ends `credited` with no operator. How: `ob_claim_expiring_top_ups`
 LOCKED`, disjoint from the due claim, which takes the rows younger than `stop_after`); each is settled as any read
 (credited, canceled or mismatched close it); a read that still says pending moves it with `ob_expire_top_up`, an
 update that matches only a row still pending and old enough, so a webhook that credited it meanwhile makes the move
-a no-op (`false`) and the guard is never reached. A read that fails as `unavailable` leaves the row pending (it is
-claimed again after `read_again_after`, which also covers a crash between claim and settle); any other failure expires
-it unread. The backstop `ob_expire_pending_top_ups` stays, now at `stop_after + reconcile.last_read_for` (default 1d,
-`1m` to `30d`), so a provider that keeps failing does not keep a row pending for ever. A pass reads at most `2 * batch`
+a no-op (`false`) and the guard is never reached. *Error policy (the review of the same day):* a last read expires a top-up unread only when
+the provider answers that the payment does not exist (`PaymentRefusal::NotFound`, vpay's `404`). Every other failure
+(unavailable, internal, any other refusal, and any ledger error after a successful read) leaves the row pending,
+counted as failed, and it is claimed again after `read_again_after`, which also covers a crash between claim and settle:
+a paid top-up never expires because a read failed. The backstop `ob_expire_pending_top_ups` stays, now at `stop_after +
+reconcile.last_read_for` (default 1d, `1m` to `30d`), but it moves a row only when a last read was **attempted**:
+`last_read_at >= created_at + stop_after`, which only `ob_claim_expiring_top_ups` sets on a row that old (the due claim
+takes younger rows). A row never claimed for its last read stays pending, however old, until it is; a pass claims the
+last reads before it runs the backstop. So the backstop gives up a top-up whose provider kept failing, never one that
+nobody tried to read. The scan is bounded: `ob_top_up_pending` bounds it to the pending rows older than the window, the
+attempt test is a filter on them, and they are the queue of last reads, which each pass works off oldest first.
+`last_read_for` must be at least `read_again_after` (the binary refuses the file at start, the chart refuses the values;
+the defaults, 1d and 15m, agree), or a failed last read could not be tried again before the backstop. A pass reads at most `2 * batch`
 payments (the last reads first, then the due ones). Metrics add no label: `openbilling.topups.reconciled` gains the
 outcome `expired` (a last read found it still pending) and its other outcomes count last reads too;
 `openbilling.topups.expired` counts every move to `expired`, after a last read, unread, or by the backstop. Proven

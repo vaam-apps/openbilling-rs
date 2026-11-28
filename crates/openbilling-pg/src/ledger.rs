@@ -1131,11 +1131,13 @@ impl TopUpLedger for PgLedger {
 
     #[tracing::instrument(name = "db.query", skip_all, fields(db.system = "postgresql", db.operation = "expire_pending_top_ups"))]
     async fn expire_stale_top_ups(&self, settings: &ReconcileSettings) -> Result<u64, LedgerError> {
-        let n: i64 = sqlx::query_scalar("SELECT ob_expire_pending_top_ups($1, $2)")
-            .bind(micros_of(
-                settings.stop_after.saturating_add(settings.last_read_for),
-            ))
+        let stop_after = micros_of(settings.stop_after);
+        // The SQL adds the two: keep the sum inside `bigint`.
+        let last_read_for = micros_of(settings.last_read_for).min(i64::MAX - stop_after);
+        let n: i64 = sqlx::query_scalar("SELECT ob_expire_pending_top_ups($1, $2, $3)")
+            .bind(stop_after)
             .bind(i32::try_from(settings.batch).unwrap_or(i32::MAX))
+            .bind(last_read_for)
             .fetch_one(&self.pool)
             .await
             .map_err(ledger_error)?;
