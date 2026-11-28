@@ -32,6 +32,12 @@ const EXPECTED_EMPTY: [&str; 4] = [
 /// Metrics the dashboards query that have no series after this workload, for the same reason.
 const EXPECTED_ABSENT: [&str; 1] = ["openbilling_telemetry_dropped_total"];
 
+/// What the files of `deploy/dashboards` hold today (two dashboards): the panels that have targets, and the targets.
+/// A floor, so that a test which found nothing to check cannot pass; raise it with the dashboards.
+const MIN_DASHBOARDS: usize = 2;
+const MIN_PANELS: usize = 26;
+const MIN_TARGETS: usize = 31;
+
 struct Stack {
     http: reqwest::Client,
     prometheus: String,
@@ -159,10 +165,9 @@ fn panel_queries(dashboard: &Value) -> Vec<(String, Vec<Value>)> {
         .unwrap()
         .iter()
         .filter(|p| p["type"] != "row")
-        .map(|panel| {
-            let queries = panel["targets"]
-                .as_array()
-                .unwrap()
+        .filter_map(|panel| {
+            let targets = panel["targets"].as_array().filter(|t| !t.is_empty())?;
+            let queries = targets
                 .iter()
                 .map(|t| {
                     json!({
@@ -176,7 +181,7 @@ fn panel_queries(dashboard: &Value) -> Vec<(String, Vec<Value>)> {
                     })
                 })
                 .collect();
-            (panel["title"].as_str().unwrap().to_owned(), queries)
+            Some((panel["title"].as_str().unwrap().to_owned(), queries))
         })
         .collect()
 }
@@ -290,15 +295,32 @@ async fn the_real_collector_prometheus_and_grafana_answer_what_the_dashboards_an
 
     // Every metric a dashboard queries has a series, bar the ones that cannot have one yet.
     let present = stack.names().await;
-    for (file, dashboard) in dashboards() {
+    let all = dashboards();
+    assert!(
+        all.len() >= MIN_DASHBOARDS,
+        "{} dashboards found in deploy/dashboards, expected at least {MIN_DASHBOARDS}",
+        all.len()
+    );
+    let mut targets_seen = 0;
+    let mut absent_used = BTreeSet::new();
+    for (file, dashboard) in &all {
         for panel in dashboard["panels"].as_array().unwrap() {
             for target in panel["targets"].as_array().into_iter().flatten() {
+                targets_seen += 1;
                 for name in metric_tokens(target["expr"].as_str().unwrap()) {
                     if name == "openbilling_errors_total" {
                         continue; // phase B
                     }
+                    if EXPECTED_ABSENT.contains(&name.as_str()) {
+                        assert!(
+                            !present.contains(&name),
+                            "{name} is no longer absent: remove it from EXPECTED_ABSENT"
+                        );
+                        absent_used.insert(name);
+                        continue;
+                    }
                     assert!(
-                        present.contains(&name) || EXPECTED_ABSENT.contains(&name.as_str()),
+                        present.contains(&name),
                         "{file}: panel {:?} queries {name}, which Prometheus does not have",
                         panel["title"]
                     );
@@ -306,8 +328,29 @@ async fn the_real_collector_prometheus_and_grafana_answer_what_the_dashboards_an
             }
         }
     }
+    assert!(
+        targets_seen >= MIN_TARGETS,
+        "{targets_seen} targets checked, expected at least {MIN_TARGETS}"
+    );
+    for name in EXPECTED_ABSENT {
+        assert!(
+            absent_used.contains(name),
+            "EXPECTED_ABSENT lists {name}, which no dashboard queries"
+        );
+    }
 
     // Counters that must not exist after a clean run, and exports that must have worked.
+    // A name the code does not list would also be "empty": each must be a real instrument first.
+    for name in [
+        "openbilling_partitions_dropped_total",
+        "openbilling_telemetry_exports_total",
+        "openbilling_errors_total",
+    ] {
+        assert!(
+            exposed.contains(name),
+            "{name} is not in exposed_names(): the assertion below would pass on a misspelling"
+        );
+    }
     assert!(
         stack
             .query(r#"openbilling_partitions_dropped_total"#)
@@ -388,7 +431,9 @@ async fn the_real_collector_prometheus_and_grafana_answer_what_the_dashboards_an
     let ms = |at: SystemTime| at.duration_since(UNIX_EPOCH).unwrap().as_millis();
     let to = SystemTime::now();
     let from = to - Duration::from_secs(300);
-    for (file, dashboard) in dashboards() {
+    let mut panels_checked = 0;
+    let mut empty_used = BTreeSet::new();
+    for (file, dashboard) in &all {
         let uid = dashboard["uid"].as_str().unwrap();
         let (status, found) = stack
             .grafana_get(&format!("/api/dashboards/uid/{uid}"))
@@ -399,7 +444,8 @@ async fn the_real_collector_prometheus_and_grafana_answer_what_the_dashboards_an
             dashboard["panels"].as_array().unwrap().len(),
             "{file}: panels in Grafana and in the file"
         );
-        for (title, queries) in panel_queries(&dashboard) {
+        for (title, queries) in panel_queries(dashboard) {
+            panels_checked += 1;
             let body = json!({
                 "queries": queries,
                 "from": ms(from).to_string(),
@@ -429,6 +475,7 @@ async fn the_real_collector_prometheus_and_grafana_answer_what_the_dashboards_an
                     !has_value(&answer),
                     "{file}: panel {title:?} is no longer empty: {answer}"
                 );
+                empty_used.insert(title);
                 continue;
             }
             assert!(
@@ -437,5 +484,15 @@ async fn the_real_collector_prometheus_and_grafana_answer_what_the_dashboards_an
                 json!({"queries": queries, "answer": answer})
             );
         }
+    }
+    assert!(
+        panels_checked >= MIN_PANELS,
+        "{panels_checked} panels checked, expected at least {MIN_PANELS}"
+    );
+    for title in EXPECTED_EMPTY {
+        assert!(
+            empty_used.contains(title),
+            "EXPECTED_EMPTY lists {title:?}, which no panel has"
+        );
     }
 }
