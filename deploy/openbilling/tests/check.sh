@@ -72,7 +72,8 @@ accepted="defaults||
 full|$here/values/full.yaml|--require-digest
 edge-with-digest|$here/values/edge-with-digest.yaml|--require-digest
 otel|$here/values/otel.yaml|
-vpay-token|$here/values/vpay-token.yaml|"
+vpay-token|$here/values/vpay-token.yaml|
+payments|$here/values/payments.yaml|"
 
 printf '%s\n' "$accepted" | while IFS='|' read -r name values flags; do
     set --
@@ -139,7 +140,7 @@ retention:
     config_of "$work/full.yaml" >&2
     die "full.yaml's configuration file is not its own"
 }
-for name in defaults full edge-with-digest; do
+for name in defaults full edge-with-digest payments; do
     awk '
         /-[[:space:]]+name:[[:space:]]+OPENBILLING_CONFIG[[:space:]]*$/ {
             if ((getline line) > 0 && line ~ /^[[:space:]]+value:[[:space:]]*"?\/etc\/openbilling\/config\.yaml"?[[:space:]]*$/) env = 1

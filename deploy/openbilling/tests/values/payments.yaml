@@ -1,0 +1,15 @@
+# The configuration file's payments and reconcile sections, with values inside their ranges: the chart accepts them,
+# and the binary accepts them (check.sh hands the rendered file to it).
+openbilling:
+  database:
+    existingSecret: billing-db-app
+    key: uri
+  config:
+    payments:
+      unrecorded: credit
+    reconcile:
+      pending_after: 30m
+      read_again_after: 1h
+      stop_after: 14d
+      every: 30s
+      batch: 250

@@ -1,0 +1,5 @@
+# expect: openbilling.config.reconcile.batch: a whole number from 1 to 1000
+openbilling:
+  config:
+    reconcile:
+      batch: 1001
