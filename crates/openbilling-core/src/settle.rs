@@ -6,12 +6,13 @@
 //! provider id is the credit's once-only id, so settling the same payment twice, from a webhook and from a
 //! reconciliation at once, books it once.
 
-use crate::config::{CreditSource, ReversalKind};
+use crate::config::ReversalKind;
 use crate::error::{Classify, ErrorClass};
 use crate::id::CreditId;
 use crate::payment::{PaymentError, PaymentProvider, PaymentStatus, RefundStatus, WebhookHint};
 use crate::refusal::LedgerError;
-use crate::store::{Credit, CreditTarget, Credited, LedgerStore, Reversal};
+use crate::store::{Credited, LedgerStore, Reversal};
+use crate::top_up::{MismatchField, TopUpLedger, TopUpSettled};
 
 /// What settling did.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -54,6 +55,10 @@ pub enum SettleError {
     /// The ledger refused or failed.
     #[error(transparent)]
     Ledger(#[from] LedgerError),
+    /// The payment read back differs from the top-up that was recorded (or none was recorded and the deployment
+    /// refuses one it did not record). Nothing was credited; the error names the field and holds no value.
+    #[error("the payment read back differs from its top-up ({})", .0.as_str())]
+    ReadBackMismatch(MismatchField),
 }
 
 impl Classify for SettleError {
@@ -61,47 +66,37 @@ impl Classify for SettleError {
         match self {
             Self::Provider(error) => error.class(),
             Self::Ledger(error) => error.class(),
+            Self::ReadBackMismatch(_) => ErrorClass::Conflict,
         }
     }
 }
 
-/// Reads the payment `id` back and, when it succeeded and openbilling asked for it, books it as a `payment` credit
-/// keyed by its provider id, to the owner's account in the payment's currency with the payment's label.
+/// Reads the payment `id` back and settles its top-up: when the payment succeeded and agrees with the top-up that was
+/// recorded when it was asked for, the *recorded* terms are booked as a `payment` credit keyed by its provider id (ADR
+/// 0003, amended 2026-11-28). The target and the amount are never taken from the provider's metadata alone: a
+/// difference credits nothing and is an error.
 ///
 /// # Errors
 ///
-/// [`SettleError`] when the provider cannot be read or the ledger refuses (for example `unknown_account`: the owner
-/// has no account with that label in the payment's currency).
+/// [`SettleError`] when the provider cannot be read, the ledger refuses (for example `unknown_account`), or the
+/// payment differs from its top-up ([`SettleError::ReadBackMismatch`]).
 pub async fn settle_payment<L, P>(
     ledger: &L,
     provider: &P,
     id: &CreditId,
 ) -> Result<Settled, SettleError>
 where
-    L: LedgerStore,
+    L: TopUpLedger,
     P: PaymentProvider,
 {
     let payment = provider.read_payment(id).await?;
-    if payment.status != PaymentStatus::Succeeded {
-        return Ok(Settled::PaymentNotSettled(payment.status));
+    match ledger.settle_top_up(&payment).await? {
+        TopUpSettled::Credited(credited) => Ok(Settled::Credited(credited)),
+        TopUpSettled::Canceled => Ok(Settled::PaymentNotSettled(PaymentStatus::Canceled)),
+        TopUpSettled::Pending => Ok(Settled::PaymentNotSettled(PaymentStatus::Pending)),
+        TopUpSettled::NotOurs => Ok(Settled::NotOurs),
+        TopUpSettled::Mismatch(field) => Err(SettleError::ReadBackMismatch(field)),
     }
-    let Some(to) = payment.to else {
-        return Ok(Settled::NotOurs);
-    };
-    let credited = ledger
-        .credit(&Credit {
-            source: CreditSource::Payment,
-            id: payment.id,
-            to: CreditTarget::Label {
-                owner: to.owner,
-                currency: payment.currency,
-                label: to.label,
-            },
-            amount: payment.amount,
-            expires_at: None,
-        })
-        .await?;
-    Ok(Settled::Credited(credited))
 }
 
 /// Reads the refund `id` back and, when it gave the money back, books it as a reversal of its payment, keyed by its
@@ -117,7 +112,7 @@ pub async fn settle_refund<L, P>(
     id: &CreditId,
 ) -> Result<Settled, SettleError>
 where
-    L: LedgerStore,
+    L: LedgerStore + TopUpLedger,
     P: PaymentProvider,
 {
     let refund = provider.read_refund(id).await?;
@@ -155,7 +150,7 @@ pub async fn settle_hint<L, P>(
     hint: &WebhookHint,
 ) -> Result<Settled, SettleError>
 where
-    L: LedgerStore,
+    L: LedgerStore + TopUpLedger,
     P: PaymentProvider,
 {
     match hint {
