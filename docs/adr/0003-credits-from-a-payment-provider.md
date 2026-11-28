@@ -12,9 +12,10 @@ token is minted inside the adapter**, and it is built: `openbilling-vpay` mints 
 mints the token), and the client key (`OPENBILLING_VPAY_CLIENT_ID`, `OPENBILLING_VPAY_CLIENT_KEY_FILE`) is the
 other way, never both. The token is minted on first use, replaced before it expires by a configured margin, minted
 by one caller while the others wait, retried with a bounded backoff on a transient failure, and a refusal (`400`,
-`401`) is a classed error that names vpay's RFC 6749 error code and holds no secret and no token. The endpoint, the
-assertion audience, the `kid`, the scope, the margin and the retries are configuration with documented defaults
-(`bin/openbilling/README.md`). **It is proven only against the stand-in**, whose token endpoint verifies the
+`401`) is a classed error that names vpay's RFC 6749 error code and holds no secret and no token. The client's identity
+and endpoints (the client id, its key file and `kid`, the token URL, the assertion audience) are environment variables;
+the audience asked for, the scope, the refresh margin and the retries are the configuration file's `vpay.token`, with
+documented defaults and no variable (`bin/openbilling/README.md`). **It is proven only against the stand-in**, whose token endpoint verifies the
 assertion's signature and claims as vpay's OP does; it has not met a real vpay. The gated workflow
 `vpay-sandbox.yml` runs the three conformance cases that need no payer against a real vpay once its variables and
 secrets exist, and until it has run green this stays unverified. The original text below is not rewritten.

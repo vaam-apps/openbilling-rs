@@ -23,8 +23,9 @@ bearer authentication; `openbilling serve` with the drain. **ANR-1142**: a JWT v
 (`openbilling-jwt`, ADR 0003 amended), raw usage, the price list, debt limits and member caps through the API, and
 the end-to-end suite (`e2e/`). Not built: detaching and dropping old partitions.
 **ANR-1332** (ADR 0003 amended 2026-11-28): the vpay adapter mints its own `vpay:v1` token (`client_credentials` with an
-RS256 `private_key_jwt`, signed by ring; refreshed before expiry, one mint at a time, bounded retries; configuration
-`OPENBILLING_VPAY_CLIENT_*` and `OPENBILLING_VPAY_TOKEN_*`), **proven against the stand-in only**; the gated workflow
+RS256 `private_key_jwt`, signed by ring; refreshed before expiry, one mint at a time, bounded retries; the client's
+identity, key and endpoints are `OPENBILLING_VPAY_CLIENT_*`, `_TOKEN_URL` and `_ASSERTION_AUDIENCE`; its tunables are the
+YAML file's `vpay.token`), **proven against the stand-in only**; the gated workflow
 `vpay-sandbox.yml` (manual, needs a sandbox) has never run, so the Payments row is not ✅.
 **Slice ANR-1144** ([ADR 0005](docs/adr/0005-release-fixed-versions-image-and-chart.md)): the release pipeline:
 release-please (versions from the commits, a GitHub App token), the image (`docker/openbilling`: since 0.4.0 a static

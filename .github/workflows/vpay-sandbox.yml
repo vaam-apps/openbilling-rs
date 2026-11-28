@@ -38,12 +38,14 @@ jobs:
       VPAY_SANDBOX_KEY_ID: ${{ vars.VPAY_SANDBOX_KEY_ID }}
       VPAY_SANDBOX_TOKEN_URL: ${{ vars.VPAY_SANDBOX_TOKEN_URL }}
       VPAY_SANDBOX_ASSERTION_AUDIENCE: ${{ vars.VPAY_SANDBOX_ASSERTION_AUDIENCE }}
-      VPAY_SANDBOX_CLIENT_ID: ${{ secrets.VPAY_SANDBOX_CLIENT_ID }}
-      VPAY_SANDBOX_CLIENT_KEY: ${{ secrets.VPAY_SANDBOX_CLIENT_KEY }}
-      VPAY_SANDBOX_WEBHOOK_SECRET: ${{ secrets.VPAY_SANDBOX_WEBHOOK_SECRET }}
     steps:
+      # The secrets are in the environment of the two steps that need them and of no other: the actions below, which
+      # are third-party code, never see them.
       - name: Check the credentials are present
         id: gate
+        env:
+          VPAY_SANDBOX_CLIENT_ID: ${{ secrets.VPAY_SANDBOX_CLIENT_ID }}
+          VPAY_SANDBOX_CLIENT_KEY: ${{ secrets.VPAY_SANDBOX_CLIENT_KEY }}
         run: |
           if [ -n "$VPAY_SANDBOX_CLIENT_ID" ] && [ -n "$VPAY_SANDBOX_CLIENT_KEY" ] && [ -n "$VPAY_SANDBOX_PAYMENT_METHOD_TYPE" ]; then
             echo "run=true" >> "$GITHUB_OUTPUT"
@@ -65,4 +67,7 @@ jobs:
         if: steps.gate.outputs.run == 'true'
         env:
           VPAY_SANDBOX_REQUIRE: "1"
+          VPAY_SANDBOX_CLIENT_ID: ${{ secrets.VPAY_SANDBOX_CLIENT_ID }}
+          VPAY_SANDBOX_CLIENT_KEY: ${{ secrets.VPAY_SANDBOX_CLIENT_KEY }}
+          VPAY_SANDBOX_WEBHOOK_SECRET: ${{ secrets.VPAY_SANDBOX_WEBHOOK_SECRET }}
         run: cargo test -p openbilling-vpay --features stand-in --locked --test sandbox -- --nocapture
