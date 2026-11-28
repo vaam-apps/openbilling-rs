@@ -1,11 +1,12 @@
-//! `openbilling serve`: connect, migrate, then run the API, the drain and the partition job until a signal:
+//! `openbilling serve`: connect, migrate, then run the API, the drain, the partition job and, with a payment provider,
+//! the top-up reconciler until a signal:
 //! Ctrl-C (`SIGINT`) or `SIGTERM`, the signal a container runtime sends to stop a container.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use openbilling_core::{Classify, LedgerStore};
+use openbilling_core::{Classify, LedgerStore, ReconcileSettings, reconcile_pending};
 use openbilling_http::auth::{BearerAuth, RefuseAll};
 use openbilling_http::{Services, prepare, router};
 use openbilling_jwt::JwtVerifier;
@@ -141,6 +142,64 @@ async fn partitions_forever(ledger: PgLedger) {
     }
 }
 
+/// Reads back the pending top-ups that are due, every `every` (ADR 0003, amended 2026-11-28): a paid top-up whose webhook
+/// never came is found here. Safe on any number of instances: a claim takes each top-up for one caller. A failure of
+/// a pass is counted and logged by class and retried at the next one; a top-up that could not be settled is read again
+/// later. Only counts are logged.
+async fn reconcile_forever(
+    ledger: PgLedger,
+    provider: VpayProvider,
+    settings: ReconcileSettings,
+    every: Duration,
+) {
+    loop {
+        tokio::time::sleep(every).await;
+        let pass = tracing::info_span!("reconcile.run");
+        match reconcile_pending(&ledger, &provider, &settings)
+            .instrument(pass)
+            .await
+        {
+            Ok(report) => {
+                for (outcome, n) in [
+                    ("credited", report.credited),
+                    ("pending", report.pending),
+                    ("canceled", report.canceled),
+                    ("mismatch", report.mismatched),
+                    ("error", report.failed),
+                ] {
+                    if n > 0 {
+                        global().add(
+                            Counter::TopUpsReconciled,
+                            &[("outcome", outcome)],
+                            u64::from(n),
+                        );
+                    }
+                }
+                if report.credited + report.mismatched + report.failed > 0 {
+                    anstream::eprintln!(
+                        "{ACCENT}openbilling:{ACCENT:#} read back {} pending top-up(s): {} credited, {} differed, {} failed",
+                        report.total(),
+                        report.credited,
+                        report.mismatched,
+                        report.failed
+                    );
+                }
+            }
+            Err(error) => {
+                count_error(error.class(), "reconcile");
+                tracing::warn!(
+                    openbilling.error.class = error.class().as_str(),
+                    "reading back pending top-ups failed"
+                );
+                anstream::eprintln!(
+                    "{WARN}openbilling:{WARN:#} reading back pending top-ups failed ({})",
+                    error.class()
+                );
+            }
+        }
+    }
+}
+
 /// The stop signals, registered before `serve` says it is listening: a signal that arrives after that line must
 /// find its handler installed, or the default action would end the process without a clean stop.
 struct StopSignals {
@@ -232,6 +291,7 @@ async fn run(settings: Settings) -> Result<()> {
         LedgerSettings {
             retention_margin: settings.retention_margin,
             retention_timeout: settings.retention_timeout,
+            unrecorded_top_ups: settings.unrecorded_top_ups,
             ..LedgerSettings::default()
         },
     );
@@ -252,6 +312,16 @@ async fn run(settings: Settings) -> Result<()> {
             "{WARN}openbilling:{WARN:#} no payment provider configured; top-ups and webhooks answer 503"
         );
     }
+    let reconciler = provider.clone().map(|provider| {
+        anstream::eprintln!(
+            "{ACCENT}openbilling:{ACCENT:#} pending top-ups are read back every {}s once {}s old, until {}s old; a succeeded payment with no recorded top-up is {}",
+            settings.reconcile_every.as_secs(),
+            settings.reconcile.pending_after.as_secs(),
+            settings.reconcile.stop_after.as_secs(),
+            settings.unrecorded_top_ups.as_str()
+        );
+        (provider, settings.reconcile, settings.reconcile_every)
+    });
     let allowed = settings.allowed;
     anstream::eprintln!(
         "{ACCENT}openbilling:{ACCENT:#} usage partitions are dropped {} days after the window",
@@ -291,6 +361,14 @@ async fn run(settings: Settings) -> Result<()> {
     let stop = StopSignals::register();
     let drain = tokio::spawn(drain_forever(ledger.clone()));
     let partitions = tokio::spawn(partitions_forever(ledger.clone()));
+    let reconcile = reconciler.map(|(provider, reconcile, every)| {
+        tokio::spawn(reconcile_forever(
+            ledger.clone(),
+            provider,
+            reconcile,
+            every,
+        ))
+    });
     let sampler = tokio::spawn(sample_forever(ledger));
 
     let listener = tokio::net::TcpListener::bind(settings.listen)
@@ -312,9 +390,15 @@ async fn run(settings: Settings) -> Result<()> {
     drain.abort();
     partitions.abort();
     sampler.abort();
+    if let Some(reconcile) = &reconcile {
+        reconcile.abort();
+    }
     let _ = drain.await;
     let _ = partitions.await;
     let _ = sampler.await;
+    if let Some(reconcile) = reconcile {
+        let _ = reconcile.await;
+    }
     store.close().await;
     Ok(())
 }

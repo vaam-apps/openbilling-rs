@@ -1714,6 +1714,7 @@ dependencies = [
  "hex",
  "hmac",
  "openbilling-core",
+ "openbilling-metrics",
  "openbilling-pg",
  "openbilling-testkit",
  "openbilling-vpay",

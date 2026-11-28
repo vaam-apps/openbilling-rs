@@ -21,6 +21,14 @@
 //! retention:
 //!   margin: 90d               # drop a day's usage partition this long after the intake window; 1d to 3650d
 //!   timeout: 5m               # the longest a run waits for a lock (a detach waits for every transaction on the table); 1s to 1h
+//! payments:
+//!   unrecorded: refuse        # a succeeded payment no top-up was recorded for: refuse (the default) or credit it as before
+//! reconcile:                  # reading back the pending top-ups whose webhook did not come (only with a payment provider)
+//!   pending_after: 15m        # a top-up is not read before it is this old; 1s to 7d
+//!   read_again_after: 15m     # read again after this long while still pending; 1s to 1d
+//!   stop_after: 7d            # no longer read when older than this (stays pending; reconcilePayment still settles it); 1m to 90d, above pending_after
+//!   every: 1m                 # how often a pass runs; 1s to 1h
+//!   batch: 100                # the most top-ups a pass reads; 1 to 1000
 //! vpay:
 //!   token:                    # only with a client key to mint the vpay token with (OPENBILLING_VPAY_CLIENT_*)
 //!     audience: vpay:v1       # the audience of the token asked for
@@ -43,7 +51,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use openbilling_core::{AllowedPolicy, CurrencyCode, RefuseWhen, RetentionMargin};
+use openbilling_core::{
+    AllowedPolicy, CurrencyCode, ReconcileSettings, RefuseWhen, RetentionMargin, UnrecordedTopUps,
+};
 use openbilling_jwt::{JwtConfig, RoleMap};
 use openbilling_vpay::{
     ClientCredentials, Credential, CurrencyUnit, KeySource, VpayConfig, WebhookSecret, webhook,
@@ -82,6 +92,12 @@ pub struct Settings {
     pub retention_margin: RetentionMargin,
     /// The longest a retention run waits for a lock or runs a statement: `retention.timeout`, or 5 minutes.
     pub retention_timeout: Duration,
+    /// What to do with a succeeded payment no top-up was recorded for: `payments.unrecorded`, or refuse.
+    pub unrecorded_top_ups: UnrecordedTopUps,
+    /// Which pending top-ups the reconciler reads and how many: `reconcile`, or the documented defaults.
+    pub reconcile: ReconcileSettings,
+    /// How often a reconciliation pass runs: `reconcile.every`, or a minute.
+    pub reconcile_every: Duration,
     /// OpenTelemetry, from the standard `OTEL_*` variables; `None` unless an endpoint is set.
     pub otel: Option<openbilling_telemetry::Settings>,
 }
@@ -99,6 +115,132 @@ struct File {
     retention: RetentionFile,
     #[serde(default)]
     vpay: VpayFile,
+    #[serde(default)]
+    payments: PaymentsFile,
+    #[serde(default)]
+    reconcile: ReconcileFile,
+}
+
+/// `payments:`, what the deployment decides about money it did not ask for.
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PaymentsFile {
+    #[serde(default)]
+    unrecorded: Unrecorded,
+}
+
+/// `payments.unrecorded`; [`UnrecordedTopUps`] in the core.
+#[derive(Clone, Copy, Debug, Default, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum Unrecorded {
+    #[default]
+    Refuse,
+    Credit,
+}
+
+impl From<Unrecorded> for UnrecordedTopUps {
+    fn from(value: Unrecorded) -> Self {
+        match value {
+            Unrecorded::Refuse => Self::Refuse,
+            Unrecorded::Credit => Self::Credit,
+        }
+    }
+}
+
+/// `reconcile:`, every key optional; each default is the core's [`ReconcileSettings::default`], and `every` is a
+/// minute.
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReconcileFile {
+    pending_after: Option<String>,
+    read_again_after: Option<String>,
+    stop_after: Option<String>,
+    every: Option<String>,
+    batch: Option<u32>,
+}
+
+/// How often a reconciliation pass runs when the file says nothing: a minute.
+pub const DEFAULT_RECONCILE_EVERY: Duration = Duration::from_secs(60);
+
+/// A span as the file writes it: digits and `s`, `m`, `h` or `d`, no leading zero, between `min` and `max` seconds.
+fn parse_span(text: &str, min: u64, max: u64) -> Option<Duration> {
+    let (digits, unit) = text.split_at(text.len().checked_sub(1)?);
+    if !digits.starts_with(|c: char| ('1'..='9').contains(&c))
+        || !digits.bytes().all(|b| b.is_ascii_digit())
+        || digits.len() > 6
+    {
+        return None;
+    }
+    let secs = digits.parse::<u64>().ok()?
+        * match unit {
+            "s" => 1,
+            "m" => 60,
+            "h" => 3600,
+            "d" => 86_400,
+            _ => return None,
+        };
+    (min..=max)
+        .contains(&secs)
+        .then(|| Duration::from_secs(secs))
+}
+
+impl ReconcileFile {
+    /// The settings and the pass interval, each value inside its documented range. The messages name the key and its
+    /// range, never the value.
+    fn resolve(&self) -> Result<(ReconcileSettings, Duration)> {
+        let mut settings = ReconcileSettings::default();
+        let span = |text: &Option<String>,
+                    key: &str,
+                    range: &str,
+                    min,
+                    max,
+                    into: &mut Duration| {
+            if let Some(text) = text {
+                *into = parse_span(text, min, max).with_context(|| {
+                    format!("OPENBILLING_CONFIG: reconcile.{key} is a span from {range} written like 15m, 2h or 7d")
+                })?;
+            }
+            anyhow::Ok(())
+        };
+        span(
+            &self.pending_after,
+            "pending_after",
+            "1s to 7d",
+            1,
+            7 * 86_400,
+            &mut settings.pending_after,
+        )?;
+        span(
+            &self.read_again_after,
+            "read_again_after",
+            "1s to 1d",
+            1,
+            86_400,
+            &mut settings.read_again_after,
+        )?;
+        span(
+            &self.stop_after,
+            "stop_after",
+            "1m to 90d",
+            60,
+            90 * 86_400,
+            &mut settings.stop_after,
+        )?;
+        let mut every = DEFAULT_RECONCILE_EVERY;
+        span(&self.every, "every", "1s to 1h", 1, 3600, &mut every)?;
+        if let Some(batch) = self.batch {
+            if !(1..=1000).contains(&batch) {
+                bail!("OPENBILLING_CONFIG: reconcile.batch is a number from 1 to 1000");
+            }
+            settings.batch = batch;
+        }
+        if settings.stop_after <= settings.pending_after {
+            bail!(
+                "OPENBILLING_CONFIG: reconcile.stop_after must be longer than reconcile.pending_after"
+            );
+        }
+        Ok((settings, every))
+    }
 }
 
 /// `vpay:`, the adapter's tunables.
@@ -193,6 +335,9 @@ pub struct FileSettings {
     pub token: TokenFile,
     pub retention_margin: RetentionMargin,
     pub retention_timeout: Duration,
+    pub unrecorded_top_ups: UnrecordedTopUps,
+    pub reconcile: ReconcileSettings,
+    pub reconcile_every: Duration,
 }
 
 /// The longest a retention run waits for a lock or runs a statement, when the file says nothing: 5 minutes.
@@ -205,6 +350,9 @@ impl Default for FileSettings {
             token: TokenFile::default(),
             retention_margin: RetentionMargin::default(),
             retention_timeout: DEFAULT_RETENTION_TIMEOUT,
+            unrecorded_top_ups: UnrecordedTopUps::default(),
+            reconcile: ReconcileSettings::default(),
+            reconcile_every: DEFAULT_RECONCILE_EVERY,
         }
     }
 }
@@ -257,9 +405,11 @@ pub fn parse_config(yaml: &str) -> Result<FileSettings> {
             "OPENBILLING_CONFIG is not a valid configuration{at}: it holds `allowed` (debt_limit, balance and \
              member_cap, each at_or_above, above or never), `retention` (margin, a number of days written like \
              90d, and timeout, like 300s or 5m) and `vpay.token` (audience, scope, refresh_skew_secs, retries \
-             and retry_backoff_ms)"
+             and retry_backoff_ms), `payments` (unrecorded, refuse or credit) and `reconcile` (pending_after, \
+             read_again_after, stop_after and every, spans written like 15m, 2h or 7d, and batch)"
         )
     })?;
+    let (reconcile, reconcile_every) = file.reconcile.resolve()?;
     let retention_margin = match file.retention.margin {
         None => RetentionMargin::default(),
         Some(text) => parse_margin(&text).context(
@@ -281,6 +431,9 @@ pub fn parse_config(yaml: &str) -> Result<FileSettings> {
         token: file.vpay.token,
         retention_margin,
         retention_timeout,
+        unrecorded_top_ups: file.payments.unrecorded.into(),
+        reconcile,
+        reconcile_every,
     })
 }
 
@@ -350,6 +503,9 @@ impl Settings {
             allowed: file.allowed,
             retention_margin: file.retention_margin,
             retention_timeout: file.retention_timeout,
+            unrecorded_top_ups: file.unrecorded_top_ups,
+            reconcile: file.reconcile,
+            reconcile_every: file.reconcile_every,
             otel,
         })
     }
@@ -875,6 +1031,50 @@ mod tests {
                 format!("{error:#}").contains("OPENBILLING_CONFIG"),
                 "{bad:?}"
             );
+        }
+    }
+
+    #[test]
+    fn the_reconciler_and_the_unrecorded_policy_default_as_documented_and_take_their_ranges() {
+        let none = parse_config("allowed: {}").unwrap();
+        assert_eq!(none.unrecorded_top_ups, UnrecordedTopUps::Refuse);
+        assert_eq!(none.reconcile, ReconcileSettings::default());
+        assert_eq!(none.reconcile_every, Duration::from_secs(60));
+        let set = parse_config(
+            "payments: {unrecorded: credit}\nreconcile:\n  pending_after: 2m\n  read_again_after: 1h\n  \
+             stop_after: 90d\n  every: 1s\n  batch: 1000\n",
+        )
+        .unwrap();
+        assert_eq!(set.unrecorded_top_ups, UnrecordedTopUps::Credit);
+        assert_eq!(set.reconcile.pending_after, Duration::from_secs(120));
+        assert_eq!(set.reconcile.read_again_after, Duration::from_secs(3600));
+        assert_eq!(set.reconcile.stop_after, Duration::from_secs(90 * 86_400));
+        assert_eq!(set.reconcile.batch, 1000);
+        assert_eq!(set.reconcile_every, Duration::from_secs(1));
+        for bad in [
+            "payments:\n  unrecorded: hunter2\n",
+            "payments:\n  unrecorded: Credit\n",
+            "payments:\n  other: refuse\n",
+            "reconcile:\n  pending_after: 0s\n",
+            "reconcile:\n  pending_after: 8d\n",
+            "reconcile:\n  pending_after: 015m\n",
+            "reconcile:\n  pending_after: 15\n",
+            "reconcile:\n  read_again_after: 2d\n",
+            "reconcile:\n  stop_after: 59s\n",
+            "reconcile:\n  stop_after: 91d\n",
+            "reconcile:\n  stop_after: 1h\n  pending_after: 1h\n",
+            "reconcile:\n  pending_after: 7d\n  stop_after: 5d\n",
+            "reconcile:\n  every: 0s\n",
+            "reconcile:\n  every: 2h\n",
+            "reconcile:\n  batch: 0\n",
+            "reconcile:\n  batch: 1001\n",
+            "reconcile:\n  batch: many\n",
+            "reconcile:\n  interval: 1m\n",
+        ] {
+            let error = parse_config(bad).expect_err(bad);
+            let message = format!("{error:#}");
+            assert!(message.contains("OPENBILLING_CONFIG"), "{bad:?}");
+            assert!(!message.contains("hunter2"), "{message}");
         }
     }
 
