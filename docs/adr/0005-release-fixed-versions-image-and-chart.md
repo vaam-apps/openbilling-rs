@@ -4,7 +4,7 @@ Status: **Proposed** (2026-11-27). The owner's decisions quoted under *Context* 
 *Still open* are for the owner to confirm. Nothing here has run yet: the workflows run for the first time on the
 first push to `main` after this lands. *Amended 2026-11-27 (ANR-1329):* it has run. release-please opened the
 release pull requests and v0.1.1, v0.2.0, v0.3.0 and v0.4.0 are published; the 0.3.0 image and chart pulled
-anonymously (*verified 2026-11-27*). It stays Proposed until the owner accepts it.
+anonymously (*verified 2026-11-27*). It stays Proposed until the owner accepts it. *Accepted 2026-11-28 by the owner:* the owner's decision of that day.
 
 ## Summary
 
