@@ -1,0 +1,12 @@
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    # run.sh replaces @PROMETHEUS_URL@.
+    url: "@PROMETHEUS_URL@"
+    isDefault: true
+    jsonData:
+      # The scrape interval: Grafana's $__rate_interval is at least four of these.
+      timeInterval: 2s
