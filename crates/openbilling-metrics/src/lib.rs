@@ -36,6 +36,8 @@ pub enum Counter {
     /// when allowed), `mode` the deployer's comparison it ran under (`at_or_above`, `above`, `never`) and `verdict`
     /// is `allowed` or `refused`.
     AllowedChecks,
+    /// Usage partitions the retention job detached and dropped (ADR 0001, point 10): no labels.
+    PartitionsDropped,
     /// Errors by class: `class` is `invalid`, `conflict`, `unavailable` or `internal`; `source` is where.
     Errors,
     /// Spans or logs dropped because the queue to the exporter was full: `signal` is `traces` or `logs`.
@@ -45,12 +47,13 @@ pub enum Counter {
 }
 
 impl Counter {
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 9] = [
         Self::IntakeEvents,
         Self::DrainEvents,
         Self::DrainRuns,
         Self::LedgerPostings,
         Self::AllowedChecks,
+        Self::PartitionsDropped,
         Self::Errors,
         Self::TelemetryDropped,
         Self::TelemetryExports,
@@ -65,6 +68,7 @@ impl Counter {
             Self::DrainRuns => "openbilling.drain.runs",
             Self::LedgerPostings => "openbilling.ledger.postings",
             Self::AllowedChecks => "openbilling.allowed.checks",
+            Self::PartitionsDropped => "openbilling.partitions.dropped",
             Self::Errors => "openbilling.errors",
             Self::TelemetryDropped => "openbilling.telemetry.dropped",
             Self::TelemetryExports => "openbilling.telemetry.exports",
@@ -80,6 +84,7 @@ impl Counter {
             Self::DrainRuns => "Drain passes, by result",
             Self::LedgerPostings => "Ledger transactions booked, by kind",
             Self::AllowedChecks => "getAllowed verdicts, by the check that decided",
+            Self::PartitionsDropped => "Usage partitions detached and dropped by the retention job",
             Self::Errors => "Errors by class and where they happened",
             Self::TelemetryDropped => {
                 "Spans and logs dropped because the exporter's queue was full"
@@ -94,6 +99,7 @@ impl Counter {
             Self::DrainRuns => "{run}",
             Self::LedgerPostings => "{posting}",
             Self::AllowedChecks => "{check}",
+            Self::PartitionsDropped => "{partition}",
             Self::Errors => "{error}",
             Self::TelemetryDropped => "{item}",
             Self::TelemetryExports => "{request}",
@@ -194,7 +200,7 @@ pub const BUCKETS: [f64; 11] = [
 
 /// The database operations a histogram names: a closed set, so a span's `db.operation` maps into it and anything
 /// else is `other`.
-pub const DB_OPERATIONS: [&str; 21] = [
+pub const DB_OPERATIONS: [&str; 22] = [
     "now",
     "configure",
     "open_account",
@@ -211,6 +217,7 @@ pub const DB_OPERATIONS: [&str; 21] = [
     "outcome",
     "daily_usage",
     "prepare_partitions",
+    "drop_expired_partitions",
     "queue_stats",
     "load_price_list",
     "price_versions",
@@ -477,7 +484,7 @@ pub fn exposed_names() -> Vec<String> {
 }
 
 #[doc(hidden)]
-pub const fn all_counters() -> [Counter; 8] {
+pub const fn all_counters() -> [Counter; 9] {
     Counter::ALL
 }
 #[doc(hidden)]

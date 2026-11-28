@@ -21,7 +21,7 @@ in `crates/openbilling-pg/migrations/`; `PgLedger` calls it through the `LedgerS
 conformance suite and the vpay adapter; the external API in CrateStack (`openbilling-http`), with policies and
 bearer authentication; `openbilling serve` with the drain. **ANR-1142**: a JWT verifier against one issuer's keys
 (`openbilling-jwt`, ADR 0003 amended), raw usage, the price list, debt limits and member caps through the API, and
-the end-to-end suite (`e2e/`). Not built: detaching and dropping old partitions, minting the vpay token.
+the end-to-end suite (`e2e/`). Not built: minting the vpay token. Old usage partitions are detached and dropped after the window plus a margin (the owner's decision of 2026-11-28: `retention.margin`, default 90 days; ADR 0001 amended, G1 to G5).
 **Slice ANR-1144** ([ADR 0005](docs/adr/0005-release-fixed-versions-image-and-chart.md)): the release pipeline:
 release-please (versions from the commits, a GitHub App token), the image (`docker/openbilling`: since 0.4.0 a static
 musl binary on `distroless/static`, [ADR 0006](docs/adr/0006-a-static-musl-binary-on-distroless-static.md); a smoke

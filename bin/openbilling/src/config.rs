@@ -18,7 +18,12 @@
 //!   debt_limit: at_or_above   # refuse when debt >= limit; or above (debt > limit); or never (report only)
 //!   balance: at_or_above      # refuse when debt >= the drawable credit (net <= 0); or above (net < 0); or never
 //!   member_cap: at_or_above   # refuse when the member's usage this month >= cap; or above; or never
+//! retention:
+//!   margin: 90d               # drop a day's usage partition this long after the intake window; 1d to 3650d
 //! ```
+//!
+//! The retention job (ADR 0001, point 10, amended 2026-11-28) runs hourly with the partition job, so it has no
+//! interval of its own.
 
 use std::fmt;
 use std::net::SocketAddr;
@@ -26,7 +31,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use openbilling_core::{AllowedPolicy, CurrencyCode, RefuseWhen};
+use openbilling_core::{AllowedPolicy, CurrencyCode, RefuseWhen, RetentionMargin};
 use openbilling_jwt::{JwtConfig, RoleMap};
 use openbilling_vpay::{Credential, CurrencyUnit, VpayConfig, WebhookSecret, webhook};
 
@@ -58,6 +63,9 @@ pub struct Settings {
     pub auth: Option<JwtConfig>,
     /// How `getAllowed` compares its numbers: the configuration file's `allowed`, or the default.
     pub allowed: AllowedPolicy,
+    /// How long after the window a day's usage partition is dropped: the configuration file's `retention.margin`, or
+    /// 90 days.
+    pub retention_margin: RetentionMargin,
     /// OpenTelemetry, from the standard `OTEL_*` variables; `None` unless an endpoint is set.
     pub otel: Option<openbilling_telemetry::Settings>,
 }
@@ -71,6 +79,31 @@ pub const MAX_CONFIG_BYTES: u64 = 64 * 1024;
 struct File {
     #[serde(default)]
     allowed: AllowedFile,
+    #[serde(default)]
+    retention: RetentionFile,
+}
+
+/// `retention:`: how long a usage partition outlives the window, as a number of days with a `d`: `90d`.
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RetentionFile {
+    margin: Option<String>,
+}
+
+/// A margin as the file writes it: digits and a `d`, one day to ten years.
+fn parse_margin(text: &str) -> Option<RetentionMargin> {
+    let digits = text.strip_suffix('d')?;
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) || digits.len() > 5 {
+        return None;
+    }
+    RetentionMargin::new(digits.parse().ok()?).ok()
+}
+
+/// What the configuration file holds; the defaults when it names none.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FileSettings {
+    pub allowed: AllowedPolicy,
+    pub retention_margin: RetentionMargin,
 }
 
 /// `allowed:`: one comparison per check of `getAllowed`, each `at_or_above` when left out.
@@ -107,7 +140,7 @@ impl From<Mode> for RefuseWhen {
 
 /// What the file says, refused whole when anything in it is not the configuration. The message names the line and
 /// column and the keys there are, never a value from the file (agent guide, rule 9).
-pub fn parse_config(yaml: &str) -> Result<AllowedPolicy> {
+pub fn parse_config(yaml: &str) -> Result<FileSettings> {
     if yaml.trim().is_empty() {
         bail!(
             "OPENBILLING_CONFIG names an empty file; write `allowed: {{}}` for the defaults, or unset it"
@@ -119,20 +152,30 @@ pub fn parse_config(yaml: &str) -> Result<AllowedPolicy> {
         });
         anyhow::anyhow!(
             "OPENBILLING_CONFIG is not a valid configuration{at}: it holds only `allowed`, whose keys are \
-             debt_limit, balance and member_cap, each at_or_above, above or never"
+             debt_limit, balance and member_cap, each at_or_above, above or never, and `retention`, whose key is \
+             margin, a number of days written like 90d"
         )
     })?;
-    Ok(AllowedPolicy {
-        debt_limit: file.allowed.debt_limit.into(),
-        balance: file.allowed.balance.into(),
-        member_cap: file.allowed.member_cap.into(),
+    let retention_margin = match file.retention.margin {
+        None => RetentionMargin::default(),
+        Some(text) => parse_margin(&text).context(
+            "OPENBILLING_CONFIG: retention.margin is a number of days from 1 to 3650 written like 90d",
+        )?,
+    };
+    Ok(FileSettings {
+        allowed: AllowedPolicy {
+            debt_limit: file.allowed.debt_limit.into(),
+            balance: file.allowed.balance.into(),
+            member_cap: file.allowed.member_cap.into(),
+        },
+        retention_margin,
     })
 }
 
-/// The policy of the file `OPENBILLING_CONFIG` names, or the default when it names none.
-fn allowed(get: &impl Fn(&str) -> Option<String>) -> Result<AllowedPolicy> {
+/// What the file `OPENBILLING_CONFIG` names holds, or the defaults when it names none.
+fn file_settings(get: &impl Fn(&str) -> Option<String>) -> Result<FileSettings> {
     let Some(path) = get("OPENBILLING_CONFIG") else {
-        return Ok(AllowedPolicy::default());
+        return Ok(FileSettings::default());
     };
     let path = path.trim();
     let size = std::fs::metadata(path)
@@ -183,12 +226,14 @@ impl Settings {
             |path| std::fs::read_to_string(path).ok(),
         )
         .context("the OpenTelemetry configuration")?;
+        let file = file_settings(&get)?;
         Ok(Self {
             database_url: DatabaseUrl(database_url),
             listen,
             vpay,
             auth: auth(&get)?,
-            allowed: allowed(&get)?,
+            allowed: file.allowed,
+            retention_margin: file.retention_margin,
             otel,
         })
     }
@@ -303,6 +348,7 @@ mod tests {
         assert!(ok.vpay.is_none());
         assert!(ok.auth.is_none());
         assert_eq!(ok.allowed, AllowedPolicy::default());
+        assert_eq!(ok.retention_margin.days(), 90);
         assert!(
             ok.otel.is_none(),
             "telemetry is off unless an endpoint is set"
@@ -460,7 +506,53 @@ mod tests {
                 policy(Never, Never, Never),
             ),
         ] {
-            assert_eq!(parse_config(yaml).unwrap(), expected, "{yaml:?}");
+            assert_eq!(parse_config(yaml).unwrap().allowed, expected, "{yaml:?}");
+        }
+    }
+
+    #[test]
+    fn the_retention_margin_defaults_to_ninety_days_and_takes_days_from_one_to_ten_years() {
+        for (yaml, days) in [
+            ("{}", 90),
+            ("allowed: {}", 90),
+            ("retention: {}", 90),
+            ("retention:\n  margin: 90d\n", 90),
+            ("retention:\n  margin: 1d\n", 1),
+            ("retention:\n  margin: 3650d\n", 3650),
+            (
+                "retention:\n  margin: \"30d\"\nallowed: {balance: never}\n",
+                30,
+            ),
+        ] {
+            assert_eq!(
+                parse_config(yaml).unwrap().retention_margin.days(),
+                days,
+                "{yaml:?}"
+            );
+        }
+        for bad in [
+            "retention:\n  margin: 0d\n",
+            "retention:\n  margin: 3651d\n",
+            "retention:\n  margin: 99999d\n",
+            "retention:\n  margin: 090000d\n",
+            "retention:\n  margin: 90\n",
+            "retention:\n  margin: d\n",
+            "retention:\n  margin: 90D\n",
+            "retention:\n  margin: 90 d\n",
+            "retention:\n  margin: -1d\n",
+            "retention:\n  margin: 1.5d\n",
+            "retention:\n  margin: 90h\n",
+            "retention:\n  margin: [90d]\n",
+            "retention:\n  margin: \"\"\n",
+            "retention:\n  every: 1h\n",
+            "retention: 90d\n",
+            "retention:\n  margin: 1d\n  margin: 2d\n",
+        ] {
+            let error = parse_config(bad).expect_err(bad);
+            assert!(
+                format!("{error:#}").contains("OPENBILLING_CONFIG"),
+                "{bad:?}"
+            );
         }
     }
 

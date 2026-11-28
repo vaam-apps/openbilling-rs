@@ -13,6 +13,8 @@
 //! - [`EventOutcome`] and [`RefusalReason`], what a drain decided about an event;
 //! - the storage port, [`LedgerStore`], with [`LedgerError`] and its [`Refusal`]s, and [`AllowedPolicy`] and
 //!   [`RefuseWhen`], the deployer's choice of how [`LedgerStore::allowed`] compares;
+//! - the partition retention port, [`PartitionRetention`], with [`RetentionMargin`] and [`RetentionReport`]: how long
+//!   after the window a usage partition is dropped (ADR 0001, point 10, amended 2026-11-28);
 //! - the payment provider port, [`PaymentProvider`] (ADR 0003), with [`PaymentError`], and [`settle_payment`] and
 //!   [`settle_refund`], which book what a provider, read back, says succeeded;
 //! - the price book (ADR 0004): [`RawEvent`], [`Quantity`], [`Dimensions`], [`MeterId`], [`Rated`], [`Loaded`],
@@ -30,6 +32,7 @@ mod outcome;
 mod payment;
 mod price;
 mod refusal;
+mod retention;
 mod settle;
 mod store;
 mod time;
@@ -53,6 +56,7 @@ pub use price::{
     Dimensions, Loaded, PriceBook, PriceVersionId, PriceVersionView, Quantity, Rated, RawEvent,
 };
 pub use refusal::{LedgerError, ListPosition, NAMED_IN_MESSAGE, Refusal, Rule};
+pub use retention::{PartitionRetention, RetentionMargin, RetentionReport};
 pub use settle::{SettleError, Settled, settle_hint, settle_payment, settle_refund};
 pub use store::{
     AccountBalance, Allowed, AllowedPolicy, Balance, Credit, CreditTarget, Credited, Decided,

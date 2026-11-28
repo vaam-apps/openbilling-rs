@@ -92,6 +92,9 @@ async fn drain_forever(ledger: PgLedger) {
     }
 }
 
+/// Makes partitions ahead, then drops the expired ones (ADR 0001, point 10), every hour. Dropping is leader-safe:
+/// the store's job takes an advisory lock, so on several instances one runs and the others do nothing. Only counts
+/// are logged.
 async fn partitions_forever(ledger: PgLedger) {
     loop {
         tokio::time::sleep(PARTITIONS_EVERY).await;
@@ -106,6 +109,28 @@ async fn partitions_forever(ledger: PgLedger) {
                 "{WARN}openbilling:{WARN:#} preparing partitions failed ({})",
                 error.class()
             );
+        }
+        let pass = tracing::info_span!("retention.run");
+        match ledger.run_retention().instrument(pass).await {
+            Ok(report) => {
+                if !report.dropped.is_empty() {
+                    anstream::eprintln!(
+                        "{ACCENT}openbilling:{ACCENT:#} dropped {} expired usage partition(s)",
+                        report.dropped.len()
+                    );
+                }
+            }
+            Err(error) => {
+                count_error(error.class(), "retention");
+                tracing::warn!(
+                    openbilling.error.class = error.class().as_str(),
+                    "dropping expired partitions failed"
+                );
+                anstream::eprintln!(
+                    "{WARN}openbilling:{WARN:#} dropping expired partitions failed ({})",
+                    error.class()
+                );
+            }
         }
     }
 }
@@ -196,11 +221,33 @@ async fn run(settings: Settings) -> Result<()> {
         .await
         .context("connecting to PostgreSQL")?;
     store.migrate().await.context("applying the migrations")?;
-    let ledger = PgLedger::new(&store, LedgerSettings::default());
+    let ledger = PgLedger::new(
+        &store,
+        LedgerSettings {
+            retention_margin: settings.retention_margin,
+            ..LedgerSettings::default()
+        },
+    );
     ledger
         .prepare_partitions()
         .await
         .context("preparing partitions")?;
+    // Once at start too, so a restarted service does not wait an hour for the first drop. A failure is not fatal:
+    // the hourly job tries again.
+    match ledger.run_retention().await {
+        Ok(first) if !first.dropped.is_empty() => anstream::eprintln!(
+            "{ACCENT}openbilling:{ACCENT:#} dropped {} expired usage partition(s)",
+            first.dropped.len()
+        ),
+        Ok(_) => {}
+        Err(error) => {
+            count_error(error.class(), "retention");
+            anstream::eprintln!(
+                "{WARN}openbilling:{WARN:#} dropping expired partitions failed ({})",
+                error.class()
+            );
+        }
+    }
     prepare(store.pool())
         .await
         .map_err(|_| anyhow::anyhow!("creating CrateStack's idempotency table failed"))?;
@@ -215,6 +262,10 @@ async fn run(settings: Settings) -> Result<()> {
         );
     }
     let allowed = settings.allowed;
+    anstream::eprintln!(
+        "{ACCENT}openbilling:{ACCENT:#} usage partitions are dropped {} days after the window",
+        settings.retention_margin.days()
+    );
     anstream::eprintln!(
         "{ACCENT}openbilling:{ACCENT:#} getAllowed refuses on debt_limit {}, balance {}, member_cap {}",
         allowed.debt_limit.as_str(),

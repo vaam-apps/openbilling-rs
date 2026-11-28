@@ -35,11 +35,11 @@ The refusals values cannot say. Each names the value to change. Run before the c
   The file holds policy only; secrets and endpoints are environment variables. */ -}}
   {{- $config := dig "config" dict (.Values.openbilling | default dict) -}}
   {{- if not (kindIs "map" $config) -}}
-    {{- fail "openbilling.config: a map; it holds only `allowed`" -}}
+    {{- fail "openbilling.config: a map; it holds `allowed` and `retention`" -}}
   {{- end -}}
   {{- range $key, $_ := $config -}}
-    {{- if ne $key "allowed" -}}
-      {{- fail (printf "openbilling.config.%s: not a key of the configuration file, which holds only `allowed`; secrets and endpoints are environment variables" $key) -}}
+    {{- if not (has $key (list "allowed" "retention")) -}}
+      {{- fail (printf "openbilling.config.%s: not a key of the configuration file, which holds only `allowed` and `retention`; secrets and endpoints are environment variables" $key) -}}
     {{- end -}}
   {{- end -}}
   {{- $allowed := dig "allowed" dict $config -}}
@@ -53,6 +53,25 @@ The refusals values cannot say. Each names the value to change. Run before the c
     {{- end -}}
     {{- if not (has (toString $mode) (list "at_or_above" "above" "never")) -}}
       {{- fail (printf "openbilling.config.allowed.%s: at_or_above, above or never" $key) -}}
+    {{- end -}}
+  {{- end -}}
+
+  {{- $retention := dig "retention" dict $config -}}
+  {{- if not (kindIs "map" $retention) -}}
+    {{- fail "openbilling.config.retention: a map holding margin" -}}
+  {{- end -}}
+  {{- range $key, $_ := $retention -}}
+    {{- if ne $key "margin" -}}
+      {{- fail (printf "openbilling.config.retention.%s: not a key; the only key is margin" $key) -}}
+    {{- end -}}
+  {{- end -}}
+  {{- if hasKey $retention "margin" -}}
+    {{- $margin := toString (get $retention "margin") -}}
+    {{- if not (regexMatch "^[0-9]{1,4}d$" $margin) -}}
+      {{- fail "openbilling.config.retention.margin: a number of days written like 90d, from 1d to 3650d" -}}
+    {{- end -}}
+    {{- if or (lt (int (trimSuffix "d" $margin)) 1) (gt (int (trimSuffix "d" $margin)) 3650) -}}
+      {{- fail "openbilling.config.retention.margin: a number of days written like 90d, from 1d to 3650d" -}}
     {{- end -}}
   {{- end -}}
 

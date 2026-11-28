@@ -55,7 +55,7 @@ const fn refused_at(rule: Rule) -> Meaning {
 }
 
 /// Every SQLSTATE the migrations raise, and what it means.
-pub const LEDGER_SQLSTATES: [(&str, Meaning); 31] = [
+pub const LEDGER_SQLSTATES: [(&str, Meaning); 32] = [
     ("OB001", refused(Rule::CreditConflict)),
     ("OB002", refused(Rule::UnknownAccount)),
     ("OB003", refused(Rule::UnknownCurrency)),
@@ -87,6 +87,7 @@ pub const LEDGER_SQLSTATES: [(&str, Meaning); 31] = [
     ("OB901", Meaning::Fault(ErrorClass::Internal)),
     ("OB902", Meaning::Fault(ErrorClass::Internal)),
     ("OB903", Meaning::Fault(ErrorClass::Internal)),
+    ("OB904", Meaning::Fault(ErrorClass::Internal)),
 ];
 
 /// The rules no SQLSTATE raises: [`Rule::MalformedPriceList`], which the store's parser decides before anything
@@ -233,7 +234,7 @@ mod tests {
                 "{code}"
             );
         }
-        for code in ["OB900", "OB901", "OB902", "OB903"] {
+        for code in ["OB900", "OB901", "OB902", "OB903", "OB904"] {
             assert_eq!(
                 meaning_of(code),
                 Some(Meaning::Fault(ErrorClass::Internal)),

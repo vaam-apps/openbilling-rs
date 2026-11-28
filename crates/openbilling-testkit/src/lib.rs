@@ -15,6 +15,9 @@
 //! ([ADR 0004](https://github.com/vaam-apps/openbilling-rs/blob/main/docs/adr/0004-a-versioned-price-book-in-sql.md)):
 //! loading, versions, rating, rounding, refusals and raw intake.
 //!
+//! [`retention_conformance!`] runs the cases of partition retention ([`retention`], ADR 0001, point 10): a store also
+//! gives them a [`retention::RetentionFixture`], because no port can age a record.
+//!
 //! [`payment_conformance!`] does the same for a payment provider adapter ([`payments`], ADR 0003), against a
 //! stand-in for the provider that the adapter reaches over the network.
 //!
@@ -28,6 +31,7 @@ pub mod cases;
 pub mod fixtures;
 pub mod payments;
 pub mod price_cases;
+pub mod retention;
 
 /// Runs every conformance case against the store `$factory` makes: `async fn() -> Option<S>`, a fresh empty store
 /// per case, or `None` to skip it.
@@ -63,6 +67,23 @@ macro_rules! ledger_conformance {
             accounts_are_once_only_and_one_per_owner_currency_and_label,
             daily_usage_sums_applied_debits_per_utc_day,
             invalid_amounts_and_configurations_are_refused,
+        );
+    };
+}
+
+/// Runs every conformance case of partition retention (ADR 0001, point 10) against the store `$factory` makes:
+/// `async fn() -> Option<S>` where `S` implements [`RetentionFixture`](crate::retention::RetentionFixture), a fresh
+/// store per case with its partitions made, or `None` to skip it.
+#[macro_export]
+macro_rules! retention_conformance {
+    ($factory:path) => {
+        $crate::__retention_cases!(
+            $factory;
+            an_event_replayed_inside_the_window_is_still_refused_after_a_drop,
+            a_partition_with_an_undecided_event_is_kept,
+            a_partition_inside_the_window_plus_the_margin_is_kept,
+            the_window_and_the_current_partition_are_never_touched,
+            concurrent_runs_drop_each_partition_once,
         );
     };
 }
@@ -112,6 +133,21 @@ macro_rules! __ledger_cases {
             async fn $case() {
                 if let Some(store) = $factory().await {
                     $crate::cases::$case(store).await;
+                }
+            }
+        )*
+    };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __retention_cases {
+    ($factory:path; $($case:ident),* $(,)?) => {
+        $(
+            #[::tokio::test(flavor = "multi_thread", worker_threads = 4)]
+            async fn $case() {
+                if let Some(store) = $factory().await {
+                    $crate::retention::$case(store).await;
                 }
             }
         )*

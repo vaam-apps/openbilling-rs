@@ -1,0 +1,5 @@
+# expect: openbilling.config.retention.every: not a key; the only key is margin
+openbilling:
+  config:
+    retention:
+      every: 1h

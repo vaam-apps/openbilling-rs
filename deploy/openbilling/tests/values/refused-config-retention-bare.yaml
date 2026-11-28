@@ -1,0 +1,6 @@
+# expect: openbilling.config.retention.margin: a number of days written like 90d, from 1d to 3650d
+# A bare number is not a margin: write the days with a d.
+openbilling:
+  config:
+    retention:
+      margin: 90

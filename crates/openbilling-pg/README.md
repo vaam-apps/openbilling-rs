@@ -17,6 +17,7 @@ is a plain parameterized query (the owner's decision of 2026-11-27). It implemen
 | `…001_configuration_and_accounts.sql` | Helpers (`ob_is_id`, `ob_ts`, `ob_micros`, …), currencies, labels and their draw rank, the lot order (seeded with the example), accounts (`(owner, currency, label)` unique), the balance row per owner and currency (the lock, the debt, the debt limit), member caps |
 | `…002_ledger.sql` | Ledger transactions, credits (once-only by source and id), lots, reversals, entries; append-only triggers, a deferred trigger that refuses a transaction that does not balance, the reversal cap as a trigger, and the views `ob_lot_drift` and `ob_debt_drift`, which must stay empty |
 | `…003_usage_queue.sql` | `ob_usage_event`, partitioned by occurrence day with no default partition; the outcome per event id with its pending-to-final guard; `ob_prepare_partitions` |
+| `20261128000001_partition_retention.sql` | Partition retention (ADR 0001, amended 2026-11-28, G1 to G5): `ob_expired_partitions` (what may go, and the statement that detaches it), `ob_drop_partition` (checks again, then drops; `OB904` when it must not), the helpers `ob_partition_day`, `ob_partition_blocked`, `ob_retention_cutoff`, and the lock `ob_retention_try_lock` / `ob_retention_unlock` |
 | `…004_ledger_functions.sql` | The payload hash, `ob_configure`, `ob_open_account`, `ob_set_debt_limit`, `ob_set_member_cap`, `ob_draw`, `ob_add_debt`, `ob_repay_from_lot`, `ob_credit`, `ob_reverse`, `ob_grant_allowance`, `ob_intake`, `ob_drain`, and the reads `ob_balance_of`, `ob_allowed`, `ob_lots_of`, `ob_outcome_of` (dropped by `…006`), `ob_daily_usage` |
 | `…005_rated_events.sql` | Raw events ([ADR 0004](../../docs/adr/0004-a-versioned-price-book-in-sql.md)): `meter`, `quantity`, `dimensions` and `price_version` on the event and its outcome, the partial index of rated events that occurred after they were received, the guards again, and the raw payload hash (`ob_raw_payload_canonical`, `ob_raw_payload_hash`) |
 | `…006_price_book.sql` | The price book: `ob_price_version`, `ob_price_meter`, `ob_price_dimension`, `ob_price`; the content hash, the seal and append-only triggers, `ob_price_back_dated`; `ob_load_price_list`; `ob_round_half_even`, `ob_price_of`, `ob_rate`; `ob_intake` and `ob_drain` again, with raw events |
@@ -37,13 +38,24 @@ class `OB`; `src/sqlstate.rs` maps each one, in one table, to a refusal or an er
 
 - `PgStore::connect(url)` and `connect_with(options, max_connections)` open a pool and check the server version;
   `migrate()` applies `migrator()`; `server_version_num()`, `ping()`, `pool()`, `close()`.
-- `migrator()`: the eight migrations, embedded. sqlx sends each file whole as one simple-protocol query, so no
+- `migrator()`: the nine migrations, embedded. sqlx sends each file whole as one simple-protocol query, so no
   `BEGIN ATOMIC` body is split on `;`.
 - `PgLedger::new(&store, LedgerSettings)` implements `openbilling_core::LedgerStore` and `openbilling_core::PriceBook`.
   `load_price_list` parses the YAML (`src/price_list.rs`) and calls `ob_load_price_list`; `rate` calls `ob_rate`;
   `intake` and `intake_raw` call `ob_intake`; `price_versions` and `outcome` are plain queries. `LedgerSettings` holds the window
-  (default seven days and five minutes), the partitions made ahead (default 2 days) and the `NOTIFY` interval (default
-  100 ms). `prepare_partitions()` makes the partitions of every day intake accepts and of the days ahead.
+  (default seven days and five minutes), the partitions made ahead (default 2 days), the `NOTIFY` interval (default
+  100 ms) and the retention margin (default 90 days). `prepare_partitions()` makes the partitions of every day intake accepts and of the days ahead.
+- `PgLedger` implements `openbilling_core::PartitionRetention`: `drop_expired_partitions(margin)` drops every partition whose
+  whole day is older than the window plus the margin (ADR 0001, point 10, amended 2026-11-28) and answers the days it dropped;
+  `run_retention()` does so with `LedgerSettings::retention_margin` (default 90 days; the deployer's, from `retention.margin`
+  of the configuration file). It never drops a partition inside the window plus the margin, one holding an event still
+  `received`, or one whose day has an outcome still `pending`. **It runs four steps on one connection**:
+  `ob_retention_try_lock` (a run that does not get it answers `skipped` and does nothing), `ob_expired_partitions` (the plan),
+  for each partition the statement the plan returned (`ALTER TABLE … DETACH PARTITION … CONCURRENTLY`, or `FINALIZE` for a
+  partition a cut-short detach left pending), run as a top-level command because PostgreSQL 19 refuses it in a transaction
+  block, a function or a procedure (*verified 2026-11-28*), then `ob_drop_partition`. A run that stops between the steps is
+  finished by the next; the connection is closed after each run, so the session lock cannot outlive it. Outcomes are kept for
+  good, so an id applied in a dropped partition is still refused as `id_reused`. It counts `openbilling.partitions.dropped`.
 - `PgLedger::wakeup()` returns a `Wakeup` listening on `NOTIFY_CHANNEL`; `wait(poll)` answers `Woken::Notified` or
   `Woken::Polled`. Intake notifies after it commits, at most once per interval; a notification carries no data. The
   listener needs a direct session, not a pooler in transaction mode.
@@ -54,7 +66,7 @@ Errors carry a class (`openbilling_core::Classify`): a network failure, a pool t
 partition; a refusal has its rule's class; the rest is `internal`. An error's message never holds the URL, which can
 carry a password.
 
-**Not built:** detaching and dropping old partitions, and an external read API for the price book (it will be
+**Not built:** an external read API for the price book (it will be
 CrateStack's, in `openbilling-http`, which today only loads one: `loadPriceList`). The worker loop is
 `openbilling serve` (`bin/openbilling`), which drains on `LISTEN/NOTIFY` and prepares partitions.
 
@@ -71,6 +83,7 @@ cannot build two semver-compatible versions of one crate. Move them together.
 | `tests/connect.rs` (connect, the server version, ping, close) | `OPENBILLING_TEST_DATABASE_URL`, a PostgreSQL 19 or later |
 | `tests/ledger.rs`: the whole conformance suite of `openbilling-testkit`, 27 cases, each on a fresh database | the same, and a user that may create databases |
 | `tests/price_book.rs`: the price book's conformance suite, 9 cases, each on a fresh database | the same |
+| `tests/retention.rs`: the retention conformance suite, 5 cases, each on a fresh database, and what only PostgreSQL shows: the settings' margin decides what `run_retention` drops (default 90 days), a run cut short after the detach, or in it (a partition left pending-detach), is finished by the next, a run that finds the lock held does nothing and a run releases it, an outcome still `pending` keeps its partition, `ob_drop_partition` refuses (`OB904`) a name that is not a partition's, a day inside the margin, an attached partition and one holding an undecided event, and a table that is not ours is never listed | the same |
 | `tests/sql.rs`: migrations apply once and every function answers (and none is untested), the payload hash test vector, append-only tables, an unbalanced transaction cannot commit, the cap whoever writes, a drain that dies books nothing, a replay is not blocked by a held row, a missing partition is unavailable, a closed pool is unavailable, each comparison of `ob_reached` at its boundaries and an unknown or missing mode failing at the call of `ob_allowed`, intake wakes a listener, refusals reach the caller with their class; the raw payload hash test vector, half-to-even rounding in SQL, a version cannot be modified (append-only, sealed, its hash, back-dated even when written directly), a load waits for an intake that is rating, the price book's refusals reach the caller with their rule, class and position | the same |
 
 The database tests skip (passing, with `skipped:` on stderr) when `OPENBILLING_TEST_DATABASE_URL` is unset. Under

@@ -34,7 +34,7 @@ Legend: ✅ built and tested in CI · ⚠️ built, but partial or not yet prove
 | Storage | PostgreSQL 19 or later, the only infrastructure | ✅ | Older servers are refused at connect |
 | Intake | Usage events accepted once by id; a replay changes nothing | ✅ | One `ON CONFLICT DO SELECT` statement; a differing payload is a conflict ([ADR 0001](docs/adr/0001-postgres-is-the-queue.md)) |
 | Intake | Partitioned queue by occurrence day, made ahead of time | ✅ | `ob_prepare_partitions` |
-| Intake | Dropping old partitions after the window | 📋 | |
+| Intake | Dropping old partitions after the window plus a margin | ⚠️ | `retention.margin`, default 90 days (the owner's decision of 2026-11-28); `ob_expired_partitions` and `ob_drop_partition`, the detach run as a top-level `DETACH … CONCURRENTLY` by `openbilling serve` under an advisory lock, once at start and then hourly. Proven on PostgreSQL 19.0, never on a real deployment ([ADR 0001](docs/adr/0001-postgres-is-the-queue.md), G1 to G5) |
 | Intake | Pre-priced events (each carries its amount) | ✅ | |
 | Intake | Raw events rated at intake | ✅ | A meter, a quantity and dimensions; the event and its outcome keep their price version ([ADR 0004](docs/adr/0004-a-versioned-price-book-in-sql.md)). Through the API: `recordRawUsage`; the price list: `loadPriceList` |
 | Queue | Drain with `FOR UPDATE SKIP LOCKED`, once-only per event | ✅ | Concurrency tested on the conformance suite |

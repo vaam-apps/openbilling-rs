@@ -68,6 +68,22 @@ minutes.
 `fixtures` holds the helpers the cases share, and `price_cases` the price book's (`example_list`, `raw`); a store's
 own tests may use them too.
 
+## The partition retention suite
+
+`retention` is the conformance suite of `PartitionRetention` (ADR 0001, point 10, amended 2026-11-28):
+`retention_conformance!(factory)`, where `factory` is an `async fn() -> Option<F>` making a fresh `RetentionFixture`: the
+store under test and a way to plant a record in its queue as an intake long ago would have left it (intake refuses an
+event older than the window, so no port can age one), and to list the days that have a partition. Cases count days
+before the store's clock; a margin of `m` keeps every day on or after `today - (window + m)`.
+
+| Case | Holds |
+|---|---|
+| `an_event_replayed_inside_the_window_is_still_refused_after_a_drop` | After an old partition is dropped, a replay of an event inside the window is still a replay and moves nothing; one too old for the window is refused `too_old`; an id applied in the dropped partition is refused as `id_reused` by the outcome kept for good; a second run finds nothing |
+| `a_partition_with_an_undecided_event_is_kept` | An event still `received` keeps its partition, however old; once decided, the next run drops it |
+| `a_partition_inside_the_window_plus_the_margin_is_kept` | The cutoff day and every day inside it stay, the day before goes; a longer margin keeps what a shorter one drops |
+| `the_window_and_the_current_partition_are_never_touched` | Even the shortest margin (one day) leaves today and every day of the window |
+| `concurrent_runs_drop_each_partition_once` | Four runs at once: every expired partition is dropped exactly once, a run that finds another working does nothing |
+
 ## The payment provider suite
 
 `payments` is the conformance suite of `PaymentProvider` ([ADR 0003](../../docs/adr/0003-credits-from-a-payment-provider.md)):
@@ -87,8 +103,8 @@ provider does. `openbilling-vpay`'s stand-in is the first.
 
 ## Tests
 
-The suites run where an implementation runs them: `openbilling-pg`'s `tests/ledger.rs` and `tests/price_book.rs`,
-which need a PostgreSQL 19, and `openbilling-vpay`'s `tests/conformance.rs` for the payment suite, which needs
+The suites run where an implementation runs them: `openbilling-pg`'s `tests/ledger.rs`, `tests/price_book.rs` and
+`tests/retention.rs`, which need a PostgreSQL 19, and `openbilling-vpay`'s `tests/conformance.rs` for the payment suite, which needs
 nothing. The
 crate has no tests of its own; there is no second implementation of the rules to run it against (agent guide,
 rule 12).
