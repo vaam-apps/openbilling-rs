@@ -7,3 +7,4 @@ prometheusRule:
   enabled: true
   labels:
     release: prometheus
+    app.kubernetes.io/instance: overlaps-a-fixed-label

@@ -103,6 +103,9 @@ wanted=$(grep -c '^ *- alert: ' "$chart/alerts/openbilling.rules.yaml")
 got=$(grep -c '^ *- alert: ' "$work/alerts.yaml")
 [ "$wanted" -gt 0 ] && [ "$wanted" = "$got" ] || die "the PrometheusRule has $got alerts, the rules file $wanted"
 grep -q '^    release: prometheus$' "$work/alerts.yaml" || die "the PrometheusRule lacks prometheusRule.labels"
+pr=$(awk '/^kind: PrometheusRule/{f=1} f&&/^spec:/{exit} f' "$work/alerts.yaml")
+[ "$(printf '%s\n' "$pr" | grep -c '^    app.kubernetes.io/instance:')" = 1 ] || die "the PrometheusRule repeats a label key"
+printf '%s\n' "$pr" | grep -q '^    app.kubernetes.io/instance: overlaps-a-fixed-label$' || die "prometheusRule.labels does not win over a fixed label"
 printf 'a PrometheusRule with the %s shipped alerts, only when asked\n' "$got"
 
 step "the defaults keep every /v1 call refused"

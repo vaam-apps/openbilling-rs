@@ -49,3 +49,10 @@ for = "5m"
 warning = 0.7
 critical = 0.9
 for = "10m"
+
+# The service stopped reporting: `absent_over_time(openbilling_drain_lag_seconds[window])` is true, so the alerts above,
+# which need a series, cannot fire. Critical only. `window` is how long the metric must be missing from the query's
+# range (it must exceed the scrape and export interval); `for` is how long that must hold.
+[absence]
+window = "10m"
+for = "5m"

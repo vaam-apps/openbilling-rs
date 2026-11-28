@@ -12,7 +12,14 @@ Each signal has two alerts over the same query as its panel, per `job` (the serv
 the `warning` threshold up to the `critical` one (inclusive at the bottom), the **critical** one from `critical` up.
 Both wait for the signal to hold for `for` before they fire. Rates are taken over a 5 minute window. A ratio over a
 counter that has never counted has no series, so its alert cannot fire until the first event (ADR 0007, *Still
-open*).
+open*). That gap is closed by one more alert, `OpenbillingNotReportingCritical`, which fires when the service has
+reported no `openbilling_drain_lag_seconds` sample for the `absence.window` of the thresholds file (10 minutes by
+default) for `absence.for` (5 minutes). It has no warning pair.
+
+**It assumes a single job per Prometheus.** Its expression has no `job` matcher, so it is true only when the metric is
+absent from every job that Prometheus scrapes. Where one Prometheus holds several deployments of the service, or
+anything else that exports that metric, it cannot fire for one of them: write a `absent_over_time(…{job="…"}[10m])`
+rule per job of your own.
 
 ## Changing a threshold
 
@@ -40,8 +47,9 @@ file's path in the message. `--out` writes the rules file alone, and not the tes
 | `OpenbillingAllowedRefusedWarning`, `OpenbillingAllowedRefusedCritical` | The share of `getAllowed` answers that refuse is at least 20% or 50% for 10 minutes | Usage is being stopped: read the `check` label of the verdicts panel (`debt_limit`, `balance`, `member_cap`) |
 | `OpenbillingQueueBacklogWarning`, `OpenbillingQueueBacklogCritical` | Undecided usage events number at least 10 000 or 100 000 for 10 minutes | The drain is behind or stopped: its lag, its error ratio, the pool |
 | `OpenbillingQueueOldestAgeWarning`, `OpenbillingQueueOldestAgeCritical` | The oldest undecided event has waited at least 30 s or 300 s for 5 minutes | What producers feel as lag; the same causes as the backlog |
-| `OpenbillingDrainLagWarning`, `OpenbillingDrainLagCritical` | No drain pass has succeeded for at least 30 s or 120 s, for 5 minutes | The drain fails or does not run, even with an empty queue: the service's log, PostgreSQL |
+| `OpenbillingDrainLagWarning`, `OpenbillingDrainLagCritical` | No drain pass has succeeded for at least 30 s or 120 s, for 5 minutes | The drain fails or has stopped while the service still reports: the service's log, PostgreSQL |
 | `OpenbillingDrainErrorsWarning`, `OpenbillingDrainErrorsCritical` | At least 1% or 10% of drain passes fail for 5 minutes | The service's log for the failing pass; PostgreSQL |
+| `OpenbillingNotReportingCritical` | No `openbilling_drain_lag_seconds` sample at all for 10 minutes, for 5 minutes (the service is down, or its export, the Collector or the scrape is broken) | Whether the pods run and whether `OTEL_EXPORTER_OTLP_ENDPOINT` reaches the Collector; every other alert is silent while this one fires |
 | `OpenbillingPoolSaturatedWarning`, `OpenbillingPoolSaturatedCritical` | At least 70% or 90% of the connection pool is in use for 10 minutes | Requests wait for a connection: slow queries, a lock, or a pool smaller than the load |
 
 The numbers above are the defaults. Each alert's summary and description state the threshold it was generated with.

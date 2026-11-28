@@ -32,16 +32,24 @@ def _duration(where, value):
 def load(override=None):
     """The default thresholds, with the signals and keys of `override` (a path) replaced. Refuses what it cannot read."""
     document = _read(DEFAULT)
-    base = {"window": document["defaults"]["window"], "signals": {k: dict(v) for k, v in document["signals"].items()}}
+    base = {
+        "window": document["defaults"]["window"],
+        "signals": {k: dict(v) for k, v in document["signals"].items()},
+        "absence": dict(document["absence"]),
+    }
     if override is not None:
         extra = _read(override)
         for key in extra:
-            if key not in ("defaults", "signals"):
+            if key not in ("defaults", "signals", "absence"):
                 raise Refused(f"unknown table {key!r}")
         for key, value in extra.get("defaults", {}).items():
             if key != "window":
                 raise Refused(f"defaults.{key}: unknown key")
             base["window"] = _duration("defaults.window", value)
+        for key, value in extra.get("absence", {}).items():
+            if key not in ("window", "for"):
+                raise Refused(f"absence.{key}: unknown key")
+            base["absence"][key] = _duration(f"absence.{key}", value)
         for name, keys in extra.get("signals", {}).items():
             if name not in base["signals"]:
                 raise Refused(f"signals.{name}: unknown signal")
@@ -56,6 +64,8 @@ def load(override=None):
                 else:
                     raise Refused(f"{where}: unknown key")
     _duration("defaults.window", base["window"])
+    for key in ("window", "for"):
+        _duration(f"absence.{key}", base["absence"][key])
     for name, keys in base["signals"].items():
         for key in ("warning", "critical"):
             _number(f"signals.{name}.{key}", keys[key])

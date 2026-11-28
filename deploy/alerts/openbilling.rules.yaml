@@ -91,7 +91,7 @@ groups:
           severity: warning
         annotations:
           summary: "warning: no drain pass has succeeded for 30"
-          description: "No drain pass has succeeded for more than 30 seconds, even with an empty queue: the drain fails or does not run. See deploy/alerts/README.md."
+          description: "No drain pass has succeeded for more than 30 seconds, even with an empty queue: the drain fails or has stopped while the service still reports. A service that reports nothing is OpenbillingNotReportingCritical. See deploy/alerts/README.md."
       - alert: OpenbillingDrainLagCritical
         expr: "(max by (job) (openbilling_drain_lag_seconds)) >= 120"
         for: 5m
@@ -99,7 +99,7 @@ groups:
           severity: critical
         annotations:
           summary: "critical: no drain pass has succeeded for 120"
-          description: "No drain pass has succeeded for more than 120 seconds, even with an empty queue: the drain fails or does not run. See deploy/alerts/README.md."
+          description: "No drain pass has succeeded for more than 120 seconds, even with an empty queue: the drain fails or has stopped while the service still reports. A service that reports nothing is OpenbillingNotReportingCritical. See deploy/alerts/README.md."
       - alert: OpenbillingDrainErrorsWarning
         expr: "(sum by (job) (rate(openbilling_drain_runs_total{result=\"error\"}[5m])) / sum by (job) (rate(openbilling_drain_runs_total[5m]))) >= 0.01 and (sum by (job) (rate(openbilling_drain_runs_total{result=\"error\"}[5m])) / sum by (job) (rate(openbilling_drain_runs_total[5m]))) < 0.1"
         for: 5m
@@ -132,3 +132,11 @@ groups:
         annotations:
           summary: "critical: 90% of the connection pool is in use"
           description: "More than 90% of the connection pool is in use: requests wait for a connection. See deploy/alerts/README.md."
+      - alert: OpenbillingNotReportingCritical
+        expr: "absent_over_time(openbilling_drain_lag_seconds[10m])"
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "critical: the service has reported no metrics for 10m"
+          description: "openbilling_drain_lag_seconds, which a running service always reports, has had no sample for 10m: the service is down, its export or the Collector is broken, or the scrape is. Assumes one job per Prometheus. See deploy/alerts/README.md."
