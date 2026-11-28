@@ -1,0 +1,21 @@
+{{- /*
+The alert rules (deploy/alerts, copied into this chart's alerts/ and held equal by a test) as a PrometheusRule for the
+Prometheus Operator. Off by default: the CRD is the operator's, and the thresholds are the deployer's to review.
+`prometheusRule.labels` carry whatever the Prometheus's ruleSelector asks for.
+*/ -}}
+{{- if .Values.prometheusRule.enabled }}
+{{- $rules := .Files.Get "alerts/openbilling.rules.yaml" | fromYaml }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: openbilling
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    {{- with .Values.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  {{- dict "groups" $rules.groups | toYaml | nindent 2 }}
+{{- end }}

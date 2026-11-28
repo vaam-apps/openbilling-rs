@@ -4,7 +4,7 @@
 #   sh deploy/openbilling/tests/check.sh
 #
 # Needs helm (v4; CI pins the version) and kubeconform on PATH, and the network once: the common library is pulled
-# from ghcr.io, and kubeconform reads the Kubernetes schemas from GitHub. The ServiceMonitor schema is vendored.
+# from ghcr.io, and kubeconform reads the Kubernetes schemas from GitHub. The ServiceMonitor and PrometheusRule schemas are vendored.
 #
 #   1. the versions agree: Cargo.toml's workspace version, Chart.yaml's version and appVersion;
 #   2. the common library is the archive Chart.yaml pins, by sha256;
@@ -72,7 +72,8 @@ accepted="defaults||
 full|$here/values/full.yaml|--require-digest
 edge-with-digest|$here/values/edge-with-digest.yaml|--require-digest
 otel|$here/values/otel.yaml|
-vpay-token|$here/values/vpay-token.yaml|"
+vpay-token|$here/values/vpay-token.yaml|
+alerts|$here/values/alerts.yaml|"
 
 printf '%s\n' "$accepted" | while IFS='|' read -r name values flags; do
     set --
@@ -91,6 +92,18 @@ printf '%s\n' "$accepted" | while IFS='|' read -r name values flags; do
         -schema-location "$here/schemas/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json" \
         "$work/$name.yaml"
 done
+
+step "the alert rules"
+# A PrometheusRule renders only when asked, with the shipped rules and the labels given.
+if grep -q '^kind: PrometheusRule' "$work/defaults.yaml"; then
+    die "the defaults render a PrometheusRule; prometheusRule.enabled is off by default"
+fi
+grep -q '^kind: PrometheusRule' "$work/alerts.yaml" || die "alerts.yaml renders no PrometheusRule"
+wanted=$(grep -c '^ *- alert: ' "$chart/alerts/openbilling.rules.yaml")
+got=$(grep -c '^ *- alert: ' "$work/alerts.yaml")
+[ "$wanted" -gt 0 ] && [ "$wanted" = "$got" ] || die "the PrometheusRule has $got alerts, the rules file $wanted"
+grep -q '^    release: prometheus$' "$work/alerts.yaml" || die "the PrometheusRule lacks prometheusRule.labels"
+printf 'a PrometheusRule with the %s shipped alerts, only when asked\n' "$got"
 
 step "the defaults keep every /v1 call refused"
 # Without `openbilling.auth` the issuer and the audience render empty, which the binary reads as unset: RefuseAll.
