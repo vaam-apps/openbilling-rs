@@ -472,3 +472,215 @@ async fn a_webhook_holding_the_row_while_a_top_up_is_expired_ends_credited() {
             .unwrap();
     assert_eq!(state, "credited");
 }
+
+/// Three mismatched rows: `r1` and `r2` recorded and read back with another amount, `u1` never recorded.
+async fn mismatched_rows(store: &openbilling_pg::PgStore) -> PgLedger {
+    let ledger = PgLedger::new(store, LedgerSettings::default());
+    setup(&ledger).await;
+    let pool = store.pool();
+    sqlx::query("SELECT ob_open_account('a1', 'o1', 'EUR', 'main')")
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("SELECT ob_record_top_up('r1', 'k1', 'o1', 'EUR', 'main', 10)")
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("SELECT ob_record_top_up('r2', 'k2', 'o1', 'EUR', 'main', 10)")
+        .execute(pool)
+        .await
+        .unwrap();
+    for sql in [
+        "SELECT o_outcome FROM ob_settle_top_up('r1', 'succeeded', 'o1', 'EUR', 'main', 99, 'refuse')",
+        "SELECT o_outcome FROM ob_settle_top_up('r2', 'succeeded', 'o1', 'EUR', 'main', 99, 'refuse')",
+        "SELECT o_outcome FROM ob_settle_top_up('u1', 'succeeded', 'o1', 'EUR', 'main', 10, 'refuse')",
+    ] {
+        sqlx::query(sql).execute(pool).await.unwrap();
+    }
+    ledger
+}
+
+fn resolve_sql(state: &str, id: &str, extra: &str) -> String {
+    format!(
+        "UPDATE ob_top_up SET state = '{state}', resolved_at = now(), resolved_by = 'op'{extra} \
+         WHERE payment_id = '{id}'"
+    )
+}
+
+/// The guard allows exactly one move out of `mismatched` beyond the unrecorded upgrade: to a resolved state, with the
+/// terms, the key, the field and the last read unchanged and the resolution set once; a resolved row is final.
+#[tokio::test]
+async fn the_guard_allows_exactly_the_two_resolutions() {
+    let Some(store) = support::fresh_store().await else {
+        return;
+    };
+    let _ledger = mismatched_rows(&store).await;
+    let pool = store.pool();
+    for sql in [
+        // Not a resolution: no operator, or the terms, the key, the field or the last read changed with it.
+        "UPDATE ob_top_up SET state = 'resolved_dismissed' WHERE payment_id = 'r1'".to_owned(),
+        resolve_sql("resolved_dismissed", "r1", ", amount = 11"),
+        resolve_sql("resolved_dismissed", "r1", ", mismatch_field = 'owner'"),
+        resolve_sql("resolved_dismissed", "r1", ", last_read_at = now()"),
+        resolve_sql("resolved_dismissed", "r1", ", idem_key = 'other'"),
+        // An unrecorded row is never credited, even by hand.
+        resolve_sql("resolved_credited", "u1", ""),
+        // The operator alone, without a state, is not a move either.
+        "UPDATE ob_top_up SET resolved_at = now(), resolved_by = 'op' WHERE payment_id = 'r1'"
+            .to_owned(),
+    ] {
+        sqlx::query(sqlx::AssertSqlSafe(sql))
+            .execute(pool)
+            .await
+            .unwrap_err();
+    }
+    let (mismatched,): (i64,) =
+        sqlx::query_as("SELECT count(*) FROM ob_top_up WHERE state = 'mismatched'")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    assert_eq!(mismatched, 3, "none of the above moved a row");
+    sqlx::query(sqlx::AssertSqlSafe(resolve_sql(
+        "resolved_credited",
+        "r1",
+        "",
+    )))
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(resolve_sql(
+        "resolved_dismissed",
+        "u1",
+        "",
+    )))
+    .execute(pool)
+    .await
+    .unwrap();
+    // Resolved rows are final: nothing changes them, not even a touch.
+    for sql in [
+        "UPDATE ob_top_up SET state = 'resolved_dismissed' WHERE payment_id = 'r1'",
+        "UPDATE ob_top_up SET last_read_at = now() WHERE payment_id = 'u1'",
+        "UPDATE ob_top_up SET state = 'pending', mismatch_field = NULL WHERE payment_id = 'u1'",
+        "UPDATE ob_top_up SET resolved_by = 'x' WHERE payment_id = 'r1'",
+        "UPDATE ob_top_up SET state = 'expired' WHERE payment_id = 'r1'",
+        "DELETE FROM ob_top_up WHERE payment_id = 'r1'",
+    ] {
+        let error = sqlx::query(sql).execute(pool).await.unwrap_err();
+        assert_eq!(sqlstate(&error), "OB901", "{sql}");
+    }
+    // A pending row cannot be resolved by a direct update.
+    sqlx::query("SELECT ob_record_top_up('r3', 'k3', 'o1', 'EUR', 'main', 10)")
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(resolve_sql(
+        "resolved_dismissed",
+        "r3",
+        "",
+    )))
+    .execute(pool)
+    .await
+    .unwrap_err();
+}
+
+/// A webhook or a reconciliation after the operator's choice changes nothing: a credited resolution answers `credited`
+/// again as a replay, a dismissed one answers `mismatch`, never marked again.
+#[tokio::test]
+async fn settling_a_resolved_top_up_answers_its_resolution() {
+    use openbilling_core::{CreditId, OwnerId, Resolution, TopUpLedger};
+    let Some(store) = support::fresh_store().await else {
+        return;
+    };
+    let ledger = mismatched_rows(&store).await;
+    let pool = store.pool();
+    let op = OwnerId::new("op").unwrap();
+    ledger
+        .resolve_top_up(
+            &CreditId::new("r1").unwrap(),
+            Resolution::CreditRecorded,
+            &op,
+        )
+        .await
+        .unwrap();
+    ledger
+        .resolve_top_up(&CreditId::new("r2").unwrap(), Resolution::Dismiss, &op)
+        .await
+        .unwrap();
+    // Whatever the provider reports now (even a different amount) answers the resolution.
+    for amount in [10_i64, 99] {
+        let credited: (String, Option<String>, bool, bool) = sqlx::query_as(
+            "SELECT o_outcome, o_field, o_replayed, o_marked \
+             FROM ob_settle_top_up('r1', 'succeeded', 'o1', 'EUR', 'main', $1, 'refuse')",
+        )
+        .bind(amount)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(credited, ("credited".to_owned(), None, true, false));
+        let dismissed: (String, Option<String>, bool, bool) = sqlx::query_as(
+            "SELECT o_outcome, o_field, o_replayed, o_marked \
+             FROM ob_settle_top_up('r2', 'succeeded', 'o1', 'EUR', 'main', $1, 'refuse')",
+        )
+        .bind(amount)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            dismissed,
+            (
+                "mismatch".to_owned(),
+                Some("amount".to_owned()),
+                false,
+                false
+            )
+        );
+    }
+    assert_eq!(
+        openbilling_testkit::fixtures::net(&ledger, "o1").await,
+        10,
+        "only the recorded terms of r1 were booked, once"
+    );
+}
+
+/// Several operators resolving one top-up at once: the row is locked, so the credit is booked once, one call took the
+/// decision and the others are its replay.
+#[tokio::test]
+async fn simultaneous_resolutions_credit_once() {
+    use openbilling_core::{CreditId, OwnerId, Resolution, TopUpLedger};
+    let Some(store) = support::fresh_store().await else {
+        return;
+    };
+    let ledger = mismatched_rows(&store).await;
+    let tasks: Vec<_> = ["op1", "op2", "op3", "op4"]
+        .into_iter()
+        .map(|who| {
+            let ledger = ledger.clone();
+            tokio::spawn(async move {
+                ledger
+                    .resolve_top_up(
+                        &CreditId::new("r1").unwrap(),
+                        Resolution::CreditRecorded,
+                        &OwnerId::new(who).unwrap(),
+                    )
+                    .await
+                    .unwrap()
+            })
+        })
+        .collect();
+    let mut took = 0;
+    let mut transactions = std::collections::BTreeSet::new();
+    for task in tasks {
+        let resolved = task.await.unwrap();
+        transactions.insert(resolved.credited.expect("a credit").transaction);
+        took += usize::from(!resolved.replayed);
+    }
+    assert_eq!(took, 1, "one call took the decision");
+    assert_eq!(transactions.len(), 1, "one transaction");
+    assert_eq!(openbilling_testkit::fixtures::net(&ledger, "o1").await, 10);
+    let (by,): (String,) =
+        sqlx::query_as("SELECT resolved_by FROM ob_top_up WHERE payment_id = 'r1'")
+            .fetch_one(store.pool())
+            .await
+            .unwrap();
+    assert!(by.starts_with("op"));
+}

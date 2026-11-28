@@ -74,11 +74,18 @@ pub enum Rule {
     VersionConflict,
     /// A top-up recorded again with other terms than the first time (ADR 0003, amended 2026-11-28).
     TopUpConflict,
+    /// An operator resolved a top-up that is not mismatched (ADR 0003, amended 2026-11-28).
+    TopUpNotMismatched,
+    /// A top-up already resolved the other way (ADR 0003, amended 2026-11-28).
+    ResolutionConflict,
+    /// A mismatched top-up no top-up was recorded for can only be dismissed, never credited (ADR 0003, amended
+    /// 2026-11-28).
+    NoRecordedTerms,
 }
 
 impl Rule {
     /// Every rule, in declaration order.
-    pub const ALL: [Self; 27] = [
+    pub const ALL: [Self; 30] = [
         Self::TooManyEvents,
         Self::NegativeAmount,
         Self::DifferingDuplicate,
@@ -106,6 +113,9 @@ impl Rule {
         Self::BackDated,
         Self::VersionConflict,
         Self::TopUpConflict,
+        Self::TopUpNotMismatched,
+        Self::ResolutionConflict,
+        Self::NoRecordedTerms,
     ];
 
     /// The rule's stable name, for logs and metrics.
@@ -139,6 +149,9 @@ impl Rule {
             Self::BackDated => "back_dated",
             Self::VersionConflict => "version_conflict",
             Self::TopUpConflict => "top_up_conflict",
+            Self::TopUpNotMismatched => "top_up_not_mismatched",
+            Self::ResolutionConflict => "resolution_conflict",
+            Self::NoRecordedTerms => "no_recorded_terms",
         }
     }
 
@@ -181,6 +194,11 @@ impl Rule {
             }
             Self::VersionConflict => "another version takes effect at the same time",
             Self::TopUpConflict => "the payment was already recorded as another top-up",
+            Self::TopUpNotMismatched => "the top-up is not mismatched",
+            Self::ResolutionConflict => "the top-up was resolved the other way",
+            Self::NoRecordedTerms => {
+                "no top-up was recorded for the payment: a mismatch like it can only be dismissed"
+            }
         }
     }
 }
@@ -193,7 +211,9 @@ impl Classify for Rule {
             | Self::CreditConflict
             | Self::ReversalCap
             | Self::VersionConflict
-            | Self::TopUpConflict => ErrorClass::Conflict,
+            | Self::TopUpConflict
+            | Self::TopUpNotMismatched
+            | Self::ResolutionConflict => ErrorClass::Conflict,
             Self::TooManyEvents
             | Self::NegativeAmount
             | Self::DifferingDuplicate
@@ -214,6 +234,7 @@ impl Classify for Rule {
             | Self::InvalidPriceList
             | Self::PriceListDuplicate
             | Self::PriceListMismatch
+            | Self::NoRecordedTerms
             | Self::BackDated => ErrorClass::Invalid,
         }
     }

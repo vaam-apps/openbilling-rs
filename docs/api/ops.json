@@ -273,6 +273,20 @@
       "contract_digest": "02bb5d84c66a32f30cc472a50b6a942cbde5b12c074fc71986d3441caf996e40"
     },
     {
+      "key": "POST /$procs/resolveTopUp",
+      "kind": "procedure",
+      "allow": [
+        "hasRole(\"operator\")"
+      ],
+      "deny": [],
+      "roles": [
+        "operator"
+      ],
+      "requires_principal": true,
+      "unanalysed": [],
+      "contract_digest": "83928ae00f699ee59a5727ee31c628d126ec5114ce81ed8944587663fe413fd3"
+    },
+    {
       "key": "POST /$procs/setDebtLimit",
       "kind": "procedure",
       "allow": [

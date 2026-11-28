@@ -40,6 +40,12 @@ enum OperatorCreditSource {
   adjustment
 }
 
+// What an operator decides for a mismatched top-up (ADR 0003, amended 2026-11-28).
+enum TopUpResolution {
+  credit_recorded
+  dismiss
+}
+
 // ---- Models over the ledger's tables, read-only ----
 
 model Account {
@@ -480,6 +486,25 @@ type Settlement {
 
 // Reads a payment back from the provider and books it if it succeeded (`ob_credit`, source payment).
 mutation procedure reconcilePayment(args: ProviderObject): Settlement
+  @allow(hasRole("operator"))
+
+type ResolveTopUpInput {
+  payment String @length(min: 1, max: 128)
+  outcome TopUpResolution
+}
+
+type TopUpResolved {
+  outcome     String
+  field       String
+  accountId   String?
+  transaction String?
+  replayed    Boolean
+}
+
+// Closes a mismatched top-up, once: `credit_recorded` credits the RECORDED terms through `ob_credit` (never what the
+// provider reports; refused for a mismatch no top-up was recorded for), `dismiss` closes it with no credit. The
+// operator's subject is kept on the top-up (`ob_resolve_top_up`).
+mutation procedure resolveTopUp(args: ResolveTopUpInput): TopUpResolved
   @allow(hasRole("operator"))
 
 // Reads a refund back from the provider and books it as a reversal if it succeeded (`ob_reverse`).

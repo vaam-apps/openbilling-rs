@@ -9,7 +9,7 @@
 use std::future::Future;
 use std::time::Duration;
 
-use crate::id::CreditId;
+use crate::id::{CreditId, OwnerId};
 use crate::payment::{
     IdempotencyKey, PaymentProvider, PaymentRefusal, PaymentStatus, PaymentTarget, PaymentView,
 };
@@ -117,6 +117,49 @@ pub enum TopUpSettled {
     Mismatch(MismatchField),
 }
 
+/// What an operator decides for a mismatched top-up (ADR 0003, amended 2026-11-28). A closed set, so that it is a metric
+/// label and a log field.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Resolution {
+    /// Credit the *recorded* terms once. Refused for a mismatch no top-up was recorded for (`unrecorded`).
+    CreditRecorded,
+    /// Close the top-up with no credit.
+    Dismiss,
+}
+
+impl Resolution {
+    /// Every resolution, in declaration order.
+    pub const ALL: [Self; 2] = [Self::CreditRecorded, Self::Dismiss];
+
+    /// The resolution's stable name, as the API and the SQL write it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::CreditRecorded => "credit_recorded",
+            Self::Dismiss => "dismiss",
+        }
+    }
+
+    /// The resolution named `name`, or `None`.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|r| r.as_str() == name)
+    }
+}
+
+/// What resolving a mismatched top-up did.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Resolved {
+    /// The decision now on the top-up: the caller's, or, when `replayed`, the one already taken.
+    pub resolution: Resolution,
+    /// The field the top-up had been refused for.
+    pub field: MismatchField,
+    /// The credit of the recorded terms: `Some` for [`Resolution::CreditRecorded`].
+    pub credited: Option<Credited>,
+    /// The decision had been taken already (by this operator or another); nothing changed.
+    pub replayed: bool,
+}
+
 /// When a pending top-up is read back, and how many at a time. The deployer's (`reconcile:`); each value has a
 /// documented default.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -168,6 +211,19 @@ pub trait TopUpLedger: Send + Sync {
         &self,
         payment: &PaymentView,
     ) -> impl Future<Output = Result<TopUpSettled, LedgerError>> + Send;
+
+    /// Resolves a mismatched top-up, once, as `resolution` says; `by` is who decided, kept on the top-up for audit and
+    /// nowhere else. [`Resolution::CreditRecorded`] books the recorded terms through the ledger's credit;
+    /// [`Resolution::Dismiss`] closes it with no credit. The same resolution again answers the first (`replayed`); the
+    /// other one is [`Rule::ResolutionConflict`](crate::Rule::ResolutionConflict); a top-up that is not mismatched is
+    /// `top_up_not_mismatched`, a payment with no top-up `unknown_payment`, and crediting a mismatch no top-up was
+    /// recorded for `no_recorded_terms`.
+    fn resolve_top_up(
+        &self,
+        payment: &CreditId,
+        resolution: Resolution,
+        by: &OwnerId,
+    ) -> impl Future<Output = Result<Resolved, LedgerError>> + Send;
 
     /// Claims up to `settings.batch` pending top-ups that are due to be read: older than `pending_after`, younger than
     /// `stop_after`, and not claimed in the last `read_again_after`, the least recently read first, so a backlog
@@ -510,6 +566,14 @@ mod tests {
                     .unwrap()
                     .pop_front()
                     .expect("a scripted settle")
+            }
+            async fn resolve_top_up(
+                &self,
+                _: &CreditId,
+                _: Resolution,
+                _: &OwnerId,
+            ) -> Result<Resolved, LedgerError> {
+                unreachable!()
             }
             async fn claim_pending_top_ups(
                 &self,

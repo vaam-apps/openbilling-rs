@@ -55,7 +55,7 @@ const fn refused_at(rule: Rule) -> Meaning {
 }
 
 /// Every SQLSTATE the migrations raise, and what it means.
-pub const LEDGER_SQLSTATES: [(&str, Meaning); 33] = [
+pub const LEDGER_SQLSTATES: [(&str, Meaning); 36] = [
     ("OB001", refused(Rule::CreditConflict)),
     ("OB002", refused(Rule::UnknownAccount)),
     ("OB003", refused(Rule::UnknownCurrency)),
@@ -67,6 +67,9 @@ pub const LEDGER_SQLSTATES: [(&str, Meaning); 33] = [
     ("OB009", refused(Rule::InvalidAmount)),
     ("OB010", refused(Rule::InvalidConfig)),
     ("OB011", refused(Rule::TopUpConflict)),
+    ("OB012", refused(Rule::TopUpNotMismatched)),
+    ("OB013", refused(Rule::ResolutionConflict)),
+    ("OB014", refused(Rule::NoRecordedTerms)),
     ("OB101", refused(Rule::TooManyEvents)),
     ("OB102", refused_naming(Rule::NegativeAmount)),
     ("OB103", refused_naming(Rule::DifferingDuplicate)),
@@ -211,6 +214,9 @@ mod tests {
             ("OB009", Rule::InvalidAmount, nothing),
             ("OB010", Rule::InvalidConfig, nothing),
             ("OB011", Rule::TopUpConflict, nothing),
+            ("OB012", Rule::TopUpNotMismatched, nothing),
+            ("OB013", Rule::ResolutionConflict, nothing),
+            ("OB014", Rule::NoRecordedTerms, nothing),
             ("OB101", Rule::TooManyEvents, nothing),
             ("OB102", Rule::NegativeAmount, events),
             ("OB103", Rule::DifferingDuplicate, events),
@@ -287,6 +293,8 @@ mod tests {
                         | Rule::CreditConflict
                         | Rule::ReversalCap
                         | Rule::TopUpConflict
+                        | Rule::TopUpNotMismatched
+                        | Rule::ResolutionConflict
                         | Rule::VersionConflict => ErrorClass::Conflict,
                         _ => ErrorClass::Invalid,
                     }

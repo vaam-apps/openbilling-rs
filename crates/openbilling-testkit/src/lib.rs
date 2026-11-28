@@ -115,6 +115,8 @@ macro_rules! top_up_conformance {
             a_last_read_still_pending_expires_it_and_a_late_settle_still_credits,
             expire_top_up_never_moves_a_settled_top_up,
             the_backstop_expires_only_what_had_a_last_read_attempt,
+            a_mismatch_is_resolved_once_by_the_operators_choice,
+            an_unrecorded_mismatch_can_only_be_dismissed,
         );
     };
 }

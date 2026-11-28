@@ -68,7 +68,7 @@ pub use store::{
 };
 pub use time::{Timestamp, UtcDay, UtcMonth};
 pub use top_up::{
-    MismatchField, ReconcileReport, ReconcileSettings, TopUp, TopUpLedger, TopUpSettled,
-    UnrecordedTopUps, reconcile_pending,
+    MismatchField, ReconcileReport, ReconcileSettings, Resolution, Resolved, TopUp, TopUpLedger,
+    TopUpSettled, UnrecordedTopUps, reconcile_pending,
 };
 pub use usage::{Intake, IntakeReport, UsageEvent};
