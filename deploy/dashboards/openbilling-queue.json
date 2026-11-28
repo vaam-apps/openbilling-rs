@@ -904,7 +904,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(increase(openbilling_payments_mismatches_total{job=~\"$job\"}[1h]))",
+          "expr": "sum((openbilling_payments_mismatches_total{job=~\"$job\"} unless openbilling_payments_mismatches_total{job=~\"$job\"} offset 1h) or increase(openbilling_payments_mismatches_total{job=~\"$job\"}[1h]))",
           "legendFormat": "__auto",
           "datasource": {
             "type": "prometheus",
@@ -916,6 +916,7 @@
         "defaults": {
           "unit": "short",
           "min": 0,
+          "decimals": 0,
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -925,7 +926,7 @@
               },
               {
                 "color": "orange",
-                "value": 0.5
+                "value": 1
               },
               {
                 "color": "red",
@@ -969,7 +970,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (field) (increase(openbilling_payments_mismatches_total{job=~\"$job\"}[$__rate_interval]))",
+          "expr": "sum by (field) (increase(openbilling_payments_mismatches_total{job=~\"$job\"}[$__interval]))",
           "legendFormat": "__auto",
           "datasource": {
             "type": "prometheus",
@@ -1067,7 +1068,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(increase(openbilling_topups_expired_total{job=~\"$job\"}[1h]))",
+          "expr": "sum((openbilling_topups_expired_total{job=~\"$job\"} unless openbilling_topups_expired_total{job=~\"$job\"} offset 1h) or increase(openbilling_topups_expired_total{job=~\"$job\"}[1h]))",
           "legendFormat": "__auto",
           "datasource": {
             "type": "prometheus",
@@ -1079,6 +1080,7 @@
         "defaults": {
           "unit": "short",
           "min": 0,
+          "decimals": 0,
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -1132,7 +1134,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(increase(openbilling_topups_expired_total{job=~\"$job\"}[$__rate_interval]))",
+          "expr": "sum(increase(openbilling_topups_expired_total{job=~\"$job\"}[$__interval]))",
           "legendFormat": "__auto",
           "datasource": {
             "type": "prometheus",

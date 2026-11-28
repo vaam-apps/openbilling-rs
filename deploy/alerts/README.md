@@ -51,8 +51,13 @@ file's path in the message. `--out` writes the rules file alone, and not the tes
 | `OpenbillingDrainErrorsWarning`, `OpenbillingDrainErrorsCritical` | At least 1% or 10% of drain passes fail for 5 minutes | The service's log for the failing pass; PostgreSQL |
 | `OpenbillingNotReportingCritical` | No `openbilling_drain_lag_seconds` sample at all for 10 minutes, for 5 minutes (the service is down, or its export, the Collector or the scrape is broken) | Whether the pods run and whether `OTEL_EXPORTER_OTLP_ENDPOINT` reaches the Collector; every other alert is silent while this one fires |
 | `OpenbillingPoolSaturatedWarning`, `OpenbillingPoolSaturatedCritical` | At least 70% or 90% of the connection pool is in use for 10 minutes | Requests wait for a connection: slow queries, a lock, or a pool smaller than the load |
-| `OpenbillingPaymentMismatchesWarning`, `OpenbillingPaymentMismatchesCritical` | At least one (`0.5`, as an increase is rarely exact) or 10 payments read back differ from their top-up over the last hour, for 1 minute | Read the `field` label on `Payment mismatches by field`, then settle the payment by hand. Like the other counters, the alert has no series until the first mismatch, and an increase from a counter's first sample is not seen |
+| `OpenbillingPaymentMismatchesWarning`, `OpenbillingPaymentMismatchesCritical` | At least 1 or 10 payments read back differ from their top-up over the last hour, for 1 minute | Read the `field` label on `Payment mismatches by field`, then settle the payment by hand. The first mismatch counts: a counter's new series is read at its value (see below) |
 | `OpenbillingTopUpsExpiredWarning`, `OpenbillingTopUpsExpiredCritical` | At least 5 or 50 pending top-ups expired over the last hour, for 1 minute | Webhooks may be lost: check the webhook route's traffic and the provider's delivery log; a late webhook or `reconcilePayment` still settles an expired top-up |
+
+The two payment counters are read as `sum by (job) ((m unless m offset 1h) or increase(m[1h]))`: a counter has no
+series until its first add, so `increase` alone reads a series that starts at 1 as 0, and the left branch takes a series
+with no sample an hour ago at its value. Residual risk: a scrape gap exactly at t-1h makes an old series look new for
+that evaluation, and it then reports its all-time value (a false warning or critical until the next evaluation).
 
 The numbers above are the defaults. Each alert's summary and description state the threshold it was generated with.
 

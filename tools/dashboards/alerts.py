@@ -96,7 +96,7 @@ SIGNALS = {
         "alert": "OpenbillingPaymentMismatches",
         "kind": "increase",
         "metric": "openbilling_payments_mismatches_total",
-        "summary": "{} payments read back differ from their top-up in the last hour",
+        "summary": "{} or more payments read back differ from their top-up in the last hour",
         "meaning": "At least {value} payments read back from the payment provider differ from the top-up recorded for them over the last hour (owner, label, currency or amount): read the `field` label on the payments panel, and settle each by hand.",
         "unit": "payments",
     },
@@ -104,7 +104,7 @@ SIGNALS = {
         "alert": "OpenbillingTopUpsExpired",
         "kind": "increase",
         "metric": "openbilling_topups_expired_total",
-        "summary": "{} pending top-ups expired in the last hour",
+        "summary": "{} or more pending top-ups expired in the last hour",
         "meaning": "At least {value} pending top-ups were older than the reconciler's stop_after over the last hour and are no longer read back: webhooks may be lost. A late webhook or reconcilePayment still settles them.",
         "unit": "top-ups",
     },
@@ -129,7 +129,10 @@ def expression(signal, window):
     if spec["kind"] == "gauge":
         return f"max by (job) ({spec['metric']})"
     if spec["kind"] == "increase":
-        return f"sum by (job) (increase({spec['metric']}[{INCREASE_WINDOW}]))"
+        # A counter has no series until its first add, so `increase` alone reads a series that starts at N as 0. The
+        # left branch is the series with no sample an hour ago (a new one): its value is what it has counted so far.
+        m = spec["metric"]
+        return f"sum by (job) (({m} unless {m} offset {INCREASE_WINDOW}) or increase({m}[{INCREASE_WINDOW}]))"
     return 'sum by (job) (db_client_connection_count{state="used"}) / sum by (job) (db_client_connection_max)'
 
 
@@ -230,8 +233,8 @@ def series(spec, ratio):
     if spec["kind"] == "gauge":
         return [(f"{spec['metric']}{{{job('')}}}", f"{number(ratio)}x40")]
     if spec["kind"] == "increase":
-        # A counter that reaches `ratio` after INCREASE_TEST_MINUTES, in equal steps from zero.
-        return [(f"{spec['metric']}{{{job('')}}}", f"0+{number(round(ratio / INCREASE_TEST_MINUTES, 9))}x40")]
+        # A real counter never exports a 0 sample: it appears, at its first add, with a value (here after 5 minutes).
+        return [(f"{spec['metric']}{{{job('')}}}", f"_x5 {number(ratio)}x35")]
     return [
         (f'db_client_connection_count{{{job("state=" + chr(34) + "used" + chr(34))}}}', f"{number(round(ratio * 100, 9))}x40"),
         (f"db_client_connection_max{{{job('')}}}", "100x40"),
@@ -279,6 +282,64 @@ def render_tests(config):
             lines.append("            exp_annotations:")
             lines.append(f"              summary: {json.dumps(summary)}")
             lines.append(f"              description: {json.dumps(description)}")
+    for signal, spec in SIGNALS.items():
+        keys = config["signals"][signal]
+        for_minutes = int(keys["for"][:-1])
+        eval_minutes = INCREASE_TEST_MINUTES + for_minutes if spec["kind"] == "increase" else for_minutes + int(config["window"][:-1]) + 4
+        alert = spec["alert"]
+        # Inside the warning band the critical alert stays silent.
+        band = (keys["warning"] + keys["critical"]) / 2
+        lines += [f"  - name: {signal}_critical_silent_in_band", "    interval: 1m", "    input_series:"]
+        for name, values in series(spec, band):
+            lines += [f"      - series: {json.dumps(name.replace('{job}', 'band'))}", f"        values: {json.dumps(values)}"]
+        lines += [
+            "    alert_rule_test:",
+            f"      - eval_time: {eval_minutes}m",
+            f"        alertname: {alert}Critical",
+            "        exp_alerts: []",
+        ]
+        if spec["kind"] in ("gauge", "increase"):
+            # The critical value itself is critical (inclusive), and the warning alert is then silent.
+            summary, description = texts(signal, "critical", keys["critical"])
+            lines += [f"  - name: {signal}_critical_inclusive", "    interval: 1m", "    input_series:"]
+            for name, values in series(spec, keys["critical"]):
+                lines += [f"      - series: {json.dumps(name.replace('{job}', 'edge'))}", f"        values: {json.dumps(values)}"]
+            lines += [
+                "    alert_rule_test:",
+                f"      - eval_time: {eval_minutes}m",
+                f"        alertname: {alert}Critical",
+                "        exp_alerts:",
+                "          - exp_labels:",
+                "              severity: critical",
+                "              job: edge",
+                "            exp_annotations:",
+                f"              summary: {json.dumps(summary)}",
+                f"              description: {json.dumps(description)}",
+                f"      - eval_time: {eval_minutes}m",
+                f"        alertname: {alert}Warning",
+                "        exp_alerts: []",
+            ]
+        if spec["kind"] == "increase":
+            # The first event of a counter that did not exist before: it must read as its value, not as 0.
+            first = {"payment_mismatches": 1, "topups_expired": 7}.get(signal, keys["warning"])
+            summary, description = texts(signal, "warning", keys["warning"])
+            lines += [
+                f"  - name: {signal}_first_event",
+                "    interval: 1m",
+                "    input_series:",
+                f"      - series: {json.dumps(spec['metric'] + '{job=\"first\"}')}",
+                f"        values: {json.dumps('_x10 ' + str(first) + 'x30')}",
+                "    alert_rule_test:",
+                f"      - eval_time: 20m",
+                f"        alertname: {alert}Warning",
+                "        exp_alerts:",
+                "          - exp_labels:",
+                "              severity: warning",
+                "              job: first",
+                "            exp_annotations:",
+                f"              summary: {json.dumps(summary)}",
+                f"              description: {json.dumps(description)}",
+            ]
     window = int(config["absence"]["window"][:-1])
     hold = int(config["absence"]["for"][:-1])
     if not (config["absence"]["window"].endswith("m") and config["absence"]["for"].endswith("m")):

@@ -51,11 +51,11 @@ critical = 0.9
 for = "10m"
 
 # Payments, counted over the last hour (the counters are `increase`d over 1h, not over `window`). A payment that
-# differs from its top-up is never expected: `warning = 0.5` means "at least one" (an `increase` is rarely an exact
-# integer). Expired top-ups are pending top-ups the reconciler stopped reading: a few are a customer who never paid,
+# differs from its top-up is never expected: `warning = 1` is "at least one" (a counter's first event reads exactly 1,
+# see deploy/alerts/README.md). Expired top-ups are pending top-ups the reconciler stopped reading: a few are a customer who never paid,
 # many are a webhook that never arrives.
 [signals.payment_mismatches]
-warning = 0.5
+warning = 1
 critical = 10
 for = "1m"
 

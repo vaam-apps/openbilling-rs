@@ -228,11 +228,11 @@ tests:
     interval: 1m
     input_series:
       - series: "openbilling_payments_mismatches_total{job=\"low\"}"
-        values: "0+0.0125x40"
+        values: "_x5 0.5x35"
       - series: "openbilling_payments_mismatches_total{job=\"band\"}"
-        values: "0+0.2625x40"
+        values: "_x5 5.5x35"
       - series: "openbilling_payments_mismatches_total{job=\"high\"}"
-        values: "0+0.75x40"
+        values: "_x5 15x35"
     alert_rule_test:
       - eval_time: 21m
         alertname: OpenbillingPaymentMismatchesWarning
@@ -241,8 +241,8 @@ tests:
               severity: warning
               job: band
             exp_annotations:
-              summary: "warning: 0.5 payments read back differ from their top-up in the last hour"
-              description: "At least 0.5 payments read back from the payment provider differ from the top-up recorded for them over the last hour (owner, label, currency or amount): read the `field` label on the payments panel, and settle each by hand. See deploy/alerts/README.md."
+              summary: "warning: 1 or more payments read back differ from their top-up in the last hour"
+              description: "At least 1 payments read back from the payment provider differ from the top-up recorded for them over the last hour (owner, label, currency or amount): read the `field` label on the payments panel, and settle each by hand. See deploy/alerts/README.md."
       - eval_time: 21m
         alertname: OpenbillingPaymentMismatchesCritical
         exp_alerts:
@@ -250,17 +250,17 @@ tests:
               severity: critical
               job: high
             exp_annotations:
-              summary: "critical: 10 payments read back differ from their top-up in the last hour"
+              summary: "critical: 10 or more payments read back differ from their top-up in the last hour"
               description: "At least 10 payments read back from the payment provider differ from the top-up recorded for them over the last hour (owner, label, currency or amount): read the `field` label on the payments panel, and settle each by hand. See deploy/alerts/README.md."
   - name: topups_expired
     interval: 1m
     input_series:
       - series: "openbilling_topups_expired_total{job=\"low\"}"
-        values: "0+0.125x40"
+        values: "_x5 2.5x35"
       - series: "openbilling_topups_expired_total{job=\"band\"}"
-        values: "0+1.375x40"
+        values: "_x5 27.5x35"
       - series: "openbilling_topups_expired_total{job=\"high\"}"
-        values: "0+3.75x40"
+        values: "_x5 75x35"
     alert_rule_test:
       - eval_time: 21m
         alertname: OpenbillingTopUpsExpiredWarning
@@ -269,7 +269,7 @@ tests:
               severity: warning
               job: band
             exp_annotations:
-              summary: "warning: 5 pending top-ups expired in the last hour"
+              summary: "warning: 5 or more pending top-ups expired in the last hour"
               description: "At least 5 pending top-ups were older than the reconciler's stop_after over the last hour and are no longer read back: webhooks may be lost. A late webhook or reconcilePayment still settles them. See deploy/alerts/README.md."
       - eval_time: 21m
         alertname: OpenbillingTopUpsExpiredCritical
@@ -278,7 +278,7 @@ tests:
               severity: critical
               job: high
             exp_annotations:
-              summary: "critical: 50 pending top-ups expired in the last hour"
+              summary: "critical: 50 or more pending top-ups expired in the last hour"
               description: "At least 50 pending top-ups were older than the reconciler's stop_after over the last hour and are no longer read back: webhooks may be lost. A late webhook or reconcilePayment still settles them. See deploy/alerts/README.md."
   - name: pool_used_ratio
     interval: 1m
@@ -314,6 +314,226 @@ tests:
             exp_annotations:
               summary: "critical: 90% of the connection pool is in use"
               description: "More than 90% of the connection pool is in use: requests wait for a connection. See deploy/alerts/README.md."
+  - name: http_5xx_ratio_critical_silent_in_band
+    interval: 1m
+    input_series:
+      - series: "http_server_request_duration_seconds_count{job=\"band\",status=\"5xx\"}"
+        values: "0+0.55x40"
+      - series: "http_server_request_duration_seconds_count{job=\"band\",status=\"2xx\"}"
+        values: "0+99.45x40"
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: OpenbillingHttp5xxCritical
+        exp_alerts: []
+  - name: http_4xx_ratio_critical_silent_in_band
+    interval: 1m
+    input_series:
+      - series: "http_server_request_duration_seconds_count{job=\"band\",status=\"4xx\"}"
+        values: "0+12.5x40"
+      - series: "http_server_request_duration_seconds_count{job=\"band\",status=\"2xx\"}"
+        values: "0+87.5x40"
+    alert_rule_test:
+      - eval_time: 19m
+        alertname: OpenbillingHttp4xxCritical
+        exp_alerts: []
+  - name: allowed_refused_ratio_critical_silent_in_band
+    interval: 1m
+    input_series:
+      - series: "openbilling_allowed_checks_total{job=\"band\",verdict=\"refused\"}"
+        values: "0+35x40"
+      - series: "openbilling_allowed_checks_total{job=\"band\",verdict=\"allowed\"}"
+        values: "0+65x40"
+    alert_rule_test:
+      - eval_time: 19m
+        alertname: OpenbillingAllowedRefusedCritical
+        exp_alerts: []
+  - name: queue_backlog_critical_silent_in_band
+    interval: 1m
+    input_series:
+      - series: "openbilling_queue_backlog{job=\"band\"}"
+        values: "55000x40"
+    alert_rule_test:
+      - eval_time: 19m
+        alertname: OpenbillingQueueBacklogCritical
+        exp_alerts: []
+  - name: queue_backlog_critical_inclusive
+    interval: 1m
+    input_series:
+      - series: "openbilling_queue_backlog{job=\"edge\"}"
+        values: "100000x40"
+    alert_rule_test:
+      - eval_time: 19m
+        alertname: OpenbillingQueueBacklogCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: edge
+            exp_annotations:
+              summary: "critical: the usage queue holds 100000 undecided events"
+              description: "More than 100000 usage events are received and not decided: the drain is behind or stopped. See deploy/alerts/README.md."
+      - eval_time: 19m
+        alertname: OpenbillingQueueBacklogWarning
+        exp_alerts: []
+  - name: queue_oldest_age_seconds_critical_silent_in_band
+    interval: 1m
+    input_series:
+      - series: "openbilling_queue_oldest_age_seconds{job=\"band\"}"
+        values: "165x40"
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: OpenbillingQueueOldestAgeCritical
+        exp_alerts: []
+  - name: queue_oldest_age_seconds_critical_inclusive
+    interval: 1m
+    input_series:
+      - series: "openbilling_queue_oldest_age_seconds{job=\"edge\"}"
+        values: "300x40"
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: OpenbillingQueueOldestAgeCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: edge
+            exp_annotations:
+              summary: "critical: the oldest undecided event has waited 300"
+              description: "The oldest undecided usage event has waited more than 300 seconds: what a producer feels as lag. See deploy/alerts/README.md."
+      - eval_time: 14m
+        alertname: OpenbillingQueueOldestAgeWarning
+        exp_alerts: []
+  - name: drain_lag_seconds_critical_silent_in_band
+    interval: 1m
+    input_series:
+      - series: "openbilling_drain_lag_seconds{job=\"band\"}"
+        values: "75x40"
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: OpenbillingDrainLagCritical
+        exp_alerts: []
+  - name: drain_lag_seconds_critical_inclusive
+    interval: 1m
+    input_series:
+      - series: "openbilling_drain_lag_seconds{job=\"edge\"}"
+        values: "120x40"
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: OpenbillingDrainLagCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: edge
+            exp_annotations:
+              summary: "critical: no drain pass has succeeded for 120"
+              description: "No drain pass has succeeded for more than 120 seconds, even with an empty queue: the drain fails or has stopped while the service still reports. A service that reports nothing is OpenbillingNotReportingCritical. See deploy/alerts/README.md."
+      - eval_time: 14m
+        alertname: OpenbillingDrainLagWarning
+        exp_alerts: []
+  - name: drain_error_ratio_critical_silent_in_band
+    interval: 1m
+    input_series:
+      - series: "openbilling_drain_runs_total{job=\"band\",result=\"error\"}"
+        values: "0+5.5x40"
+      - series: "openbilling_drain_runs_total{job=\"band\",result=\"ok\"}"
+        values: "0+94.5x40"
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: OpenbillingDrainErrorsCritical
+        exp_alerts: []
+  - name: payment_mismatches_critical_silent_in_band
+    interval: 1m
+    input_series:
+      - series: "openbilling_payments_mismatches_total{job=\"band\"}"
+        values: "_x5 5.5x35"
+    alert_rule_test:
+      - eval_time: 21m
+        alertname: OpenbillingPaymentMismatchesCritical
+        exp_alerts: []
+  - name: payment_mismatches_critical_inclusive
+    interval: 1m
+    input_series:
+      - series: "openbilling_payments_mismatches_total{job=\"edge\"}"
+        values: "_x5 10x35"
+    alert_rule_test:
+      - eval_time: 21m
+        alertname: OpenbillingPaymentMismatchesCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: edge
+            exp_annotations:
+              summary: "critical: 10 or more payments read back differ from their top-up in the last hour"
+              description: "At least 10 payments read back from the payment provider differ from the top-up recorded for them over the last hour (owner, label, currency or amount): read the `field` label on the payments panel, and settle each by hand. See deploy/alerts/README.md."
+      - eval_time: 21m
+        alertname: OpenbillingPaymentMismatchesWarning
+        exp_alerts: []
+  - name: payment_mismatches_first_event
+    interval: 1m
+    input_series:
+      - series: "openbilling_payments_mismatches_total{job=\"first\"}"
+        values: "_x10 1x30"
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: OpenbillingPaymentMismatchesWarning
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: first
+            exp_annotations:
+              summary: "warning: 1 or more payments read back differ from their top-up in the last hour"
+              description: "At least 1 payments read back from the payment provider differ from the top-up recorded for them over the last hour (owner, label, currency or amount): read the `field` label on the payments panel, and settle each by hand. See deploy/alerts/README.md."
+  - name: topups_expired_critical_silent_in_band
+    interval: 1m
+    input_series:
+      - series: "openbilling_topups_expired_total{job=\"band\"}"
+        values: "_x5 27.5x35"
+    alert_rule_test:
+      - eval_time: 21m
+        alertname: OpenbillingTopUpsExpiredCritical
+        exp_alerts: []
+  - name: topups_expired_critical_inclusive
+    interval: 1m
+    input_series:
+      - series: "openbilling_topups_expired_total{job=\"edge\"}"
+        values: "_x5 50x35"
+    alert_rule_test:
+      - eval_time: 21m
+        alertname: OpenbillingTopUpsExpiredCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: edge
+            exp_annotations:
+              summary: "critical: 50 or more pending top-ups expired in the last hour"
+              description: "At least 50 pending top-ups were older than the reconciler's stop_after over the last hour and are no longer read back: webhooks may be lost. A late webhook or reconcilePayment still settles them. See deploy/alerts/README.md."
+      - eval_time: 21m
+        alertname: OpenbillingTopUpsExpiredWarning
+        exp_alerts: []
+  - name: topups_expired_first_event
+    interval: 1m
+    input_series:
+      - series: "openbilling_topups_expired_total{job=\"first\"}"
+        values: "_x10 7x30"
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: OpenbillingTopUpsExpiredWarning
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: first
+            exp_annotations:
+              summary: "warning: 5 or more pending top-ups expired in the last hour"
+              description: "At least 5 pending top-ups were older than the reconciler's stop_after over the last hour and are no longer read back: webhooks may be lost. A late webhook or reconcilePayment still settles them. See deploy/alerts/README.md."
+  - name: pool_used_ratio_critical_silent_in_band
+    interval: 1m
+    input_series:
+      - series: "db_client_connection_count{job=\"band\",state=\"used\"}"
+        values: "80x40"
+      - series: "db_client_connection_max{job=\"band\"}"
+        values: "100x40"
+    alert_rule_test:
+      - eval_time: 19m
+        alertname: OpenbillingPoolSaturatedCritical
+        exp_alerts: []
   - name: not_reporting
     interval: 1m
     input_series:
