@@ -125,6 +125,10 @@ impl ProviderFixture for Sandbox {
         panic!("{NEEDS_A_PAYER}");
     }
 
+    async fn alter(&self, _: &CreditId, _: payments::Alteration) {
+        panic!("{NEEDS_A_PAYER}");
+    }
+
     async fn refund(&self, _: &CreditId, _: Amount, _: RefundStatus) -> CreditId {
         panic!("{NEEDS_A_PAYER}");
     }

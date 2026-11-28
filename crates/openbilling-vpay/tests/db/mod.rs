@@ -14,6 +14,10 @@ use sqlx::{AssertSqlSafe, Connection, Executor, PgConnection};
 static NEXT: AtomicU32 = AtomicU32::new(0);
 
 pub async fn fresh_ledger() -> Option<PgLedger> {
+    fresh_ledger_with(LedgerSettings::default()).await
+}
+
+pub async fn fresh_ledger_with(settings: LedgerSettings) -> Option<PgLedger> {
     let url = match std::env::var("OPENBILLING_TEST_DATABASE_URL") {
         Ok(url) if !url.trim().is_empty() => url,
         _ => {
@@ -46,7 +50,7 @@ pub async fn fresh_ledger() -> Option<PgLedger> {
         .await
         .expect("connect to the new database");
     store.migrate().await.expect("migrate");
-    let ledger = PgLedger::new(&store, LedgerSettings::default());
+    let ledger = PgLedger::new(&store, settings);
     ledger.prepare_partitions().await.expect("partitions");
     Some(ledger)
 }

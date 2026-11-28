@@ -32,7 +32,7 @@ use axum::routing::{get, post};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use openbilling_core::{Amount, CreditId, CurrencyCode, RefundStatus, Timestamp, WebhookHeaders};
-use openbilling_testkit::payments::{ProviderFixture, SignedWebhook};
+use openbilling_testkit::payments::{Alteration, ProviderFixture, SignedWebhook};
 use ring::signature::{RSA_PKCS1_2048_8192_SHA256, UnparsedPublicKey};
 use serde_json::{Value, json};
 
@@ -635,6 +635,28 @@ impl ProviderFixture for Fixture {
 
     async fn cancel(&self, payment: &CreditId) {
         self.set_status(payment, "canceled");
+    }
+
+    async fn alter(&self, payment: &CreditId, alteration: Alteration) {
+        let mut vpay = self.stand_in.state.lock().unwrap();
+        let intent = vpay
+            .intents
+            .get_mut(payment.as_str())
+            .expect("a known intent");
+        match alteration {
+            Alteration::Owner => {
+                intent
+                    .metadata
+                    .insert(crate::OWNER_KEY.to_owned(), "someone-else".to_owned());
+            }
+            Alteration::Label => {
+                intent
+                    .metadata
+                    .insert(crate::LABEL_KEY.to_owned(), "elsewhere".to_owned());
+            }
+            Alteration::Amount => intent.amount *= 10,
+            Alteration::StripMetadata => intent.metadata.clear(),
+        }
     }
 
     async fn refund(&self, payment: &CreditId, amount: Amount, status: RefundStatus) -> CreditId {
