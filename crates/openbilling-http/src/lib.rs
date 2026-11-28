@@ -43,7 +43,7 @@ use cratestack::axum::response::{IntoResponse, Response};
 use cratestack::axum::routing::{get, post};
 use cratestack::idempotency::IdempotencyLayer;
 use cratestack::{CratestackError, JsonCodec, SqlxIdempotencyStore};
-use openbilling_core::{LedgerStore, PaymentProvider, PriceBook};
+use openbilling_core::{LedgerStore, PaymentProvider, PriceBook, TopUpLedger};
 
 pub use procedures::{Procedures, Services};
 
@@ -200,7 +200,7 @@ async fn healthz() -> &'static str {
     "ok"
 }
 
-async fn readyz<L: LedgerStore + 'static, P: PaymentProvider + 'static>(
+async fn readyz<L: LedgerStore + TopUpLedger + 'static, P: PaymentProvider + 'static>(
     State(services): State<Arc<Services<L, P>>>,
 ) -> Response {
     match services.ledger.now().await {
@@ -226,7 +226,7 @@ pub fn router<L, P, A>(
     auth: A,
 ) -> Router
 where
-    L: PriceBook + 'static,
+    L: PriceBook + TopUpLedger + 'static,
     P: PaymentProvider + 'static,
     A: cratestack::AuthProvider,
 {

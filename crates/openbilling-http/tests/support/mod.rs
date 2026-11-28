@@ -14,7 +14,8 @@ use openbilling_core::{
     AccountId, Allowed, AllowedPolicy, Amount, Balance, Credited, CurrencyCode, DrainReport,
     ErrorClass, EventId, IntakeReport, LedgerConfig, LedgerError, LedgerStore, Loaded, LotView,
     MemberId, NewAccount, Opened, OutcomeView, OwnerId, PriceBook, PriceVersionView, Rated,
-    RawEvent, Reversal, Timestamp, UsageEvent, UtcDay, UtcMonth,
+    RawEvent, ReconcileSettings, Reversal, Timestamp, TopUp, TopUpLedger, TopUpSettled, UsageEvent,
+    UtcDay, UtcMonth,
 };
 use openbilling_http::auth::{BearerAuth, Principal, StaticTokens};
 use openbilling_http::{Services, router};
@@ -160,8 +161,26 @@ impl PriceBook for DownLedger {
     }
 }
 
+impl TopUpLedger for DownLedger {
+    async fn record_top_up(&self, _: &TopUp) -> Result<bool, LedgerError> {
+        down()
+    }
+    async fn settle_top_up(
+        &self,
+        _: &openbilling_core::PaymentView,
+    ) -> Result<TopUpSettled, LedgerError> {
+        down()
+    }
+    async fn claim_pending_top_ups(
+        &self,
+        _: &ReconcileSettings,
+    ) -> Result<Vec<openbilling_core::CreditId>, LedgerError> {
+        down()
+    }
+}
+
 /// The router over `ledger`, `provider` and `pool`, with the test tokens and the default policy.
-pub fn app<L: PriceBook + 'static>(
+pub fn app<L: PriceBook + TopUpLedger + 'static>(
     ledger: L,
     provider: Option<VpayProvider>,
     pool: sqlx::PgPool,
@@ -170,7 +189,7 @@ pub fn app<L: PriceBook + 'static>(
 }
 
 /// The router as [`app`] makes it, with `allowed` as the deployer's policy.
-pub fn app_with<L: PriceBook + 'static>(
+pub fn app_with<L: PriceBook + TopUpLedger + 'static>(
     ledger: L,
     provider: Option<VpayProvider>,
     pool: sqlx::PgPool,

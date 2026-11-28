@@ -12,7 +12,7 @@ use openbilling_core::{
     AccountId, AccountLabel, AllowedPolicy, Amount, CreditId, CreditSource, CreditTarget, Credited,
     CurrencyCode, IdempotencyKey, LedgerConfig, LotKind as CoreLotKind, LotOrder, MemberId,
     NewAccount, OwnerId, PaymentProvider, PaymentRequest, PaymentTarget, PriceBook, ReturnUrls,
-    Settled, WithinKind, settle_payment, settle_refund,
+    Settled, TopUp, TopUpLedger, WithinKind, settle_payment, settle_refund,
 };
 
 use crate::errors::{invalid, ledger, payment, settle};
@@ -114,7 +114,7 @@ impl<L, P> Procedures<L, P> {
 
 impl<L, P> procedures::ProcedureRegistry for Procedures<L, P>
 where
-    L: PriceBook + 'static,
+    L: PriceBook + TopUpLedger + 'static,
     P: PaymentProvider + 'static,
 {
     async fn get_balance(
@@ -438,6 +438,20 @@ where
             .create_payment(&request)
             .await
             .map_err(|e| payment(&e))?;
+        // Recorded before the payer is sent away (ADR 0003, amended 2026-11-28): what the provider reports back is
+        // compared with it. A retry with the same key gets the same payment and records it as a replay. If recording
+        // fails the payer is not sent: the caller retries, and the payment is the same one.
+        self.0
+            .ledger
+            .record_top_up(&TopUp {
+                payment: created.payment.clone(),
+                key: request.idempotency_key.clone(),
+                to: request.to.clone(),
+                currency: request.currency.clone(),
+                amount: request.amount,
+            })
+            .await
+            .map_err(|e| ledger(&e))?;
         Ok(TopUpStarted {
             payment: created.payment.into_string(),
             status: created.status.as_str().to_owned(),
