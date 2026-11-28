@@ -31,12 +31,29 @@ ACCEPT = ",".join(
 )
 
 
+class _DropAuthOnRedirect(urllib.request.HTTPRedirectHandler):
+    """Follows a redirect without the registry's bearer token.
+
+    Docker Hub answers a blob with a redirect to a signed CDN URL; urllib forwards Authorization to it, and the CDN
+    refuses the request (HTTP 400). The signed URL needs no credential, so none is sent to another host.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new is not None:
+            new.remove_header("Authorization")
+        return new
+
+
+_OPENER = urllib.request.build_opener(_DropAuthOnRedirect)
+
+
 def get(url, headers=None):
     """GET with a bounded retry: registries answer 429 and 5xx under load."""
     request = urllib.request.Request(url, headers=headers or {})
     for attempt in range(6):
         try:
-            return urllib.request.urlopen(request, timeout=300)
+            return _OPENER.open(request, timeout=300)
         except urllib.error.HTTPError as error:
             if error.code not in (429, 500, 502, 503, 504) or attempt == 5:
                 raise
