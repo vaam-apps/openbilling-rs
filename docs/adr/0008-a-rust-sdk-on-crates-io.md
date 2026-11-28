@@ -46,7 +46,9 @@ openbilling, so something like openbilling-sdk, in rust, that we'll push to crat
      diff, like the dashboards (ADR 0007).
 3. **The facade is small and hand-written** (`src/client.rs`, `src/error.rs`, about 250 lines):
    - `Client::new(base_url)`, `set_token`, `clear_token` (the token rides a `RequestAuthorizer`, and its `Debug` says
-     nothing), `raw()` for the generated client and the models;
+     nothing), `raw()` for the generated client and the models. **`raw()` exposes the generated client with all its
+     writes, and those do not require an `IdempotencyKey`**: only the facade's methods do. A write sent through
+     `raw()` carries no key unless the caller adds the header, and the API answers `400` to it;
    - one method per procedure, made by a macro from its name: the five reads take their `Args`, the twelve writes
      take their `Args` and an `IdempotencyKey`, so a write cannot be sent without one (the API answers `400` to a
      write with none, ADR 0003). A test holds the list equal to the schema's procedures and to `docs/api/ops.json`;
@@ -54,10 +56,11 @@ openbilling, so something like openbilling-sdk, in rust, that we'll push to crat
      classes as the service's (`openbilling_core`, rule 9). The crate does not depend on `openbilling-core`, which is
      `publish = false` and carries the service's types and no client; publishing it for four enum variants would
      publish a crate of no use to an integrator. An error never holds the token (a test checks it), and a base URL
-     with credentials in it is refused.
+     with credentials in it is refused. **The message of `Error::Remote` and of `Error::Transport` is truncated** to
+     512 bytes, on a character boundary, so a proxy's body does not flow through unbounded; the status is never cut.
 4. **Dependencies are all on crates.io at the pinned version** (*verified 2026-11-28*): `cratestack-client` 0.20.6 (the
    client-only facade, no axum, no sqlx; it brings `cratestack-client-rust`, `-macros`, `-core`, `-parser`, `-policy`,
-   `-sql`, `-codec-json` and `-codec-cbor`, all 0.20.6), `serde`, `thiserror`, `url`, `async-trait`. The version is
+   `-sql`, `-codec-json` and `-codec-cbor`, all 0.20.6), `serde`, `thiserror`, `url`, `async-trait`, all declared once in the workspace's `[workspace.dependencies]`. The version is
    pinned `=0.20.6`, as the server's is (they move together).
 5. **One version, the workspace's.** The SDK is not a release-please component of its own: it takes
    `version.workspace = true`, so release-please's one release pull request, one tag and one changelog cover the

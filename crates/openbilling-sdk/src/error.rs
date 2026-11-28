@@ -46,6 +46,21 @@ pub trait Classify {
     fn class(&self) -> ErrorClass;
 }
 
+/// The most bytes of a remote or transport message an [`Error`] keeps; the rest is dropped, on a char boundary.
+pub const MAX_MESSAGE_BYTES: usize = 512;
+
+/// `text` cut to at most [`MAX_MESSAGE_BYTES`] bytes, never inside a character.
+fn truncate(mut text: String) -> String {
+    if text.len() > MAX_MESSAGE_BYTES {
+        let mut end = MAX_MESSAGE_BYTES;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text.truncate(end);
+    }
+    text
+}
+
 /// Why a call failed. Never holds the bearer token: the token lives in the client and is read only to build a
 /// request's header.
 #[derive(Debug, thiserror::Error)]
@@ -58,7 +73,8 @@ pub enum Error {
     #[error("invalid idempotency key: {0}")]
     IdempotencyKey(&'static str),
     /// The service answered with a failure status. `message` is the service's own text, which names a rule
-    /// (`unknown_account: …`) and never a value it refused.
+    /// (`unknown_account: …`) and never a value it refused. A proxy's body may stand in for it, so it is cut to
+    /// [`MAX_MESSAGE_BYTES`] bytes.
     #[error("the service answered {status}: {message}")]
     Remote {
         /// The HTTP status.
@@ -66,7 +82,7 @@ pub enum Error {
         /// The service's message.
         message: String,
     },
-    /// The request did not reach the service, or no answer came back.
+    /// The request did not reach the service, or no answer came back. Cut to [`MAX_MESSAGE_BYTES`] bytes.
     #[error("could not reach the service: {0}")]
     Transport(String),
     /// The answer could not be read as the schema says.
@@ -108,11 +124,30 @@ impl From<ClientError> for Error {
                 status, message, ..
             } => Self::Remote {
                 status: status.as_u16(),
-                message,
+                message: truncate(message),
             },
-            ClientError::Transport(e) => Self::Transport(e.to_string()),
+            ClientError::Transport(e) => Self::Transport(truncate(e.to_string())),
             ClientError::BadInput(m) => Self::Decode(m),
             other => Self::Decode(other.to_string()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_long_remote_message_is_cut_on_a_char_boundary() {
+        // 'é' is two bytes: 600 of them put a boundary-less cut at 512 only on an even index.
+        let long = "é".repeat(600);
+        let cut = truncate(long);
+        assert!(cut.len() <= MAX_MESSAGE_BYTES);
+        assert_eq!(cut.len(), MAX_MESSAGE_BYTES);
+        let odd = format!("a{}", "é".repeat(600));
+        let cut = truncate(odd);
+        assert!(cut.len() <= MAX_MESSAGE_BYTES);
+        assert!(cut.is_char_boundary(cut.len()));
+        assert_eq!(truncate("short".into()), "short");
     }
 }

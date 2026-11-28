@@ -9,18 +9,18 @@ license.workspace = true
 repository.workspace = true
 keywords = ["billing", "usage", "metering", "ledger", "client"]
 categories = ["api-bindings", "web-programming::http-client"]
-# What `cargo publish` packages: the code, the schema it is generated from, and the README. Nothing from the rest of
+# What `cargo publish` packages: the code, the schema it is generated from, the README and the licence (copies of the root's, held equal in CI). Nothing from the rest of
 # the repository is needed to build it (ADR 0008).
-include = ["src/**", "tests/**", "schema/openbilling.cstack", "README.md", "Cargo.toml"]
+include = ["src/**", "tests/**", "schema/openbilling.cstack", "README.md", "LICENSE", "NOTICE", "Cargo.toml"]
 
 [dependencies]
 # CrateStack's client-only facade: `include_client_schema!` and the HTTP runtime, no server crates (no axum, no sqlx).
-cratestack = { package = "cratestack-client", version = "=0.20.6" }
+# The library is named `cratestack`.
+cratestack-client.workspace = true
 # The generated structs derive through bare `serde::` paths.
 serde.workspace = true
 thiserror.workspace = true
-# The trait CrateStack's request authorizer is declared with.
-async-trait = "0.1.92"
+async-trait.workspace = true
 url.workspace = true
 
 [dev-dependencies]
