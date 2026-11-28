@@ -19,10 +19,11 @@ an issuer's keys, and refused when none is configured. Every suite, the end-to-e
 PostgreSQL 19.0 outside CI (2026-11-27). The release pipeline (a signed image and a Helm chart,
 [ADR 0005](docs/adr/0005-release-fixed-versions-image-and-chart.md)) has run: v0.1.1, v0.2.0, v0.3.0 and v0.4.0 are
 published (*verified 2026-11-27*, GitHub releases), and the 0.3.0 image and chart pulled anonymously. 0.4.0, the first
-static image ([ADR 0006](docs/adr/0006-a-static-musl-binary-on-distroless-static.md)), was releasing on 2026-11-27.
+static image ([ADR 0006](docs/adr/0006-a-static-musl-binary-on-distroless-static.md)), was installed from the registry
+in kind and its signatures verified by `release-check.yml` (run 46076030298, 2026-11-27).
 Traces, metrics and logs go out over OpenTelemetry when an endpoint is set
-([ADR 0007](docs/adr/0007-opentelemetry-through-a-layer-over-cratestacks-spans.md)). The chart has not been installed
-in a cluster.
+([ADR 0007](docs/adr/0007-opentelemetry-through-a-layer-over-cratestacks-spans.md)). The chart has been installed in kind, not
+in a real cluster.
 
 ## Features
 
@@ -34,7 +35,7 @@ Legend: ✅ built and tested in CI · ⚠️ built, but partial or not yet prove
 | Storage | PostgreSQL 19 or later, the only infrastructure | ✅ | Older servers are refused at connect |
 | Intake | Usage events accepted once by id; a replay changes nothing | ✅ | One `ON CONFLICT DO SELECT` statement; a differing payload is a conflict ([ADR 0001](docs/adr/0001-postgres-is-the-queue.md)) |
 | Intake | Partitioned queue by occurrence day, made ahead of time | ✅ | `ob_prepare_partitions` |
-| Intake | Dropping old partitions after the window | 📋 | |
+| Intake | Dropping old partitions after the window plus a margin | ⚠️ | `retention.margin`, default 90 days (the owner's decision of 2026-11-28); `ob_expired_partitions` and `ob_drop_partition`, the detach run as a top-level `DETACH … CONCURRENTLY` by `openbilling serve` under an advisory lock, once at start and then hourly. Proven on PostgreSQL 19.0, never on a real deployment ([ADR 0001](docs/adr/0001-postgres-is-the-queue.md), G1 to G5) |
 | Intake | Pre-priced events (each carries its amount) | ✅ | |
 | Intake | Raw events rated at intake | ✅ | A meter, a quantity and dimensions; the event and its outcome keep their price version ([ADR 0004](docs/adr/0004-a-versioned-price-book-in-sql.md)). Through the API: `recordRawUsage`; the price list: `loadPriceList` |
 | Queue | Drain with `FOR UPDATE SKIP LOCKED`, once-only per event | ✅ | Concurrency tested on the conformance suite |
@@ -60,10 +61,10 @@ Legend: ✅ built and tested in CI · ⚠️ built, but partial or not yet prove
 | Testing | A conformance suite for every `PriceBook` | ✅ | 9 cases, run in CI on PostgreSQL 19 |
 | Testing | End-to-end scenarios against the real service and PostgreSQL | ✅ | [`e2e/`](e2e/README.md): `openbilling serve` as a process, driven only through its API and webhook, with tokens of a test issuer. Metered model usage, prepaid balance, organisation caps, once-only, 10 000 events over three services, price versions, statements, payment round-trip, authentication. Run by CI's Test job, a step of its own, against the PostgreSQL 19.0 service CI pins; the real service is never tried against a real identity provider or vpay |
 | Command line | `openbilling serve`, `--help`, `--version`, with clap and colour | ⚠️ | Colour off when not a terminal, `NO_COLOR` and `CLICOLOR_FORCE` honoured (tested); the help and the colour are tested; `serve` is what the end-to-end suite runs |
-| Release | Versions from the commits: release-please's release pull request, a `vX.Y.Z` tag, a changelog | ⚠️ | `release-please.yml`, through a GitHub App token; it has opened the release pull requests and the tags v0.1.1 to v0.4.0 (*verified 2026-11-27*) ([ADR 0005](docs/adr/0005-release-fixed-versions-image-and-chart.md)) |
-| Release | A container image, amd64 and arm64: a static musl binary on `distroless/static`, non-root, signed (cosign keyless), with provenance and an SBOM | ⚠️ | `docker/openbilling/Dockerfile` ([ADR 0006](docs/adr/0006-a-static-musl-binary-on-distroless-static.md)); the build fails if the binary is not static; `X.Y.Z` and `X.Y` on a tag, `sha-<7>` and `edge` on `main`, never `latest`. Built in CI on every pull request (merged as #20) and published since 0.1.1 (the 0.3.0 image pulled anonymously, *verified 2026-11-27*); the static image is 0.4.0's, which was releasing on 2026-11-27 and did not resolve yet. Signatures not verified by hand |
+| Release | Versions from the commits: release-please's release pull request, a `vX.Y.Z` tag, a changelog | ✅ | `release-please.yml`, through a GitHub App token; it has opened the release pull requests and the tags v0.1.1 to v0.4.0 (*verified 2026-11-27*) ([ADR 0005](docs/adr/0005-release-fixed-versions-image-and-chart.md)) |
+| Release | A container image, amd64 and arm64: a static musl binary on `distroless/static`, non-root, signed (cosign keyless), with provenance and an SBOM | ✅ | `docker/openbilling/Dockerfile` ([ADR 0006](docs/adr/0006-a-static-musl-binary-on-distroless-static.md)); the build fails if the binary is not static; `X.Y.Z` and `X.Y` on a tag, `sha-<7>` and `edge` on `main`, never `latest`. Built in CI on every pull request (merged as #20) and published since 0.1.1; 0.4.0 is the first static one. `release-check.yml` run [46076030298](https://github.com/vaam-apps/openbilling-rs/actions/runs/46076030298) (2026-11-27, 0.4.0): pulled anonymously as `sha256:4e7da01d…`, `cosign verify` accepted it for `release.yml@refs/tags/v0.4.0` (GitHub's OIDC issuer), the index holds linux/amd64 and linux/arm64 and attestation manifests with an SBOM and with SLSA provenance, and the service answered in kind |
 | Release | A smoke test of the image (`--version`, `--help` on the runtime base, and `serve` against PostgreSQL), on both architectures, on every pull request | ✅ | CI's `image` job, which pushes nothing |
-| Release | An OCI Helm chart on the bjw-s common library 5.3.0, signed, pinning its release's image by tag and digest | ⚠️ | `deploy/openbilling`, published at `oci://ghcr.io/vaam-apps/charts/openbilling` on a tag; linted, rendered and schema-checked by `tests/check.sh`, which CI's `chart` job runs; 0.3.0 pulled anonymously (*verified 2026-11-27*); never installed in a cluster. The token verifier's settings are optional values, unset by default |
+| Release | An OCI Helm chart on the bjw-s common library 5.3.0, signed, pinning its release's image by tag and digest | ✅ | `deploy/openbilling`, published at `oci://ghcr.io/vaam-apps/charts/openbilling` on a tag; linted, rendered and schema-checked by `tests/check.sh`, which CI's `chart` job runs; `release-check.yml` run [46076030298](https://github.com/vaam-apps/openbilling-rs/actions/runs/46076030298) (2026-11-27): the 0.4.0 chart pulled anonymously as `sha256:001ae382…`, `cosign verify` accepted it for `release.yml@refs/tags/v0.4.0`, and `helm install` of it in kind (v1.37.0) against PostgreSQL 19.0 ran the verified image by digest, `/healthz` and `/readyz` answered 200 and an unauthenticated `/v1` call 401. The token verifier's settings are optional values, unset by default |
 | Command line | `serve` stops cleanly on `SIGTERM` (how Kubernetes stops a pod) | ⚠️ | `tests/cli.rs` runs in CI's Test job against PostgreSQL 19.0, and the `image` job (`docker stop` must exit 0); never in a Kubernetes pod |
 | Observability | Traces, metrics and logs over OTLP/HTTP, off unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set | ⚠️ | CrateStack `=0.20.6` emits `tracing` spans and has no exporter, so the OpenTelemetry SDK (`opentelemetry`, `opentelemetry-otlp`, `tracing-opentelemetry`) exports them with ours: routes, procedures, database calls, the drain and partition loops; metrics for events, the queue, `getAllowed`, errors by class and the pool; no id or amount can be an attribute ([ADR 0007](docs/adr/0007-opentelemetry-through-a-layer-over-cratestacks-spans.md)). Proven against a collector in the process on PostgreSQL 19; never against a real collector |
 | Observability | Grafana dashboards as code, one README line per panel | ⚠️ | [`deploy/dashboards`](deploy/dashboards/README.md): the service, and the queue, the drain and PostgreSQL; generated by Python scripts in [`tools/dashboards`](tools/dashboards/generate.sh), with CI failing on any difference; a test holds every query to what the service exports. Never loaded into a Grafana |
@@ -117,8 +118,9 @@ sh deploy/openbilling/tests/check.sh                            # the chart's ch
 **State on 2026-11-27.** The GitHub App and its two secrets (`RELEASE_PLEASE_APP_CLIENT_ID`,
 `RELEASE_PLEASE_APP_PRIVATE_KEY`) are set: release-please opened the release pull requests and v0.1.1, v0.2.0, v0.3.0
 and v0.4.0 are published. The image and chart packages are public: the 0.3.0 image and chart manifests were fetched
-with an anonymous token (*verified 2026-11-27*). v0.4.0's `release.yml` run was still in progress then, and its image
-and chart did not resolve yet.
+with an anonymous token (*verified 2026-11-27*). v0.4.0's image and chart resolved later that day and passed
+`release-check.yml` (run 46076030298): anonymous pull, `cosign verify`, install in kind, `/readyz`. Run it for any published
+version with `workflow_dispatch`, or after a release.
 
 ## Layout
 
@@ -138,7 +140,7 @@ and chart did not resolve yet.
 | `tools/dashboards/` | The Python (standard library) that writes the dashboards: `lib.py`, `service.py`, `queue_dashboard.py`, `generate.sh` |
 | `deploy/openbilling/` | The Helm chart, on the bjw-s common library 5.3.0, and its checks (`tests/`) |
 | `release-please-config.json`, `.release-please-manifest.json` | The versions release-please writes |
-| `.github/workflows/` | `ci.yml` (Rust, the end-to-end suite, the API contract, the image's smoke test, the chart), `release-please.yml`, `release.yml` |
+| `.github/workflows/` | `ci.yml` (Rust, the end-to-end suite, the API contract, the image's smoke test, the chart), `release-please.yml`, `release.yml`, `release-check.yml` |
 | `docs/adr/` | The decisions |
 | `docs/api/` | The API's contract, as CrateStack states it |
 

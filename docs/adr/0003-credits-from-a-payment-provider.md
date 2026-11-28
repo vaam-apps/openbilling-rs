@@ -3,7 +3,7 @@
 Status: **Proposed** (2026-11-27). The owner's decisions quoted under *Context* stand; the rest is for the owner to
 confirm. *Amended 2026-11-27 (ANR-1329):* the decision is built: the port, the vpay adapter, the CrateStack API and `serve`
 shipped in v0.1.1, the token verifier in v0.2.0 (both in every release since), yet it stays Proposed until the owner
-accepts it.
+accepts it. *Accepted 2026-11-28 by the owner:* the owner's decision of that day.
 
 *Amended 2026-11-28 (ANR-1332, the token is minted in the adapter):* the owner decided on 2026-11-28 that **the vpay
 token is minted inside the adapter**, and it is built: `openbilling-vpay` mints a `vpay:v1` token with an OAuth 2.0

@@ -11,9 +11,9 @@ use openbilling_core::{
     AccountBalance, AccountId, AccountLabel, Allowed, AllowedPolicy, Amount, Balance, CreditId,
     CreditTarget, Credited, CurrencyCode, Decided, DrainReport, EventId, EventOutcome, Intake,
     IntakeReport, LedgerConfig, LedgerError, LedgerStore, Loaded, LotKind, LotView, MemberId,
-    NewAccount, NotAllowed, Opened, OutcomeView, OwnerId, PriceBook, PriceVersionId,
-    PriceVersionView, Rated, RawEvent, RefusalReason, Reversal, Timestamp, UsageEvent, UtcDay,
-    UtcMonth, Window, WithinKind,
+    NewAccount, NotAllowed, Opened, OutcomeView, OwnerId, PartitionRetention, PriceBook,
+    PriceVersionId, PriceVersionView, Rated, RawEvent, RefusalReason, RetentionMargin,
+    RetentionReport, Reversal, Timestamp, UsageEvent, UtcDay, UtcMonth, Window, WithinKind,
 };
 use openbilling_metrics::{Counter, Gauge, Histogram, global};
 use sqlx::PgPool;
@@ -35,6 +35,12 @@ pub struct LedgerSettings {
     pub partitions_ahead_days: u16,
     /// At most one `NOTIFY` per this interval per process (ADR 0001, point 17).
     pub notify_interval: Duration,
+    /// How long after the window a day's partition is dropped (ADR 0001, point 10, amended 2026-11-28); the deployer's
+    /// choice, default 90 days. Used by [`PgLedger::run_retention`].
+    pub retention_margin: RetentionMargin,
+    /// The longest one retention run may wait for a lock (a detach waits for every transaction on the table) or run a
+    /// statement, as `lock_timeout` and `statement_timeout` of its connection. The deployer's, default 5 minutes.
+    pub retention_timeout: Duration,
 }
 
 impl Default for LedgerSettings {
@@ -43,6 +49,8 @@ impl Default for LedgerSettings {
             window: Window::default(),
             partitions_ahead_days: 2,
             notify_interval: Duration::from_millis(100),
+            retention_margin: RetentionMargin::default(),
+            retention_timeout: Duration::from_secs(300),
         }
     }
 }
@@ -96,6 +104,16 @@ impl PgLedger {
             .await
             .map_err(ledger_error)?;
         u32::try_from(made).map_err(|_| corrupt())
+    }
+
+    /// Runs the retention job with the margin of the settings. See [`PartitionRetention::drop_expired_partitions`].
+    ///
+    /// # Errors
+    ///
+    /// A [`LedgerError::Store`] when the database fails.
+    pub async fn run_retention(&self) -> Result<RetentionReport, LedgerError> {
+        self.drop_expired_partitions(self.settings.retention_margin)
+            .await
     }
 
     /// What the queue holds now: how many events are received and not yet decided, and how old the oldest is.
@@ -886,5 +904,141 @@ impl PriceBook for PgLedger {
     #[tracing::instrument(name = "db.query", skip_all, fields(db.system = "postgresql", db.operation = "intake_raw"))]
     async fn intake_raw(&self, events: &[RawEvent]) -> Result<IntakeReport, LedgerError> {
         self.take_in(IntakeBatch::raw(events)).await
+    }
+}
+
+/// What one retention run did: the days it dropped, how many partitions it failed on, and the first failure.
+struct RunOutcome {
+    dropped: Vec<UtcDay>,
+    failed: usize,
+    first_error: Option<LedgerError>,
+}
+
+/// Whether `error` is the SQL's own refusal to drop (`OB904`): expected after a finalize, whose partition may still
+/// hold an undecided event or be inside the margin.
+fn refused_to_drop(error: &sqlx::Error) -> bool {
+    matches!(error, sqlx::Error::Database(d) if d.code().as_deref() == Some("OB904"))
+}
+
+/// The statements of one retention run, in turn, on one connection: the plan, then per partition the detach (a
+/// top-level statement: PostgreSQL refuses `DETACH … CONCURRENTLY` in a transaction block, a function or a procedure)
+/// and the drop. Every rule is in the SQL functions; this only calls them in order.
+///
+/// One partition failing (a lock timeout on its detach, say) does not stop the others: each drop is counted as it
+/// happens, and the failures are returned. A detach that failed leaves its partition pending-detach, and PostgreSQL
+/// refuses another detach until it is finalized, so the run skips the remaining detaches and still drops the tables
+/// that are already detached.
+async fn retention_run(
+    conn: &mut sqlx::PgConnection,
+    window_days: i32,
+    margin_days: i32,
+) -> Result<RunOutcome, LedgerError> {
+    let plan: Vec<(String, String, Option<String>)> = sqlx::query_as(
+        "SELECT partition_name, action, statement FROM ob_expired_partitions($1, $2)",
+    )
+    .bind(window_days)
+    .bind(margin_days)
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(ledger_error)?;
+    let mut out = RunOutcome {
+        dropped: Vec::with_capacity(plan.len()),
+        failed: 0,
+        first_error: None,
+    };
+    let mut detach_blocked = false;
+    for (partition, action, statement) in plan {
+        if let Some(statement) = statement {
+            if action == "detach" && detach_blocked {
+                continue;
+            }
+            // The statement is built by the SQL function with `format('%I')`. The simple protocol, so nothing is
+            // prepared and the command is its own transaction.
+            if let Err(error) = sqlx::raw_sql(sqlx::AssertSqlSafe(statement))
+                .execute(&mut *conn)
+                .await
+            {
+                detach_blocked = true;
+                out.failed += 1;
+                out.first_error.get_or_insert_with(|| ledger_error(error));
+                continue;
+            }
+        }
+        let dropped: Result<i32, sqlx::Error> =
+            sqlx::query_scalar("SELECT ob_day(ob_drop_partition($1, $2, $3))")
+                .bind(&partition)
+                .bind(window_days)
+                .bind(margin_days)
+                .fetch_one(&mut *conn)
+                .await;
+        match dropped {
+            Ok(days) => {
+                out.dropped.push(day(days)?);
+                global().add(Counter::PartitionsDropped, &[], 1);
+            }
+            Err(error) if action == "finalize" && refused_to_drop(&error) => {}
+            Err(error) => {
+                out.failed += 1;
+                out.first_error.get_or_insert_with(|| ledger_error(error));
+            }
+        }
+    }
+    Ok(out)
+}
+
+impl PartitionRetention for PgLedger {
+    #[tracing::instrument(name = "db.query", skip_all, fields(db.system = "postgresql", db.operation = "drop_expired_partitions"))]
+    async fn drop_expired_partitions(
+        &self,
+        margin: RetentionMargin,
+    ) -> Result<RetentionReport, LedgerError> {
+        // One connection for the whole run: the lock is the session's, and the detach cannot be in a transaction.
+        let mut conn = self.pool.acquire().await.map_err(ledger_error)?;
+        // However the run ends, the connection is closed rather than returned to the pool, so the lock cannot
+        // outlive the run even if the explicit unlock below fails.
+        conn.close_on_drop();
+        // A detach waits for every transaction that holds a lock on the table: bound the wait, so a run ends.
+        let timeout_ms =
+            i64::try_from(self.settings.retention_timeout.as_millis()).unwrap_or(i64::MAX);
+        sqlx::query_scalar::<_, String>(
+            "SELECT set_config('lock_timeout', $1, false) || set_config('statement_timeout', $1, false)",
+        )
+        .bind(format!("{timeout_ms}ms"))
+        .fetch_one(&mut *conn)
+        .await
+        .map_err(ledger_error)?;
+        let locked: bool = sqlx::query_scalar("SELECT ob_retention_try_lock()")
+            .fetch_one(&mut *conn)
+            .await
+            .map_err(ledger_error)?;
+        if !locked {
+            return Ok(RetentionReport {
+                dropped: Vec::new(),
+                skipped: true,
+            });
+        }
+        let ran = retention_run(
+            &mut conn,
+            i32::from(self.settings.window.days()),
+            i32::from(margin.days()),
+        )
+        .await;
+        let _ = sqlx::query_scalar::<_, bool>("SELECT ob_retention_unlock()")
+            .fetch_one(&mut *conn)
+            .await;
+        let ran = ran?;
+        if let Some(error) = ran.first_error {
+            // What was dropped before the failure is already counted; say so, by number only.
+            tracing::warn!(
+                "a retention run dropped {} partition(s) and failed on {}",
+                ran.dropped.len(),
+                ran.failed
+            );
+            return Err(error);
+        }
+        Ok(RetentionReport {
+            dropped: ran.dropped,
+            skipped: false,
+        })
     }
 }

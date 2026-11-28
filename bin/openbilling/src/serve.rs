@@ -92,9 +92,18 @@ async fn drain_forever(ledger: PgLedger) {
     }
 }
 
+/// Makes partitions ahead, then drops the expired ones (ADR 0001, point 10), every hour. Dropping is leader-safe:
+/// the store's job takes an advisory lock, so on several instances one runs and the others do nothing. Only counts
+/// are logged.
 async fn partitions_forever(ledger: PgLedger) {
+    // The first pass runs at once, in the background: a detach waits for every transaction on the table, and the
+    // service must not wait for it to listen (a rolling restart would never become ready).
+    let mut first = true;
     loop {
-        tokio::time::sleep(PARTITIONS_EVERY).await;
+        if !first {
+            tokio::time::sleep(PARTITIONS_EVERY).await;
+        }
+        first = false;
         let pass = tracing::info_span!("partitions.run");
         if let Err(error) = ledger.prepare_partitions().instrument(pass).await {
             count_error(error.class(), "partitions");
@@ -106,6 +115,28 @@ async fn partitions_forever(ledger: PgLedger) {
                 "{WARN}openbilling:{WARN:#} preparing partitions failed ({})",
                 error.class()
             );
+        }
+        let pass = tracing::info_span!("retention.run");
+        match ledger.run_retention().instrument(pass).await {
+            Ok(report) => {
+                if !report.dropped.is_empty() {
+                    anstream::eprintln!(
+                        "{ACCENT}openbilling:{ACCENT:#} dropped {} expired usage partition(s)",
+                        report.dropped.len()
+                    );
+                }
+            }
+            Err(error) => {
+                count_error(error.class(), "retention");
+                tracing::warn!(
+                    openbilling.error.class = error.class().as_str(),
+                    "dropping expired partitions failed"
+                );
+                anstream::eprintln!(
+                    "{WARN}openbilling:{WARN:#} dropping expired partitions failed ({})",
+                    error.class()
+                );
+            }
         }
     }
 }
@@ -196,7 +227,14 @@ async fn run(settings: Settings) -> Result<()> {
         .await
         .context("connecting to PostgreSQL")?;
     store.migrate().await.context("applying the migrations")?;
-    let ledger = PgLedger::new(&store, LedgerSettings::default());
+    let ledger = PgLedger::new(
+        &store,
+        LedgerSettings {
+            retention_margin: settings.retention_margin,
+            retention_timeout: settings.retention_timeout,
+            ..LedgerSettings::default()
+        },
+    );
     ledger
         .prepare_partitions()
         .await
@@ -215,6 +253,10 @@ async fn run(settings: Settings) -> Result<()> {
         );
     }
     let allowed = settings.allowed;
+    anstream::eprintln!(
+        "{ACCENT}openbilling:{ACCENT:#} usage partitions are dropped {} days after the window",
+        settings.retention_margin.days()
+    );
     anstream::eprintln!(
         "{ACCENT}openbilling:{ACCENT:#} getAllowed refuses on debt_limit {}, balance {}, member_cap {}",
         allowed.debt_limit.as_str(),

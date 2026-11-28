@@ -41,7 +41,7 @@ openbilling:
   # environment's). Rendered as YAML into the ConfigMap `config`, mounted read-only at /etc/openbilling/config.yaml
   # and named by OPENBILLING_CONFIG; a change rolls the pods. Refused when wrong by templates/_validate.tpl, as the
   # binary refuses it at start. The owner's decision of 2026-11-27: the service reports the numbers, and the
-  # deployer decides here how `getAllowed` judges them.
+  # deployer decides here how `getAllowed` judges them; and the retention margin of the usage partitions.
   config:
     # -- One comparison per check of `getAllowed`, in the order they run: `at_or_above` refuses when what is used
     # is at or above its bound, `above` when it is above it, `never` never (the numbers are reported either way).
@@ -54,6 +54,14 @@ openbilling:
       balance: at_or_above
       # -- A member's applied usage this month against their cap.
       member_cap: at_or_above
+    retention:
+      # -- How long after the intake window (7 days) a day's usage partition is detached and dropped, as digits and a
+      # `d`: `1d` to `3650d`. The owner's decision of 2026-11-28: "drop after W plus a margin, default 90 days,
+      # configurable". The job runs hourly, with the one that makes partitions ahead.
+      margin: 90d
+      # -- The longest a retention run waits for a lock (a detach waits for every transaction on the table) or runs a
+      # statement: `1s` to `1h`, like `300s` or `5m`. A run that times out is retried at the next hour.
+      timeout: 5m
     # `vpay.token`, not set by default: the tunables of a vpay token the service mints itself (only with OPENBILLING_VPAY_CLIENT_ID and
     # OPENBILLING_VPAY_CLIENT_KEY_FILE in `controllers.main.containers.main.env`; the binary refuses them otherwise).
     # Each key is optional and left out here, so the adapter's default stands: `audience: vpay:v1`, `scope` none (vpay

@@ -18,6 +18,9 @@
 //!   debt_limit: at_or_above   # refuse when debt >= limit; or above (debt > limit); or never (report only)
 //!   balance: at_or_above      # refuse when debt >= the drawable credit (net <= 0); or above (net < 0); or never
 //!   member_cap: at_or_above   # refuse when the member's usage this month >= cap; or above; or never
+//! retention:
+//!   margin: 90d               # drop a day's usage partition this long after the intake window; 1d to 3650d
+//!   timeout: 5m               # the longest a run waits for a lock (a detach waits for every transaction on the table); 1s to 1h
 //! vpay:
 //!   token:                    # only with a client key to mint the vpay token with (OPENBILLING_VPAY_CLIENT_*)
 //!     audience: vpay:v1       # the audience of the token asked for
@@ -29,6 +32,10 @@
 //!
 //! The vpay token's identity and endpoints (the client id, its key file and `kid`, the token URL, the assertion's
 //! audience) are environment variables: they name a credential or a place. Its tunables are the file's.
+//!
+//!
+//! The retention job (ADR 0001, point 10, amended 2026-11-28) runs hourly with the partition job, so it has no
+//! interval of its own.
 
 use std::fmt;
 use std::net::SocketAddr;
@@ -36,7 +43,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use openbilling_core::{AllowedPolicy, CurrencyCode, RefuseWhen};
+use openbilling_core::{AllowedPolicy, CurrencyCode, RefuseWhen, RetentionMargin};
 use openbilling_jwt::{JwtConfig, RoleMap};
 use openbilling_vpay::{
     ClientCredentials, Credential, CurrencyUnit, KeySource, VpayConfig, WebhookSecret, webhook,
@@ -70,6 +77,11 @@ pub struct Settings {
     pub auth: Option<JwtConfig>,
     /// How `getAllowed` compares its numbers: the configuration file's `allowed`, or the default.
     pub allowed: AllowedPolicy,
+    /// How long after the window a day's usage partition is dropped: the configuration file's `retention.margin`, or
+    /// 90 days.
+    pub retention_margin: RetentionMargin,
+    /// The longest a retention run waits for a lock or runs a statement: `retention.timeout`, or 5 minutes.
+    pub retention_timeout: Duration,
     /// OpenTelemetry, from the standard `OTEL_*` variables; `None` unless an endpoint is set.
     pub otel: Option<openbilling_telemetry::Settings>,
 }
@@ -84,6 +96,8 @@ struct File {
     #[serde(default)]
     allowed: AllowedFile,
     #[serde(default)]
+    retention: RetentionFile,
+    #[serde(default)]
     vpay: VpayFile,
 }
 
@@ -97,7 +111,7 @@ struct VpayFile {
 
 /// `vpay.token:`, how the minted token is asked for and kept fresh. Every key is optional: the adapter's default
 /// (`openbilling_vpay::ClientCredentials::new`) stands for each one left out.
-#[derive(Debug, Default, PartialEq, Eq, serde::Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TokenFile {
     audience: Option<String>,
@@ -131,11 +145,68 @@ impl TokenFile {
     }
 }
 
-/// What the configuration file says.
-#[derive(Debug, PartialEq, Eq)]
-pub struct Loaded {
+/// `retention:`: how long a usage partition outlives the window, as a number of days with a `d`: `90d`.
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RetentionFile {
+    margin: Option<String>,
+    timeout: Option<String>,
+}
+
+/// A retention timeout as the file writes it: digits and `s` or `m`, one second to one hour (`300s`, `5m`).
+fn parse_timeout(text: &str) -> Option<Duration> {
+    let (digits, unit) = text.split_at(text.len().checked_sub(1)?);
+    if !digits.starts_with(|c: char| ('1'..='9').contains(&c))
+        || !digits.bytes().all(|b| b.is_ascii_digit())
+        || digits.len() > 4
+    {
+        return None;
+    }
+    let secs = digits.parse::<u64>().ok()?
+        * match unit {
+            "s" => 1,
+            "m" => 60,
+            _ => return None,
+        };
+    (1..=3600)
+        .contains(&secs)
+        .then(|| Duration::from_secs(secs))
+}
+
+/// A margin as the file writes it: digits and a `d`, one day to ten years.
+fn parse_margin(text: &str) -> Option<RetentionMargin> {
+    let digits = text.strip_suffix('d')?;
+    // No leading zero: `090d` and `010d` are refused, as the chart refuses them.
+    if !digits.starts_with(|c: char| ('1'..='9').contains(&c))
+        || !digits.bytes().all(|b| b.is_ascii_digit())
+        || digits.len() > 4
+    {
+        return None;
+    }
+    RetentionMargin::new(digits.parse().ok()?).ok()
+}
+
+/// What the configuration file holds; the defaults when it names none.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileSettings {
     pub allowed: AllowedPolicy,
     pub token: TokenFile,
+    pub retention_margin: RetentionMargin,
+    pub retention_timeout: Duration,
+}
+
+/// The longest a retention run waits for a lock or runs a statement, when the file says nothing: 5 minutes.
+pub const DEFAULT_RETENTION_TIMEOUT: Duration = Duration::from_secs(300);
+
+impl Default for FileSettings {
+    fn default() -> Self {
+        Self {
+            allowed: AllowedPolicy::default(),
+            token: TokenFile::default(),
+            retention_margin: RetentionMargin::default(),
+            retention_timeout: DEFAULT_RETENTION_TIMEOUT,
+        }
+    }
 }
 
 /// `allowed:`: one comparison per check of `getAllowed`, each `at_or_above` when left out.
@@ -172,7 +243,7 @@ impl From<Mode> for RefuseWhen {
 
 /// What the file says, refused whole when anything in it is not the configuration. The message names the line and
 /// column and the keys there are, never a value from the file (agent guide, rule 9).
-pub fn parse_config(yaml: &str) -> Result<Loaded> {
+pub fn parse_config(yaml: &str) -> Result<FileSettings> {
     if yaml.trim().is_empty() {
         bail!(
             "OPENBILLING_CONFIG names an empty file; write `allowed: {{}}` for the defaults, or unset it"
@@ -184,27 +255,39 @@ pub fn parse_config(yaml: &str) -> Result<Loaded> {
         });
         anyhow::anyhow!(
             "OPENBILLING_CONFIG is not a valid configuration{at}: it holds `allowed` (debt_limit, balance and \
-             member_cap, each at_or_above, above or never) and `vpay.token` (audience, scope, \
-             refresh_skew_secs, retries and retry_backoff_ms)"
+             member_cap, each at_or_above, above or never), `retention` (margin, a number of days written like \
+             90d, and timeout, like 300s or 5m) and `vpay.token` (audience, scope, refresh_skew_secs, retries \
+             and retry_backoff_ms)"
         )
     })?;
-    Ok(Loaded {
+    let retention_margin = match file.retention.margin {
+        None => RetentionMargin::default(),
+        Some(text) => parse_margin(&text).context(
+            "OPENBILLING_CONFIG: retention.margin is a number of days from 1 to 3650 written like 90d",
+        )?,
+    };
+    let retention_timeout = match file.retention.timeout {
+        None => DEFAULT_RETENTION_TIMEOUT,
+        Some(text) => parse_timeout(&text).context(
+            "OPENBILLING_CONFIG: retention.timeout is from 1s to 1h written like 300s or 5m",
+        )?,
+    };
+    Ok(FileSettings {
         allowed: AllowedPolicy {
             debt_limit: file.allowed.debt_limit.into(),
             balance: file.allowed.balance.into(),
             member_cap: file.allowed.member_cap.into(),
         },
         token: file.vpay.token,
+        retention_margin,
+        retention_timeout,
     })
 }
 
-/// The file `OPENBILLING_CONFIG` names, or the defaults when it names none.
-fn load(get: &impl Fn(&str) -> Option<String>) -> Result<Loaded> {
+/// What the file `OPENBILLING_CONFIG` names holds, or the defaults when it names none.
+fn file_settings(get: &impl Fn(&str) -> Option<String>) -> Result<FileSettings> {
     let Some(path) = get("OPENBILLING_CONFIG") else {
-        return Ok(Loaded {
-            allowed: AllowedPolicy::default(),
-            token: TokenFile::default(),
-        });
+        return Ok(FileSettings::default());
     };
     let path = path.trim();
     let size = std::fs::metadata(path)
@@ -244,7 +327,7 @@ impl Settings {
             .unwrap_or_else(|| DEFAULT_LISTEN.to_owned())
             .parse()
             .context("OPENBILLING_LISTEN is not an address such as 127.0.0.1:8080")?;
-        let file = load(&get)?;
+        let file = file_settings(&get)?;
         let vpay = match get("OPENBILLING_VPAY_BASE_URL") {
             None => None,
             Some(base_url) => Some(vpay(base_url, &file.token, &get)?),
@@ -265,6 +348,8 @@ impl Settings {
             vpay,
             auth: auth(&get)?,
             allowed: file.allowed,
+            retention_margin: file.retention_margin,
+            retention_timeout: file.retention_timeout,
             otel,
         })
     }
@@ -425,6 +510,7 @@ mod tests {
         assert!(ok.vpay.is_none());
         assert!(ok.auth.is_none());
         assert_eq!(ok.allowed, AllowedPolicy::default());
+        assert_eq!(ok.retention_margin.days(), 90);
         assert!(
             ok.otel.is_none(),
             "telemetry is off unless an endpoint is set"
@@ -716,6 +802,79 @@ mod tests {
             ),
         ] {
             assert_eq!(parse_config(yaml).unwrap().allowed, expected, "{yaml:?}");
+        }
+    }
+
+    #[test]
+    fn the_retention_margin_defaults_to_ninety_days_and_takes_days_from_one_to_ten_years() {
+        for (yaml, days) in [
+            ("{}", 90),
+            ("allowed: {}", 90),
+            ("retention: {}", 90),
+            ("retention:\n  margin: 90d\n", 90),
+            ("retention:\n  margin: 1d\n", 1),
+            ("retention:\n  margin: 3650d\n", 3650),
+            (
+                "retention:\n  margin: \"30d\"\nallowed: {balance: never}\n",
+                30,
+            ),
+        ] {
+            assert_eq!(
+                parse_config(yaml).unwrap().retention_margin.days(),
+                days,
+                "{yaml:?}"
+            );
+        }
+        for (yaml, secs) in [
+            ("{}", 300),
+            ("retention:\n  timeout: 1s\n", 1),
+            ("retention:\n  timeout: 5m\n", 300),
+            ("retention:\n  timeout: 60m\n", 3600),
+            ("retention:\n  timeout: 3600s\n", 3600),
+        ] {
+            assert_eq!(
+                parse_config(yaml).unwrap().retention_timeout.as_secs(),
+                secs,
+                "{yaml:?}"
+            );
+        }
+        for bad in [
+            "retention:\n  timeout: 0s\n",
+            "retention:\n  timeout: 61m\n",
+            "retention:\n  timeout: 3601s\n",
+            "retention:\n  timeout: 05m\n",
+            "retention:\n  timeout: 5\n",
+            "retention:\n  timeout: m\n",
+            "retention:\n  timeout: 5h\n",
+            "retention:\n  timeout: \"\"\n",
+        ] {
+            assert!(parse_config(bad).is_err(), "{bad:?}");
+        }
+        for bad in [
+            "retention:\n  margin: 0d\n",
+            "retention:\n  margin: 3651d\n",
+            "retention:\n  margin: 99999d\n",
+            "retention:\n  margin: 090000d\n",
+            "retention:\n  margin: 010d\n",
+            "retention:\n  margin: 09d\n",
+            "retention:\n  margin: 90\n",
+            "retention:\n  margin: d\n",
+            "retention:\n  margin: 90D\n",
+            "retention:\n  margin: 90 d\n",
+            "retention:\n  margin: -1d\n",
+            "retention:\n  margin: 1.5d\n",
+            "retention:\n  margin: 90h\n",
+            "retention:\n  margin: [90d]\n",
+            "retention:\n  margin: \"\"\n",
+            "retention:\n  every: 1h\n",
+            "retention: 90d\n",
+            "retention:\n  margin: 1d\n  margin: 2d\n",
+        ] {
+            let error = parse_config(bad).expect_err(bad);
+            assert!(
+                format!("{error:#}").contains("OPENBILLING_CONFIG"),
+                "{bad:?}"
+            );
         }
     }
 

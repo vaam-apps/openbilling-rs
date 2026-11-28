@@ -127,6 +127,9 @@ pub enum Error {
     /// A window of zero days.
     #[error("the intake window is invalid")]
     InvalidWindow,
+    /// A retention margin of no day, or past the longest one allowed.
+    #[error("the retention margin is invalid")]
+    InvalidRetentionMargin,
     /// A negative quantity of a meter's unit.
     #[error("quantity is out of range")]
     QuantityOutOfRange,
@@ -142,6 +145,7 @@ impl Classify for Error {
             | Self::AmountOutOfRange
             | Self::TimestampOutOfRange
             | Self::InvalidWindow
+            | Self::InvalidRetentionMargin
             | Self::QuantityOutOfRange
             | Self::InvalidVersionId => ErrorClass::Invalid,
         }
