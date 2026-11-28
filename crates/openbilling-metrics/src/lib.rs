@@ -41,8 +41,8 @@ pub enum Counter {
     /// Payments read back that differ from the top-up recorded for them (ADR 0003, amended 2026-11-28): `field` is
     /// `owner`, `label`, `currency`, `amount` or `unrecorded`. Counted once, where the ledger decides.
     PaymentMismatches,
-    /// Pending top-ups the reconciler read back: `outcome` is `credited`, `pending`, `canceled`, `mismatch` or
-    /// `error`.
+    /// Pending top-ups the reconciler read back: `outcome` is `credited`, `replayed`, `pending`, `not_ours`,
+    /// `canceled`, `mismatch` or `error` (a pass that panicked is an `error` too).
     TopUpsReconciled,
     /// Errors by class: `class` is `invalid`, `conflict`, `unavailable` or `internal`; `source` is where.
     Errors,

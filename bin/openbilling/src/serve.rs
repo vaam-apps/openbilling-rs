@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use openbilling_core::{Classify, LedgerStore, ReconcileSettings, reconcile_pending};
+use openbilling_core::{Classify, ErrorClass, LedgerStore, ReconcileSettings, reconcile_pending};
 use openbilling_http::auth::{BearerAuth, RefuseAll};
 use openbilling_http::{Services, prepare, router};
 use openbilling_jwt::JwtVerifier;
@@ -155,14 +155,39 @@ async fn reconcile_forever(
     loop {
         tokio::time::sleep(every).await;
         let pass = tracing::info_span!("reconcile.run");
-        match reconcile_pending(&ledger, &provider, &settings)
-            .instrument(pass)
-            .await
-        {
+        // Each pass is its own task: a panic in one (a bug, never a normal failure) is caught at the join, counted as
+        // an error, and the next pass runs, so reconciliation does not silently end.
+        let run = tokio::spawn({
+            let (ledger, provider, settings) = (ledger.clone(), provider.clone(), settings);
+            async move {
+                reconcile_pending(&ledger, &provider, &settings)
+                    .instrument(pass)
+                    .await
+            }
+        });
+        let result = match run.await {
+            Ok(result) => result,
+            Err(joined) => {
+                global().add(Counter::TopUpsReconciled, &[("outcome", "error")], 1);
+                count_error(ErrorClass::Internal, "reconcile");
+                tracing::error!(
+                    openbilling.error.class = "internal",
+                    panicked = joined.is_panic(),
+                    "a reconciliation pass did not finish"
+                );
+                anstream::eprintln!(
+                    "{WARN}openbilling:{WARN:#} a reconciliation pass did not finish; the next one runs on time"
+                );
+                continue;
+            }
+        };
+        match result {
             Ok(report) => {
                 for (outcome, n) in [
                     ("credited", report.credited),
+                    ("replayed", report.replayed),
                     ("pending", report.pending),
+                    ("not_ours", report.not_ours),
                     ("canceled", report.canceled),
                     ("mismatch", report.mismatched),
                     ("error", report.failed),

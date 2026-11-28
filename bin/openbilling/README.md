@@ -60,9 +60,18 @@ in `openbilling.errors` (`source=retention`); it does not stop the service.
 
 `payments.unrecorded` decides what happens to a succeeded payment that no top-up was recorded for (ADR 0003, amended
 2026-11-28): one started before top-ups were recorded, or one openbilling never asked for. **`refuse` is the default**
-(fail closed: nothing is credited, and the payment is counted in `openbilling.payments.mismatches` with `field=unrecorded`);
-`credit` books it from what the provider reports, as before, for a deployment with top-ups in flight from an earlier
-version. A payment with no owner reference is not ours either way.
+(fail closed: nothing is credited, and the payment is kept as a `mismatched` top-up of the field `unrecorded`, with the
+values read back, so an operator can list it; it is counted once in `openbilling.payments.mismatches` with
+`field=unrecorded`, however often it is read again. Read values that could not be stored, such as an id outside its
+alphabet, are refused and counted on every read); `credit` books it from what the provider reports, as before, for a
+deployment with top-ups in flight from an earlier version. A payment with no owner reference is not ours either way.
+
+**Upgrading a deployment that has top-ups in flight:** top-ups started before this version have no record. Set
+`payments.unrecorded: credit` for the upgrade, keep it until every top-up started before it has finished (at most
+`reconcile.stop_after`, 7 days by default, plus the time a payer takes to pay), then set `refuse`. A top-up marked
+mismatched that an operator has checked at the provider and finds right is recovered today by hand, with an operator
+adjustment credit of the recorded amount to the recorded account; a procedure that closes a mismatched top-up and credits
+its recorded terms is a follow-up.
 
 `reconcile` is the timer that finds a paid top-up whose webhook never came (ADR 0003, amended 2026-11-28). It runs only when
 a payment provider is configured, first after one `every`, and reads back the pending top-ups that are at least
@@ -70,7 +79,7 @@ a payment provider is configured, first after one `every`, and reads back the pe
 Several instances share the work (a claim takes each top-up for one of them), and a webhook racing a pass books once. A top-up
 older than `stop_after` stays pending and is not read again; the operator's `reconcilePayment` still settles it. Every
 value has the default shown; a value outside its range, or a `stop_after` not longer than `pending_after`, stops `serve`
-at start. It logs counts only (credited, differed, failed) and counts the outcomes in `openbilling.topups.reconciled`; a
+at start. It logs counts only (credited, differed, failed) and counts the outcomes in `openbilling.topups.reconciled` (`credited`, `replayed` for one found credited already, `pending`, `not_ours`, `canceled`, `mismatch`, `error`, which a pass that panicked also counts; the next pass runs); a
 failed pass is logged by class and counted in `openbilling.errors` (`source=reconcile`). A payment that differs from its top-up in
 any field is never credited and stays refused: the webhook acknowledges it, `reconcilePayment` answers `409`, and it is
 counted in `openbilling.payments.mismatches` and logged as a warning that names the field. **Nothing resolves a mismatch yet.**

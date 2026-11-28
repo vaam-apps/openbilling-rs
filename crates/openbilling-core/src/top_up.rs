@@ -173,10 +173,14 @@ pub trait TopUpLedger: Send + Sync {
 /// What one reconciliation pass did, by outcome.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ReconcileReport {
-    /// Top-ups credited now (or found credited already).
+    /// Top-ups credited now.
     pub credited: u32,
+    /// Top-ups found credited already (a replay: the webhook, or another pass, booked them first).
+    pub replayed: u32,
     /// Top-ups the provider still holds as unpaid.
     pub pending: u32,
+    /// Payments that are not ours (no top-up and no owner reference): nothing was moved.
+    pub not_ours: u32,
     /// Top-ups the provider canceled.
     pub canceled: u32,
     /// Top-ups whose payment differs from what was recorded.
@@ -189,7 +193,13 @@ impl ReconcileReport {
     /// How many top-ups the pass looked at.
     #[must_use]
     pub const fn total(&self) -> u32 {
-        self.credited + self.pending + self.canceled + self.mismatched + self.failed
+        self.credited
+            + self.replayed
+            + self.pending
+            + self.not_ours
+            + self.canceled
+            + self.mismatched
+            + self.failed
     }
 }
 
@@ -211,8 +221,10 @@ where
     let mut report = ReconcileReport::default();
     for id in ledger.claim_pending_top_ups(settings).await? {
         match settle_payment(ledger, provider, &id).await {
+            Ok(Settled::Credited(credited)) if credited.replayed => report.replayed += 1,
             Ok(Settled::Credited(_)) => report.credited += 1,
             Ok(Settled::PaymentNotSettled(PaymentStatus::Canceled)) => report.canceled += 1,
+            Ok(Settled::NotOurs) => report.not_ours += 1,
             Ok(_) => report.pending += 1,
             Err(SettleError::ReadBackMismatch(_)) => report.mismatched += 1,
             Err(_) => report.failed += 1,
