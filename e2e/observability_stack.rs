@@ -54,7 +54,10 @@ impl Stack {
             .unwrap();
         let body: Value = answer.json_value().await;
         assert_eq!(body["status"], "success", "{expr}: {body}");
-        body["data"]["result"].as_array().cloned().unwrap_or_default()
+        body["data"]["result"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
     }
 
     async fn value(&self, expr: &str) -> Option<f64> {
@@ -112,7 +115,10 @@ where
 {
     let deadline = Instant::now() + within;
     while !check().await {
-        assert!(Instant::now() < deadline, "{what} did not hold in {within:?}");
+        assert!(
+            Instant::now() < deadline,
+            "{what} did not hold in {within:?}"
+        );
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
 }
@@ -201,10 +207,13 @@ async fn the_real_collector_prometheus_and_grafana_answer_what_the_dashboards_an
             setting("OPENBILLING_OBS_REQUIRE").is_none(),
             "OPENBILLING_OBS_REQUIRE is set but the stack's URLs are not: run tools/observability/run.sh"
         );
-        eprintln!("skipped: OPENBILLING_OBS_PROMETHEUS_URL and OPENBILLING_OBS_GRAFANA_URL are not set");
+        eprintln!(
+            "skipped: OPENBILLING_OBS_PROMETHEUS_URL and OPENBILLING_OBS_GRAFANA_URL are not set"
+        );
         return;
     };
-    let otlp = setting("OPENBILLING_OBS_OTLP_URL").unwrap_or_else(|| "http://127.0.0.1:4318".to_owned());
+    let otlp =
+        setting("OPENBILLING_OBS_OTLP_URL").unwrap_or_else(|| "http://127.0.0.1:4318".to_owned());
     let extra = vec![
         ("OTEL_EXPORTER_OTLP_ENDPOINT".to_owned(), otlp),
         ("OTEL_SERVICE_NAME".to_owned(), "openbilling".to_owned()),
@@ -227,7 +236,8 @@ async fn the_real_collector_prometheus_and_grafana_answer_what_the_dashboards_an
     // Phase A: a workload that exercises intake, the drain, the ledger and getAllowed.
     d.configure().await;
     d.open("acct-obs", OWNER).await;
-    d.grant("adjustment", "credit-obs", OWNER, 900_000_000).await;
+    d.grant("adjustment", "credit-obs", OWNER, 900_000_000)
+        .await;
     let t = now();
     let events: Vec<Value> = (0..50)
         .map(|i| priced(&format!("evt-obs-{i}"), OWNER, MEMBER, 1_000_000 + i, t))
@@ -239,19 +249,23 @@ async fn the_real_collector_prometheus_and_grafana_answer_what_the_dashboards_an
     }
 
     // The gauges are sampled every 15 s: wait for them to reach Prometheus through the Collector.
-    wait_until("the gauges reach Prometheus", Duration::from_secs(90), || async {
-        let names = stack.names().await;
-        [
-            "openbilling_queue_backlog",
-            "openbilling_drain_lag_seconds",
-            "db_client_connection_count",
-            "openbilling_intake_events_total",
-            "openbilling_telemetry_exports_total",
-            "http_server_request_duration_seconds_count",
-        ]
-        .iter()
-        .all(|n| names.contains(*n))
-    })
+    wait_until(
+        "the gauges reach Prometheus",
+        Duration::from_secs(90),
+        || async {
+            let names = stack.names().await;
+            [
+                "openbilling_queue_backlog",
+                "openbilling_drain_lag_seconds",
+                "db_client_connection_count",
+                "openbilling_intake_events_total",
+                "openbilling_telemetry_exports_total",
+                "http_server_request_duration_seconds_count",
+            ]
+            .iter()
+            .all(|n| names.contains(*n))
+        },
+    )
     .await;
 
     // Names: every series the service made is a name the code lists, with the `job` the dashboards select by.
@@ -314,19 +328,28 @@ async fn the_real_collector_prometheus_and_grafana_answer_what_the_dashboards_an
             .is_some_and(|v| v > 0.0),
         "no metrics export is counted ok"
     );
-    assert!(stack.query(r#"openbilling_errors_total{class="conflict"}"#).await.is_empty());
+    assert!(
+        stack
+            .query(r#"openbilling_errors_total{class="conflict"}"#)
+            .await
+            .is_empty()
+    );
 
     // Phase B: the same event id with another amount is a conflict, and the counter appears.
     let again = d
         .usage(vec![priced("evt-obs-0", OWNER, MEMBER, 7_000_000, t)])
         .await;
     assert_eq!(again.status, 409, "{}", again.text);
-    wait_until("the conflict is counted", Duration::from_secs(20), || async {
-        stack
-            .value(r#"sum(openbilling_errors_total{class="conflict"})"#)
-            .await
-            .is_some_and(|v| v >= 1.0)
-    })
+    wait_until(
+        "the conflict is counted",
+        Duration::from_secs(20),
+        || async {
+            stack
+                .value(r#"sum(openbilling_errors_total{class="conflict"})"#)
+                .await
+                .is_some_and(|v| v >= 1.0)
+        },
+    )
     .await;
     // A ratio of two rates is 0/0 (no value) once traffic stops: keep a little going, refused and answered, so the
     // last points of the range have one.
@@ -367,7 +390,9 @@ async fn the_real_collector_prometheus_and_grafana_answer_what_the_dashboards_an
     let from = to - Duration::from_secs(300);
     for (file, dashboard) in dashboards() {
         let uid = dashboard["uid"].as_str().unwrap();
-        let (status, found) = stack.grafana_get(&format!("/api/dashboards/uid/{uid}")).await;
+        let (status, found) = stack
+            .grafana_get(&format!("/api/dashboards/uid/{uid}"))
+            .await;
         assert_eq!(status, 200, "{file}: {found}");
         assert_eq!(
             found["dashboard"]["panels"].as_array().unwrap().len(),
@@ -393,9 +418,17 @@ async fn the_real_collector_prometheus_and_grafana_answer_what_the_dashboards_an
             let answer = answer.json_value().await;
             assert_eq!(status, 200, "{file}: {title:?}: {answer}");
             for (id, result) in answer["results"].as_object().unwrap() {
-                assert!(result["error"].is_null(), "{file}: {title:?} {id}: {result}");
+                assert!(
+                    result["error"].is_null(),
+                    "{file}: {title:?} {id}: {result}"
+                );
             }
             if EXPECTED_EMPTY.contains(&title.as_str()) {
+                // The list stays honest: a panel that now has a value leaves it.
+                assert!(
+                    !has_value(&answer),
+                    "{file}: panel {title:?} is no longer empty: {answer}"
+                );
                 continue;
             }
             assert!(

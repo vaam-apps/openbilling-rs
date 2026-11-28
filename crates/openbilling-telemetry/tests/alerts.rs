@@ -40,10 +40,16 @@ fn every_alert_queries_what_the_service_exports_and_is_described() {
     for rule in &rules {
         let name = rule["alert"].as_str().unwrap();
         assert!(names.insert(name), "{name} is unique");
-        assert!(readme.contains(&format!("`{name}`")), "{name} is not in the README");
+        assert!(
+            readme.contains(&format!("`{name}`")),
+            "{name} is not in the README"
+        );
         let expr = rule["expr"].as_str().unwrap();
         let metrics = promql::metrics(expr);
-        assert!(!metrics.is_empty(), "{name}: {expr} queries no metric of the service");
+        assert!(
+            !metrics.is_empty(),
+            "{name}: {expr} queries no metric of the service"
+        );
         for metric in metrics {
             assert!(
                 exposed.contains(&metric),
@@ -57,19 +63,30 @@ fn every_alert_queries_what_the_service_exports_and_is_described() {
             );
         }
         let severity = rule["labels"]["severity"].as_str().unwrap();
-        assert!(["warning", "critical"].contains(&severity), "{name}: severity {severity}");
-        assert!(name.ends_with(&capitalised(severity)), "{name} says its severity");
+        assert!(
+            ["warning", "critical"].contains(&severity),
+            "{name}: severity {severity}"
+        );
+        assert!(
+            name.ends_with(&capitalised(severity)),
+            "{name} says its severity"
+        );
         assert!(rule["for"].as_str().is_some(), "{name} has a `for`");
         for key in ["summary", "description"] {
             assert!(
-                rule["annotations"][key].as_str().is_some_and(|t| t.len() > 20),
+                rule["annotations"][key]
+                    .as_str()
+                    .is_some_and(|t| t.len() > 20),
                 "{name}: {key} says what is wrong"
             );
         }
     }
     for name in &names {
         if let Some(base) = name.strip_suffix("Warning") {
-            assert!(names.contains(format!("{base}Critical").as_str()), "{name} has no critical pair");
+            assert!(
+                names.contains(format!("{base}Critical").as_str()),
+                "{name} has no critical pair"
+            );
         }
     }
 }
@@ -86,7 +103,9 @@ fn capitalised(severity: &str) -> String {
 fn the_charts_copy_equals_the_rules() {
     let canonical = std::fs::read(deploy().join("alerts/openbilling.rules.yaml")).unwrap();
     let copy = std::fs::read(deploy().join("openbilling/alerts/openbilling.rules.yaml"))
-        .unwrap_or_else(|_| panic!("deploy/openbilling/alerts/openbilling.rules.yaml is missing: copy it"));
+        .unwrap_or_else(|_| {
+            panic!("deploy/openbilling/alerts/openbilling.rules.yaml is missing: copy it")
+        });
     assert!(
         canonical == copy,
         "deploy/openbilling/alerts/openbilling.rules.yaml differs from deploy/alerts/openbilling.rules.yaml"
