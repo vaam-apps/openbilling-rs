@@ -40,7 +40,21 @@ async fn a_top_up_is_an_intent_with_metadata_then_a_hosted_session() {
         seen[0].idempotency_key.as_deref(),
         Some("openbilling:top-1:payment_intent")
     );
-    assert_eq!(seen[0].authorization, Some(format!("Bearer {TOKEN}")));
+    let minted = f
+        .stand_in
+        .state
+        .lock()
+        .unwrap()
+        .tokens
+        .keys()
+        .next()
+        .cloned();
+    assert_eq!(
+        seen[0].authorization,
+        Some(format!("Bearer {}", minted.expect("a minted token"))),
+        "the adapter minted its token and sent it"
+    );
+    assert_eq!(seen[1].authorization, seen[0].authorization);
     assert_eq!(seen[1].path, "/v1/checkout/sessions");
     assert_eq!(
         seen[1].body,
