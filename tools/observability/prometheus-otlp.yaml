@@ -1,9 +1,15 @@
 # Prometheus of the `otlp` leg (OBS_LEG=otlp): no scrape job; the Collector pushes to the OTLP receiver that run.sh
-# enables with --web.enable-otlp-receiver. run.sh replaces @RULES@ with deploy/alerts/openbilling.rules.yaml.
+# enables with --web.enable-otlp-receiver. run.sh replaces @RULES@ with deploy/alerts/openbilling.rules.yaml,
+# @TEST_RULES@ with the test-only rules of test-thresholds.toml, and @AM_PORT@ with Alertmanager's port.
 global:
   evaluation_interval: 2s
 rule_files:
   - "@RULES@"
+  - "@TEST_RULES@"
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["127.0.0.1:@AM_PORT@"]
 otlp:
   # Dots become underscores, a unit becomes a suffix (s -> _seconds) and a monotonic Sum gets _total: the names
   # exposed_names() lists, as the Collector's `prometheus` exporter makes them. Written out although it is the default.

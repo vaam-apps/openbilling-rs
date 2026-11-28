@@ -1,0 +1,14 @@
+# Alertmanager of the stack, for the alert-delivery proof: one receiver, a webhook to the sink the end-to-end test
+# runs on 127.0.0.1, and timers of a few seconds so that a firing and a resolved notification arrive in the run's time.
+# They are test values; a deployment's are its own. run.sh replaces @SINK_PORT@.
+route:
+  receiver: sink
+  group_by: [alertname, severity, job]
+  group_wait: 1s
+  group_interval: 2s
+  repeat_interval: 1m
+receivers:
+  - name: sink
+    webhook_configs:
+      - url: http://127.0.0.1:@SINK_PORT@/
+        send_resolved: true
