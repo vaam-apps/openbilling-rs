@@ -62,6 +62,6 @@ The numbers above are the defaults. Each alert's summary and description state t
   `PrometheusRule` for the Prometheus Operator (`prometheusRule.enabled`, off by default). The chart's copy in
   `deploy/openbilling/alerts/` is held equal to these files by a test and by `tests/check.sh`.
 
-**Verified locally 2026-11-28** by `tools/observability/run.sh`: the file loads in Prometheus v3.16.0 and every rule
+**Verified 2026-11-28** by `tools/observability/run.sh`, locally and in CI (observability.yml run 46097502499, job 140832142178, at 14fd8e1): the file loads in Prometheus v3.16.0 and every rule
 evaluates without error against series made by a real Collector (see ADR 0007, *Amended 2026-11-28*). That the alerts
 *fire* on a live service is covered by `promtool test rules` only; no end-to-end run drives a threshold.
