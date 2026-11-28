@@ -55,7 +55,7 @@ const fn refused_at(rule: Rule) -> Meaning {
 }
 
 /// Every SQLSTATE the migrations raise, and what it means.
-pub const LEDGER_SQLSTATES: [(&str, Meaning); 32] = [
+pub const LEDGER_SQLSTATES: [(&str, Meaning); 33] = [
     ("OB001", refused(Rule::CreditConflict)),
     ("OB002", refused(Rule::UnknownAccount)),
     ("OB003", refused(Rule::UnknownCurrency)),
@@ -66,6 +66,7 @@ pub const LEDGER_SQLSTATES: [(&str, Meaning); 32] = [
     ("OB008", refused(Rule::AccountConflict)),
     ("OB009", refused(Rule::InvalidAmount)),
     ("OB010", refused(Rule::InvalidConfig)),
+    ("OB011", refused(Rule::TopUpConflict)),
     ("OB101", refused(Rule::TooManyEvents)),
     ("OB102", refused_naming(Rule::NegativeAmount)),
     ("OB103", refused_naming(Rule::DifferingDuplicate)),
@@ -209,6 +210,7 @@ mod tests {
             ("OB008", Rule::AccountConflict, nothing),
             ("OB009", Rule::InvalidAmount, nothing),
             ("OB010", Rule::InvalidConfig, nothing),
+            ("OB011", Rule::TopUpConflict, nothing),
             ("OB101", Rule::TooManyEvents, nothing),
             ("OB102", Rule::NegativeAmount, events),
             ("OB103", Rule::DifferingDuplicate, events),
@@ -284,6 +286,7 @@ mod tests {
                         | Rule::AccountConflict
                         | Rule::CreditConflict
                         | Rule::ReversalCap
+                        | Rule::TopUpConflict
                         | Rule::VersionConflict => ErrorClass::Conflict,
                         _ => ErrorClass::Invalid,
                     }

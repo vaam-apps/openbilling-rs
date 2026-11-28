@@ -11,9 +11,10 @@ use openbilling_core::{
     AccountBalance, AccountId, AccountLabel, Allowed, AllowedPolicy, Amount, Balance, CreditId,
     CreditTarget, Credited, CurrencyCode, Decided, DrainReport, EventId, EventOutcome, Intake,
     IntakeReport, LedgerConfig, LedgerError, LedgerStore, Loaded, LotKind, LotView, MemberId,
-    NewAccount, NotAllowed, Opened, OutcomeView, OwnerId, PartitionRetention, PriceBook,
-    PriceVersionId, PriceVersionView, Rated, RawEvent, RefusalReason, RetentionMargin,
-    RetentionReport, Reversal, Timestamp, UsageEvent, UtcDay, UtcMonth, Window, WithinKind,
+    MismatchField, NewAccount, NotAllowed, Opened, OutcomeView, OwnerId, PartitionRetention,
+    PaymentView, PriceBook, PriceVersionId, PriceVersionView, Rated, RawEvent, ReconcileSettings,
+    RefusalReason, RetentionMargin, RetentionReport, Reversal, Timestamp, TopUp, TopUpLedger,
+    TopUpSettled, UnrecordedTopUps, UsageEvent, UtcDay, UtcMonth, Window, WithinKind,
 };
 use openbilling_metrics::{Counter, Gauge, Histogram, global};
 use sqlx::PgPool;
@@ -41,6 +42,9 @@ pub struct LedgerSettings {
     /// The longest one retention run may wait for a lock (a detach waits for every transaction on the table) or run a
     /// statement, as `lock_timeout` and `statement_timeout` of its connection. The deployer's, default 5 minutes.
     pub retention_timeout: Duration,
+    /// What to do with a succeeded payment no top-up was recorded for (ADR 0003, amended 2026-11-28): the deployer's
+    /// `payments.unrecorded`, default [`UnrecordedTopUps::Refuse`]. Passed to the SQL as an argument.
+    pub unrecorded_top_ups: UnrecordedTopUps,
 }
 
 impl Default for LedgerSettings {
@@ -51,6 +55,7 @@ impl Default for LedgerSettings {
             notify_interval: Duration::from_millis(100),
             retention_margin: RetentionMargin::default(),
             retention_timeout: Duration::from_secs(300),
+            unrecorded_top_ups: UnrecordedTopUps::Refuse,
         }
     }
 }
@@ -1040,5 +1045,99 @@ impl PartitionRetention for PgLedger {
             dropped: ran.dropped,
             skipped: false,
         })
+    }
+}
+
+/// Microseconds of a duration, saturating at the largest `bigint`.
+fn micros_of(duration: Duration) -> i64 {
+    i64::try_from(duration.as_micros()).unwrap_or(i64::MAX)
+}
+
+impl TopUpLedger for PgLedger {
+    #[tracing::instrument(name = "db.query", skip_all, fields(db.system = "postgresql", db.operation = "record_top_up"))]
+    async fn record_top_up(&self, top_up: &TopUp) -> Result<bool, LedgerError> {
+        sqlx::query_scalar("SELECT ob_record_top_up($1, $2, $3, $4, $5, $6)")
+            .bind(top_up.payment.as_str())
+            .bind(top_up.key.as_str())
+            .bind(top_up.to.owner.as_str())
+            .bind(top_up.currency.as_str())
+            .bind(top_up.to.label.as_str())
+            .bind(top_up.amount.micros())
+            .fetch_one(&self.pool)
+            .await
+            .map_err(ledger_error)
+    }
+
+    #[tracing::instrument(name = "db.query", skip_all, fields(db.system = "postgresql", db.operation = "settle_top_up"))]
+    async fn settle_top_up(&self, payment: &PaymentView) -> Result<TopUpSettled, LedgerError> {
+        let (outcome, field, account, txn, replayed, repaid, debt_added): (
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            bool,
+            i64,
+            i64,
+        ) = sqlx::query_as(
+            "SELECT o_outcome, o_field, o_account_id, o_txn_id::text, o_replayed, o_repaid, o_debt_added \
+             FROM ob_settle_top_up($1, $2, $3, $4, $5, $6, $7)",
+        )
+        .bind(payment.id.as_str())
+        .bind(payment.status.as_str())
+        .bind(payment.to.as_ref().map(|to| to.owner.as_str()))
+        .bind(payment.currency.as_str())
+        .bind(payment.to.as_ref().map(|to| to.label.as_str()))
+        .bind(payment.amount.micros())
+        .bind(self.settings.unrecorded_top_ups.as_str())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(ledger_error)?;
+        match outcome.as_str() {
+            "credited" => {
+                let (Some(account), Some(txn)) = (account, txn) else {
+                    return Err(corrupt());
+                };
+                Ok(TopUpSettled::Credited(credited((
+                    account, txn, replayed, repaid, debt_added,
+                ))?))
+            }
+            "canceled" => Ok(TopUpSettled::Canceled),
+            "pending" => Ok(TopUpSettled::Pending),
+            "not_ours" => Ok(TopUpSettled::NotOurs),
+            "mismatch" => {
+                let field = field
+                    .as_deref()
+                    .and_then(MismatchField::from_name)
+                    .ok_or_else(corrupt)?;
+                // Once, where the ledger decides: the field is a closed name, never a value.
+                global().add(Counter::PaymentMismatches, &[("field", field.as_str())], 1);
+                tracing::warn!(
+                    openbilling.mismatch.field = field.as_str(),
+                    openbilling.error.class = "conflict",
+                    "a payment read back differs from its top-up; not credited"
+                );
+                Ok(TopUpSettled::Mismatch(field))
+            }
+            _ => Err(corrupt()),
+        }
+    }
+
+    #[tracing::instrument(name = "db.query", skip_all, fields(db.system = "postgresql", db.operation = "claim_pending_top_ups"))]
+    async fn claim_pending_top_ups(
+        &self,
+        settings: &ReconcileSettings,
+    ) -> Result<Vec<CreditId>, LedgerError> {
+        let ids: Vec<String> =
+            sqlx::query_scalar("SELECT o_payment_id FROM ob_claim_pending_top_ups($1, $2, $3, $4)")
+                .bind(micros_of(settings.pending_after))
+                .bind(micros_of(settings.read_again_after))
+                .bind(micros_of(settings.stop_after))
+                .bind(i32::try_from(settings.batch).unwrap_or(i32::MAX))
+                .fetch_all(&self.pool)
+                .await
+                .map_err(ledger_error)?;
+        ids.into_iter()
+            .map(|id| CreditId::new(id).map_err(|_| corrupt()))
+            .collect()
     }
 }
