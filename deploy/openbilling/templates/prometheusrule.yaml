@@ -1,0 +1,20 @@
+{{- /*
+The alert rules (deploy/alerts, copied into this chart's alerts/ and held equal by a test) as a PrometheusRule for the
+Prometheus Operator. Off by default: the CRD is the operator's, and the thresholds are the deployer's to review.
+`prometheusRule.labels` carry whatever the Prometheus's ruleSelector asks for; they are merged over the fixed labels, so a
+key named in both appears once (the value from `prometheusRule.labels` wins).
+*/ -}}
+{{- if .Values.prometheusRule.enabled }}
+{{- $rules := .Files.Get "alerts/openbilling.rules.yaml" | fromYaml }}
+{{- $labels := dict "app.kubernetes.io/name" "openbilling" "app.kubernetes.io/instance" .Release.Name "app.kubernetes.io/managed-by" .Release.Service "app.kubernetes.io/version" (.Chart.AppVersion | toString) "helm.sh/chart" (printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_") }}
+{{- $labels = mergeOverwrite $labels (.Values.prometheusRule.labels | default dict) }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- toYaml $labels | nindent 4 }}
+spec:
+  {{- dict "groups" $rules.groups | toYaml | nindent 2 }}
+{{- end }}

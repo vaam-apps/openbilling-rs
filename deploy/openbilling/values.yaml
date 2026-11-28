@@ -252,6 +252,13 @@ networkpolicies:
             - port: 443
               protocol: TCP
 
+# -- Off by default. The alert rules (deploy/alerts, copied into this chart's alerts/ and held equal by a test) as a
+# PrometheusRule for the Prometheus Operator; needs its CRDs. `labels` are added to the object, for a Prometheus
+# whose `ruleSelector` asks for some (for example `release: prometheus`).
+prometheusRule:
+  enabled: false
+  labels: {}
+
 # -- Off by default, and of no use yet: openbilling serves no `/metrics` today (it pushes OTLP instead, see
 # `openbilling.otel`), so a ServiceMonitor would scrape a 404. Needs the Prometheus Operator's CRDs.
 serviceMonitor:

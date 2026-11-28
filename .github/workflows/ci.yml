@@ -111,21 +111,40 @@ jobs:
           jq -e '[.ops[] | select((.unanalysed | length > 0) or (.requires_principal | not))] | length == 0' /tmp/ops.json
 
   dashboards:
-    name: Dashboards are generated (no drift)
+    name: Dashboards and alerts are generated (no drift)
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # The JSON in deploy/dashboards/ and deploy/openbilling/dashboards/ is written by tools/dashboards/ (Python, standard
-      # library only). Regenerate, then fail on any change or any file the scripts made that is not committed.
+      # The JSON in deploy/dashboards/ and deploy/openbilling/dashboards/, the rules in deploy/alerts/ and
+      # deploy/openbilling/alerts/ and their unit tests in tools/dashboards/tests/ are written by tools/dashboards/
+      # (Python, standard library only). Regenerate, then fail on any change or any file the scripts made that is not
+      # committed.
       - name: Regenerate
         run: sh tools/dashboards/generate.sh
       - name: No difference
         run: |
-          git diff --exit-code -- deploy
-          test -z "$(git status --porcelain -- deploy)" || { git status --porcelain -- deploy; echo "::error::deploy/ differs from what tools/dashboards/ generates: run sh tools/dashboards/generate.sh and commit"; exit 1; }
+          git diff --exit-code -- deploy tools/dashboards/tests
+          test -z "$(git status --porcelain -- deploy tools/dashboards/tests)" || { git status --porcelain -- deploy tools/dashboards/tests; echo "::error::deploy/ or tools/dashboards/tests/ differs from what tools/dashboards/ generates: run sh tools/dashboards/generate.sh and commit"; exit 1; }
+      # promtool is taken from the pinned Prometheus image (tools/observability/versions.env), by digest, with no
+      # container runtime: fetch.py reads the registry and checks every layer's sha256 (on a cache miss).
+      # Cached by the pins, as observability.yml does: on a hit fetch.py reads no registry (it re-hashes the file against
+      # the digest recorded beside it), so a Docker Hub outage does not fail this job.
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/prometheus
+          key: promtool-${{ hashFiles('tools/observability/versions.env') }}
+      - name: Fetch promtool
+        run: |
+          . tools/observability/versions.env
+          python3 -I tools/observability/fetch.py image "$PROMETHEUS_REPO" "$PROMETHEUS_DIGEST" "${RUNNER_TEMP}/prometheus" bin/promtool
+          echo "${RUNNER_TEMP}/prometheus" >> "$GITHUB_PATH"
+      - name: The rules are valid
+        run: promtool check rules deploy/alerts/openbilling.rules.yaml
+      - name: The rules fire at their thresholds
+        run: promtool test rules tools/dashboards/tests/alerts.test.yaml
 
   deny:
     name: Dependencies (cargo deny)

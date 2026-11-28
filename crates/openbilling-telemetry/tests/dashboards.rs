@@ -7,31 +7,11 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
+#[path = "common/promql.rs"]
+mod promql;
+
 use openbilling_telemetry::exposed_names;
 use serde_json::Value;
-
-/// The labels the code records, and the ones a Prometheus backend adds.
-const LABELS: [&str; 19] = [
-    "job",
-    "le",
-    "route",
-    "method",
-    "status",
-    "procedure",
-    "class",
-    "source",
-    "verdict",
-    "check",
-    "result",
-    "reason",
-    "outcome",
-    "kind",
-    "state",
-    "operation",
-    "mode",
-    "signal",
-    "__rate_interval",
-];
 
 fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../deploy")
@@ -52,13 +32,6 @@ fn dashboards() -> Vec<(String, Value)> {
         .collect();
     found.sort_by(|a, b| a.0.cmp(&b.0));
     found
-}
-
-fn tokens(expr: &str) -> BTreeSet<String> {
-    expr.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-        .filter(|t| !t.is_empty())
-        .map(str::to_owned)
-        .collect()
 }
 
 #[test]
@@ -98,14 +71,7 @@ fn every_panel_queries_what_the_service_exports_and_is_described() {
             assert!(!targets.is_empty(), "{title:?} has a query");
             for target in targets {
                 let expr = target["expr"].as_str().unwrap();
-                let names: Vec<_> = tokens(expr)
-                    .into_iter()
-                    .filter(|t| {
-                        ["openbilling_", "http_server_", "db_client_"]
-                            .iter()
-                            .any(|p| t.starts_with(p))
-                    })
-                    .collect();
+                let names = promql::metrics(expr);
                 assert!(
                     !names.is_empty(),
                     "{title:?}: {expr} queries no metric of the service"
@@ -117,28 +83,11 @@ fn every_panel_queries_what_the_service_exports_and_is_described() {
                     );
                 }
                 // Labels: the words inside `by (…)` and before a matcher operator.
-                for group in expr.split("by (").skip(1) {
-                    let inside = group.split(')').next().unwrap();
-                    for label in inside.split(',').map(str::trim) {
-                        assert!(
-                            LABELS.contains(&label),
-                            "{title:?}: label {label:?} is not recorded"
-                        );
-                    }
-                }
-                for matcher in expr.split('{').skip(1) {
-                    let inside = matcher.split('}').next().unwrap();
-                    for part in inside.split(',') {
-                        let label: String = part
-                            .trim()
-                            .chars()
-                            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
-                            .collect();
-                        assert!(
-                            LABELS.contains(&label.as_str()),
-                            "{title:?}: matcher label {label:?} is not recorded"
-                        );
-                    }
+                for label in promql::labels(expr) {
+                    assert!(
+                        promql::LABELS.contains(&label.as_str()),
+                        "{title:?}: label {label:?} is not recorded"
+                    );
                 }
             }
         }

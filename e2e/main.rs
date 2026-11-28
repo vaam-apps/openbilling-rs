@@ -18,6 +18,7 @@ mod support;
 mod authentication;
 mod concurrency;
 mod metered_usage;
+mod observability_stack;
 mod once_only;
 mod organisation;
 mod payments;

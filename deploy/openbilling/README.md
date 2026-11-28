@@ -101,6 +101,10 @@ fails on any difference, and `crates/openbilling-telemetry/tests/dashboards.rs` 
 `tools/dashboards/`, never the JSON. The ConfigMap reads them with `.Files.Get`; its first
 render is CI's (*unverified*: no Helm was available when it was written).
 
+## Alert rules
+
+`prometheusRule.enabled: true` renders [`deploy/alerts`](../alerts/README.md) as a `PrometheusRule` for the Prometheus Operator (its CRDs are the cluster's); `prometheusRule.labels` are added to the object for a Prometheus whose `ruleSelector` asks for some. Off by default. `alerts/` in this chart is a copy a chart can read, **generated** with the dashboards by `tools/dashboards/generate.sh` from `tools/dashboards/thresholds.toml`; a test and CI hold it equal. A deployer's own thresholds: `python3 tools/dashboards/alerts.py --thresholds mine.toml --out DIR`, then ship that file instead. The render is checked by `tests/check.sh` (`tests/values/alerts.yaml`; kubeconform on the vendored `PrometheusRule` schema).
+
 **Refused** (the render fails, naming the value): an empty `existingSecret` or `key`; an `otel.endpoint` that is not an http(s) URL or holds a credential, or, with the NetworkPolicy on, whose port no egress rule allows; an `auth.issuer` without an
 `auth.audience` or the reverse, `jwksUrl`, `rolesClaim` or `roleMap` without both, an issuer that is not `https` or
 loopback `http`; in `openbilling.config`, a key other than `allowed`, `retention`, `vpay`, `payments` and `reconcile`, a `payments` key other than `unrecorded` or a value other than `refuse` and `credit`, a `reconcile` key other than its five, a span outside its range or not written like `15m`, `2h` or `7d`, a `batch` outside 1 to 1000, a `stop_after` not longer than `pending_after`, a `retention` key other than `margin`, a margin that is not days written like `90d` from `1d` to `3650d` (no leading zero), a timeout that is not `1s` to `1h` like `5m`, a check other than `debt_limit`, `balance` and `member_cap`, or
@@ -119,7 +123,7 @@ sh deploy/openbilling/tests/check.sh    # helm (v4) and kubeconform on PATH; the
 | `tests/check.sh` | The versions of `Cargo.toml` and `Chart.yaml` agree; the common library's archive is the pinned sha256; `helm lint --strict`; `helm template` of each accepted values file, then `render-check.sh` and kubeconform (strict, Kubernetes 1.35.0) on it; the defaults render the issuer and the audience empty (the service refuses every `/v1` call); the configuration file of the defaults is every check `at_or_above` with a retention margin of `90d`, a timeout of `5m` and `full.yaml`'s its own (`payments.yaml` is accepted too, and handed to the binary), each mounted where `OPENBILLING_CONFIG` says with the ConfigMap's checksum on the pod, and, with `OPENBILLING_BIN` naming a built binary, accepted by `openbilling serve`; each refused file
 refused with its message. CI's `chart` job runs it |
 | `tests/render-check.sh` | On a render: no Secret, no credential in a URL, `OPENBILLING_DATABASE_URL` from a Secret, every image a fixed version or a digest, `--require-digest` for a digest on every image |
-| `tests/values/` | `full.yaml` (everything on, the token verifier and a configuration file that is not the defaults included), `edge-with-digest.yaml`, `otel.yaml` (OpenTelemetry and the dashboards' ConfigMap on), and `refused-*.yaml`, each with the message it must be refused with on its `# expect:` line |
-| `tests/schemas/` | The ServiceMonitor JSON schema, vendored from datreeio/CRDs-catalog at `b50f3fb` (ADR 0005, *Agent notes*) |
+| `tests/values/` | `full.yaml` (everything on, the token verifier and a configuration file that is not the defaults included), `edge-with-digest.yaml`, `otel.yaml` (OpenTelemetry and the dashboards' ConfigMap on), `alerts.yaml` (the PrometheusRule on), and `refused-*.yaml`, each with the message it must be refused with on its `# expect:` line |
+| `tests/schemas/` | The ServiceMonitor and PrometheusRule JSON schemas, vendored from datreeio/CRDs-catalog at `b50f3fb` (ADR 0005, *Agent notes*) |
 
 `Chart.yaml`'s `version` and `appVersion` are written by release-please. Never edit them by hand.

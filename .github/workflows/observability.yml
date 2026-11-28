@@ -1,0 +1,73 @@
+name: Observability
+
+# Runs the whole stack on the runner and the gated end-to-end test against it: the real `openbilling serve`, an
+# OpenTelemetry Collector, Prometheus and Grafana, with the dashboards and alert rules of deploy/ provisioned as they
+# are (ADR 0007). It is the same script a developer runs: `sh tools/observability/run.sh`. It gates nothing (the
+# binaries are fetched from Docker Hub and dl.grafana.com, and a registry outage must not block a merge).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - "crates/**"
+      - "bin/**"
+      - "e2e/**"
+      - "deploy/**"
+      - "tools/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/observability.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: observability-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: "1.98.1"
+
+jobs:
+  stack:
+    name: The stack (Collector, Prometheus, Grafana)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      postgres:
+        # The same image as ci.yml's Test job (PostgreSQL 19 is the minimum): tag and digest, move both together.
+        image: postgres:19.0@sha256:4ea94de574c17f0372722806c949757050fbb1cd7648410fe45d6bba275cc00e
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      OPENBILLING_TEST_DATABASE_URL: postgres://postgres@localhost:5432/postgres
+      OPENBILLING_TEST_REQUIRE_DB: "1"
+      OBS_CACHE: ${{ github.workspace }}/.obs-cache
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master, 2026-11-14
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # The Grafana tarball is about 490 MB: cache the fetched binaries, keyed by the pins. On a hit fetch.py reads no
+      # registry: it re-hashes each extracted binary against the digest recorded beside it and the Grafana tarball
+      # against its pinned sha256 (re-fetching on a mismatch), and run.sh re-extracts Grafana when its stamp differs.
+      # On a miss it fetches and checks every layer's digest.
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ env.OBS_CACHE }}
+          key: observability-${{ hashFiles('tools/observability/versions.env') }}
+      - name: Run the stack and the end-to-end test
+        run: sh tools/observability/run.sh
