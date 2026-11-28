@@ -46,7 +46,7 @@ recorded beside it (`<file>.sha256`), the Grafana tarball against its pin, and t
 of that tarball's digest (a mismatch fetches or extracts again; a cache hit reads no registry). The script refuses to
 start when something already answers on one of its ports, fails at once when a server dies, and builds the test
 binary before starting the stack. Ports are `OBS_OTLP_PORT` 4318, `OBS_EXPORTER_PORT` 8889,
-`OBS_PROMETHEUS_PORT` 9090, `OBS_GRAFANA_PORT` 3000, `OBS_ALERTMANAGER_PORT` 9093 and `OBS_SINK_PORT` (a free port by default): set others when those are taken. On a failure the script prints
+`OBS_PROMETHEUS_PORT` 9090, `OBS_GRAFANA_PORT` 3000, `OBS_ALERTMANAGER_PORT` 9093 and `OBS_SINK_PORT` 9199: set others when those are taken. On a failure the script prints
 the tail of each component's log. `.github/workflows/observability.yml` runs this same script.
 
 ## The pins
@@ -76,7 +76,7 @@ refused clearly otherwise. Move a pin by reading the new digest from the registr
 | `otelcol-otlp.yaml` | OTLP leg: OTLP/HTTP in, the `otlphttp` exporter out to Prometheus's `/api/v1/otlp/v1/metrics` (`metrics_endpoint`, `encoding: proto`) |
 | `prometheus-otlp.yaml` | OTLP leg: no scrape job; `otlp.translation_strategy: UnderscoreEscapingWithSuffixes`; run.sh starts it with `--web.enable-otlp-receiver` |
 | `alertmanager.yml` | One webhook receiver (`send_resolved`) to the test's sink, `group_wait` 1 s, `group_interval` 2 s, `repeat_interval` 1 m: test values |
-| `test-thresholds.toml` | A partial thresholds file (10 s window, `for: 2s` on the 4xx ratio); `run.sh` generates test-only rules from it with `alerts.py --out` and Prometheus loads them beside the shipped ones |
+| `test-thresholds.toml` | A partial thresholds file (10 s window, `for: 2s` and a Warning level of 0.199 on the 4xx ratio); `run.sh` generates test-only rules from it with `alerts.py --out` and Prometheus loads them beside the shipped ones |
 | `grafana/provisioning/` | The Prometheus data source (uid `prometheus`, `timeInterval: 2s`) and a file provider on `deploy/dashboards`, unmodified |
 
 ## The OTLP leg's settings
@@ -96,11 +96,17 @@ the v0.142.0 `otlphttpexporter` README, and by running the pinned binaries (`pro
 
 ## The alert-delivery proof
 
-Both legs. `run.sh` starts Alertmanager, generates the test-only rules and picks a free port for the sink. The test
-serves the sink itself (a `std::net::TcpListener` thread: it owns what it asserts on, with no file handoff, and
-Alertmanager retries a webhook until the sink is up), drives 409 conflicts until `OpenbillingHttp4xxCritical` is
-delivered `firing`, checks its labels and that no identity or amount reached the webhook, stops, and waits (at most
-90 s) for `resolved`. Locally: firing after about 2 s, resolved about 12 s later. Alertmanager's flags and routing
+Both legs. `run.sh` starts Alertmanager, generates the test-only rules and fixes the sink's port (`OBS_SINK_PORT`, 9199).
+The test serves the sink itself, before any traffic (a `std::net::TcpListener` thread: it owns what it asserts on, with no
+file handoff; it reads `Content-Length` and chunked bodies and fails the test on a request it cannot read or a body that
+is not JSON). Phase B of the scenario already drives conflicts, so before the proof it waits until the alert is no longer
+firing in Prometheus or active in Alertmanager and the sink's last word on it is `resolved`, for longer than the 10 s
+window, and takes a marker. It then drives 409 conflicts until `OpenbillingHttp4xxCritical` is delivered `firing` after
+the marker, checks the proof alert's labels and that none of the identities or amounts the test sent reached the
+webhook (parsed or raw), stops, and waits (at most 90 s) for a `resolved` after a second marker and for Prometheus to
+stop listing it. The shipped rule of the same name stays `pending` for its 10 minutes, so only `firing` is read.
+`test-thresholds.toml` keeps the Warning level in a band (0.199 to 0.2) too narrow to fire. Locally, twice per leg:
+firing after 4 to 6 s, resolved 10 to 12 s after the traffic stops, the whole test 52 to 58 s. Alertmanager's flags and routing
 fields are *verified 2026-11-28* by running the pinned binary.
 
 The test makes no other leg-specific assertion. The one difference is that this leg has no scrape `up` series.

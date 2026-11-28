@@ -10,9 +10,9 @@
 
 use std::collections::BTreeSet;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use openbilling_telemetry::exposed_names;
@@ -22,6 +22,35 @@ use crate::support::{Deployment, now, priced};
 
 const OWNER: &str = "tenant-obs";
 const MEMBER: &str = "member-obs";
+const ACCOUNT: &str = "acct-obs";
+const CREDIT: &str = "credit-obs";
+/// The workload's identities and amounts: what the test sends is built from these, and the alert-delivery proof checks
+/// that none of them reached the webhook.
+const EVENTS: i64 = 50;
+const SEED_MICROS: i64 = 1_000_000;
+const CONFLICT_MICROS: i64 = 7_000_000;
+const CREDIT_MICROS: i64 = 900_000_000;
+
+fn event_id(i: i64) -> String {
+    format!("evt-obs-{i}")
+}
+
+/// Every identity and amount the test sends to the service.
+fn sent_identities() -> Vec<String> {
+    let mut sent = vec![
+        OWNER.to_owned(),
+        MEMBER.to_owned(),
+        ACCOUNT.to_owned(),
+        CREDIT.to_owned(),
+        CONFLICT_MICROS.to_string(),
+        CREDIT_MICROS.to_string(),
+    ];
+    for i in 0..EVENTS {
+        sent.push(event_id(i));
+        sent.push((SEED_MICROS + i).to_string());
+    }
+    sent
+}
 
 /// Panels whose query is a ratio or a rate over a counter that this workload never records, so that Prometheus has
 /// no series for them and the panel shows "No data" by design (a series that has never counted does not exist,
@@ -47,65 +76,197 @@ const EXPECTED_ABSENT: [&str; 4] = [
     "openbilling_topups_expired_total",
 ];
 
-/// The webhook receiver Alertmanager posts to: a std `TcpListener` on a thread of this test, which keeps every JSON body
+/// What the sink has seen: the parsed bodies, every request's raw bytes (head and body, as received) and what went wrong.
+/// A failure is recorded here and the test asserts on it, so that a thread's panic or a poisoned lock cannot hide it.
+#[derive(Default)]
+struct SinkState {
+    bodies: Vec<Value>,
+    raw: Vec<Vec<u8>>,
+    errors: Vec<String>,
+}
+
+/// The webhook receiver Alertmanager posts to: a std `TcpListener` on a thread of this test, which keeps every request
 /// it is sent. It is in the test (not a script of run.sh) so that the test owns what it asserts on and needs no file
-/// handoff or extra interpreter; run.sh only picks a free port for it and writes it into Alertmanager's configuration.
-/// Alertmanager retries a webhook that was refused, so it does not matter that it starts first. One request per
-/// connection, `Connection: close`: all Alertmanager needs.
+/// handoff or extra interpreter; run.sh only fixes its port and writes it into Alertmanager's configuration. It starts
+/// before any traffic, so that nothing Alertmanager sends is lost to a retry that could satisfy a later assertion.
+/// One request per connection, `Connection: close`, a body with `Content-Length` or chunked; a request it cannot read
+/// or parse is recorded as an error, which fails the test.
 struct Sink {
-    bodies: Arc<Mutex<Vec<Value>>>,
+    state: Arc<Mutex<SinkState>>,
+}
+
+fn lock(state: &Mutex<SinkState>) -> MutexGuard<'_, SinkState> {
+    state.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Reads one request: the raw bytes (head and body) and the body alone.
+fn read_request(stream: TcpStream) -> Result<(Vec<u8>, Vec<u8>), String> {
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .map_err(|e| e.to_string())?;
+    stream
+        .set_write_timeout(Some(Duration::from_secs(10)))
+        .map_err(|e| e.to_string())?;
+    let mut reader = BufReader::new(stream);
+    let mut raw = Vec::new();
+    let mut length = None;
+    let mut chunked = false;
+    loop {
+        let mut line = String::new();
+        let n = reader
+            .read_line(&mut line)
+            .map_err(|e| format!("reading the head: {e}"))?;
+        if n == 0 {
+            return Err("the connection closed inside the head".to_owned());
+        }
+        raw.extend_from_slice(line.as_bytes());
+        if line.trim().is_empty() {
+            break;
+        }
+        if let Some((name, value)) = line.split_once(':') {
+            if name.eq_ignore_ascii_case("content-length") {
+                length = Some(
+                    value
+                        .trim()
+                        .parse::<usize>()
+                        .map_err(|e| format!("bad Content-Length: {e}"))?,
+                );
+            } else if name.eq_ignore_ascii_case("transfer-encoding")
+                && value.to_ascii_lowercase().contains("chunked")
+            {
+                chunked = true;
+            }
+        }
+    }
+    let mut body = Vec::new();
+    if chunked {
+        loop {
+            let mut size_line = String::new();
+            reader
+                .read_line(&mut size_line)
+                .map_err(|e| format!("reading a chunk size: {e}"))?;
+            raw.extend_from_slice(size_line.as_bytes());
+            let size = usize::from_str_radix(size_line.split(';').next().unwrap_or("").trim(), 16)
+                .map_err(|e| format!("bad chunk size {size_line:?}: {e}"))?;
+            if size == 0 {
+                // The trailer: lines up to the empty one.
+                loop {
+                    let mut trailer = String::new();
+                    let n = reader
+                        .read_line(&mut trailer)
+                        .map_err(|e| format!("reading the trailer: {e}"))?;
+                    raw.extend_from_slice(trailer.as_bytes());
+                    if n == 0 || trailer.trim().is_empty() {
+                        break;
+                    }
+                }
+                break;
+            }
+            let mut chunk = vec![0u8; size + 2]; // the chunk and its CRLF
+            reader
+                .read_exact(&mut chunk)
+                .map_err(|e| format!("reading a chunk: {e}"))?;
+            raw.extend_from_slice(&chunk);
+            body.extend_from_slice(&chunk[..size]);
+        }
+    } else if let Some(length) = length {
+        body = vec![0u8; length];
+        reader
+            .read_exact(&mut body)
+            .map_err(|e| format!("reading the body: {e}"))?;
+        raw.extend_from_slice(&body);
+    } else {
+        return Err("a request with neither Content-Length nor chunked encoding".to_owned());
+    }
+    // Answered on the same stream, after the request has been read.
+    let _ = reader
+        .get_mut()
+        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+    Ok((raw, body))
 }
 
 impl Sink {
     fn start(port: u16) -> Self {
         let listener = TcpListener::bind(("127.0.0.1", port))
             .unwrap_or_else(|e| panic!("the alert sink cannot bind 127.0.0.1:{port}: {e}"));
-        let bodies = Arc::new(Mutex::new(Vec::new()));
-        let kept = bodies.clone();
+        let state = Arc::new(Mutex::new(SinkState::default()));
+        let kept = state.clone();
         std::thread::spawn(move || {
-            for stream in listener.incoming().flatten() {
-                let mut reader = BufReader::new(stream);
-                let mut length = 0usize;
-                loop {
-                    let mut line = String::new();
-                    if reader.read_line(&mut line).unwrap_or(0) == 0 || line.trim().is_empty() {
-                        break;
+            for stream in listener.incoming() {
+                let kept = kept.clone();
+                match stream {
+                    Ok(stream) => {
+                        std::thread::spawn(move || match read_request(stream) {
+                            Ok((raw, body)) => {
+                                let mut state = lock(&kept);
+                                match serde_json::from_slice::<Value>(&body) {
+                                    Ok(json) => state.bodies.push(json),
+                                    Err(e) => state.errors.push(format!(
+                                        "a body that is not JSON ({e}): {}",
+                                        String::from_utf8_lossy(&body)
+                                    )),
+                                }
+                                state.raw.push(raw);
+                            }
+                            Err(e) => lock(&kept).errors.push(e),
+                        });
                     }
-                    if let Some((name, value)) = line.split_once(':')
-                        && name.eq_ignore_ascii_case("content-length")
-                    {
-                        length = value.trim().parse().unwrap_or(0);
-                    }
+                    Err(e) => lock(&kept).errors.push(format!("accept: {e}")),
                 }
-                let mut body = vec![0u8; length];
-                if reader.read_exact(&mut body).is_ok()
-                    && let Ok(json) = serde_json::from_slice::<Value>(&body)
-                {
-                    kept.lock().unwrap().push(json);
-                }
-                let _ = reader.get_mut().write_all(
-                    b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                );
             }
         });
-        Self { bodies }
+        Self { state }
     }
 
-    /// Every alert received so far (a body holds a group of alerts), as `(status, alert)`.
+    /// Fails the test on anything the sink could not read or parse.
+    fn assert_clean(&self) {
+        let errors = lock(&self.state).errors.clone();
+        assert!(errors.is_empty(), "the alert sink failed: {errors:?}");
+    }
+
+    /// Every alert received so far (a body holds a group of alerts), as `(status, alert)`, in arrival order.
     fn alerts(&self) -> Vec<(String, Value)> {
-        self.bodies
-            .lock()
-            .unwrap()
+        lock(&self.state)
+            .bodies
             .iter()
             .flat_map(|body| body["alerts"].as_array().cloned().unwrap_or_default())
             .map(|a| (a["status"].as_str().unwrap_or_default().to_owned(), a))
             .collect()
     }
 
-    fn has(&self, status: &str, alertname: &str) -> bool {
+    /// A position in the arrival order: what came after it is what came after this call.
+    fn marker(&self) -> usize {
+        self.alerts().len()
+    }
+
+    /// The alerts named `alertname` that arrived after `marker`, as `(status, alert)`.
+    fn named_since(&self, marker: usize, alertname: &str) -> Vec<(String, Value)> {
         self.alerts()
+            .into_iter()
+            .skip(marker)
+            .filter(|(_, a)| a["labels"]["alertname"] == alertname)
+            .collect()
+    }
+
+    fn has_since(&self, marker: usize, status: &str, alertname: &str) -> bool {
+        self.named_since(marker, alertname)
             .iter()
-            .any(|(s, a)| s == status && a["labels"]["alertname"] == alertname)
+            .any(|(s, _)| s == status)
+    }
+
+    /// The status of the last notification for `alertname`, if there was any.
+    fn last_status(&self, alertname: &str) -> Option<String> {
+        self.named_since(0, alertname).pop().map(|(s, _)| s)
+    }
+
+    /// Every request as received, head and body, as text.
+    fn raw_text(&self) -> String {
+        lock(&self.state)
+            .raw
+            .iter()
+            .map(|r| String::from_utf8_lossy(r).into_owned())
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }
 
@@ -168,6 +329,50 @@ impl Stack {
             .unwrap()
             .iter()
             .map(|n| n.as_str().unwrap().to_owned())
+            .collect()
+    }
+
+    /// The alerts named `alertname` that Prometheus lists as firing. The shipped rule of the same name (window 5 m, `for`
+    /// 10 m) cannot be told from the test-only one by its labels, and it stays `pending` for minutes after the traffic
+    /// stops, so a pending alert is not looked at: only `firing` is what Alertmanager is sent.
+    async fn firing_alerts(&self, alertname: &str) -> Vec<Value> {
+        let body: Value = self
+            .http
+            .get(format!("{}/api/v1/alerts", self.prometheus))
+            .send()
+            .await
+            .unwrap()
+            .json_value()
+            .await;
+        body["data"]["alerts"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|a| a["labels"]["alertname"] == alertname && a["state"] == "firing")
+            .collect()
+    }
+
+    /// The alerts named `alertname` that Alertmanager holds active.
+    async fn alertmanager_active(&self, alertmanager: &str, alertname: &str) -> Vec<Value> {
+        let body: Value = self
+            .http
+            .get(format!("{alertmanager}/api/v2/alerts"))
+            .query(&[
+                ("active", "true"),
+                ("silenced", "false"),
+                ("inhibited", "false"),
+            ])
+            .send()
+            .await
+            .unwrap()
+            .json_value()
+            .await;
+        body.as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|a| a["labels"]["alertname"] == alertname)
             .collect()
     }
 
@@ -323,14 +528,22 @@ async fn the_real_collector_prometheus_and_grafana_answer_what_the_dashboards_an
         password: setting("OPENBILLING_OBS_GRAFANA_PASSWORD").unwrap_or_default(),
     };
 
+    // The webhook sink starts before any traffic: whatever Alertmanager sends from here on is kept, and the proof below
+    // reads only what arrives after a marker it takes itself.
+    let alertmanager = setting("OPENBILLING_OBS_ALERTMANAGER_URL")
+        .expect("OPENBILLING_OBS_ALERTMANAGER_URL is set by run.sh");
+    let sink_port: u16 = setting("OPENBILLING_OBS_SINK_PORT")
+        .and_then(|p| p.parse().ok())
+        .expect("OPENBILLING_OBS_SINK_PORT is set by run.sh");
+    let sink = Sink::start(sink_port);
+
     // Phase A: a workload that exercises intake, the drain, the ledger and getAllowed.
     d.configure().await;
-    d.open("acct-obs", OWNER).await;
-    d.grant("adjustment", "credit-obs", OWNER, 900_000_000)
-        .await;
+    d.open(ACCOUNT, OWNER).await;
+    d.grant("adjustment", CREDIT, OWNER, CREDIT_MICROS).await;
     let t = now();
-    let events: Vec<Value> = (0..50)
-        .map(|i| priced(&format!("evt-obs-{i}"), OWNER, MEMBER, 1_000_000 + i, t))
+    let events: Vec<Value> = (0..EVENTS)
+        .map(|i| priced(&event_id(i), OWNER, MEMBER, SEED_MICROS + i, t))
         .collect();
     d.usage(events).await.ok();
     d.wait_decided(50, Duration::from_secs(60)).await;
@@ -465,7 +678,13 @@ async fn the_real_collector_prometheus_and_grafana_answer_what_the_dashboards_an
 
     // Phase B: the same event id with another amount is a conflict, and the counter appears.
     let again = d
-        .usage(vec![priced("evt-obs-0", OWNER, MEMBER, 7_000_000, t)])
+        .usage(vec![priced(
+            &event_id(0),
+            OWNER,
+            MEMBER,
+            CONFLICT_MICROS,
+            t,
+        )])
         .await;
     assert_eq!(again.status, 409, "{}", again.text);
     wait_until(
@@ -484,7 +703,13 @@ async fn the_real_collector_prometheus_and_grafana_answer_what_the_dashboards_an
     for _ in 0..12 {
         d.allowed(OWNER, MEMBER).await;
         let _ = d
-            .usage(vec![priced("evt-obs-0", OWNER, MEMBER, 7_000_000, t)])
+            .usage(vec![priced(
+                &event_id(0),
+                OWNER,
+                MEMBER,
+                CONFLICT_MICROS,
+                t,
+            )])
             .await;
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
@@ -498,10 +723,9 @@ async fn the_real_collector_prometheus_and_grafana_answer_what_the_dashboards_an
         .unwrap()
         .json_value()
         .await;
-    let mut seen = 0;
-    for group in rules["data"]["groups"].as_array().unwrap() {
+    let groups = rules["data"]["groups"].as_array().unwrap();
+    for group in groups {
         for rule in group["rules"].as_array().unwrap() {
-            seen += 1;
             assert_eq!(rule["health"], "ok", "{}: {rule}", rule["name"]);
             assert!(
                 rule["lastError"].as_str().is_none_or(str::is_empty),
@@ -510,12 +734,40 @@ async fn the_real_collector_prometheus_and_grafana_answer_what_the_dashboards_an
             );
         }
     }
-    assert!(seen >= 16, "{seen} alert rules loaded");
-
-    // The test-only rules are loaded beside the shipped ones (the two files hold the same rule names).
+    // The shipped file is loaded (by its name), and so is the test-only file that run.sh generated (its group's `file`),
+    // with the proof alert at the 2 s `for` of test-thresholds.toml and not the shipped 10 minutes.
+    let in_file = |is: fn(&str) -> bool| {
+        groups
+            .iter()
+            .filter(|g| g["file"].as_str().is_some_and(is))
+            .collect::<Vec<_>>()
+    };
+    let shipped = in_file(|f| f.ends_with("/deploy/alerts/openbilling.rules.yaml"));
     assert!(
-        seen >= 32,
-        "{seen} rules loaded, the shipped and the test-only files"
+        !shipped.is_empty(),
+        "the shipped rules file is not loaded: {groups:?}"
+    );
+    assert!(
+        shipped
+            .iter()
+            .flat_map(|g| g["rules"].as_array().unwrap())
+            .any(|r| r["name"] == PROOF_ALERT && r["duration"].as_f64() == Some(600.0)),
+        "the shipped {PROOF_ALERT} is not loaded with its 10 minute `for`"
+    );
+    let test_rules = in_file(|f| f.contains("/test-rules/"));
+    assert!(
+        !test_rules.is_empty(),
+        "the test-only rules file is not loaded: {groups:?}"
+    );
+    let proof_rule = test_rules
+        .iter()
+        .flat_map(|g| g["rules"].as_array().unwrap())
+        .find(|r| r["name"] == PROOF_ALERT)
+        .unwrap_or_else(|| panic!("the test-only file has no {PROOF_ALERT}"));
+    assert_eq!(
+        proof_rule["duration"].as_f64(),
+        Some(2.0),
+        "{PROOF_ALERT} of the test-only file is not at its 2 s `for`: {proof_rule}"
     );
 
     // Grafana: each dashboard is provisioned with its panels, and every target answers.
@@ -590,12 +842,6 @@ async fn the_real_collector_prometheus_and_grafana_answer_what_the_dashboards_an
     // Phase C, alert delivery: a threshold crossed on the live service reaches Alertmanager's webhook as `firing`,
     // and as `resolved` once the traffic stops. Nothing here is a unit test of a rule: Prometheus evaluates the test
     // rules, sends to Alertmanager, which notifies the sink.
-    let alertmanager = setting("OPENBILLING_OBS_ALERTMANAGER_URL")
-        .expect("OPENBILLING_OBS_ALERTMANAGER_URL is set by run.sh");
-    let sink_port: u16 = setting("OPENBILLING_OBS_SINK_PORT")
-        .and_then(|p| p.parse().ok())
-        .expect("OPENBILLING_OBS_SINK_PORT is set by run.sh");
-    let sink = Sink::start(sink_port);
     let ready = stack
         .http
         .get(format!("{alertmanager}/-/ready"))
@@ -603,32 +849,78 @@ async fn the_real_collector_prometheus_and_grafana_answer_what_the_dashboards_an
         .await
         .unwrap();
     assert!(ready.status().is_success(), "Alertmanager is not ready");
-    // Every request here is a 409 (a conflict is a 4xx), so the ratio of 4xx stays near 1 over the 10 s window,
-    // far above the critical 0.2; the loop ends as soon as the alert has been delivered.
+    // Phase B already drove conflicts, so the proof alert may have fired and been delivered. Start from a known state:
+    // it is not firing in Prometheus for longer than the 10 s window, inactive in
+    // Alertmanager, and the last thing the sink heard of it is `resolved` (or nothing).
+    let quiet_since: std::cell::Cell<Option<Instant>> = std::cell::Cell::new(None);
+    wait_until(
+        "the proof alert is inactive and its window empty",
+        Duration::from_secs(120),
+        || {
+            let quiet = &quiet_since;
+            let (stack, sink, alertmanager) = (&stack, &sink, &alertmanager);
+            async move {
+                let idle = stack.firing_alerts(PROOF_ALERT).await.is_empty()
+                    && stack
+                        .alertmanager_active(alertmanager, PROOF_ALERT)
+                        .await
+                        .is_empty()
+                    && sink
+                        .last_status(PROOF_ALERT)
+                        .is_none_or(|s| s == "resolved");
+                if !idle {
+                    quiet.set(None);
+                    return false;
+                }
+                let since = quiet.get().unwrap_or_else(Instant::now);
+                quiet.set(Some(since));
+                since.elapsed() >= Duration::from_secs(12)
+            }
+        },
+    )
+    .await;
+    sink.assert_clean();
+    // From here, only what the proof itself causes counts: every later notification is after this marker, which is
+    // taken before the first proof request.
+    let before_proof = sink.marker();
+    // Every request is a 409 (a conflict is a 4xx), so the ratio of 4xx stays near 1 over the 10 s window, far above
+    // the critical 0.2; the loop ends as soon as the alert has been delivered.
     let started = Instant::now();
     let deadline = started + Duration::from_secs(90);
-    while !sink.has("firing", PROOF_ALERT) {
-        assert!(
-            Instant::now() < deadline,
-            "{PROOF_ALERT} was not delivered firing in 90 s; received: {:?}",
-            sink.alerts()
-        );
+    loop {
         let refused = d
-            .usage(vec![priced("evt-obs-0", OWNER, MEMBER, 7_000_000, t)])
+            .usage(vec![priced(
+                &event_id(0),
+                OWNER,
+                MEMBER,
+                CONFLICT_MICROS,
+                t,
+            )])
             .await;
         assert_eq!(refused.status, 409, "{}", refused.text);
+        sink.assert_clean();
+        if sink.has_since(before_proof, "firing", PROOF_ALERT) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{PROOF_ALERT} was not delivered firing in 90 s; received since the marker: {:?}",
+            sink.alerts()
+                .into_iter()
+                .skip(before_proof)
+                .collect::<Vec<_>>()
+        );
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
     eprintln!("alert firing delivered after {:?}", started.elapsed());
-    // What was delivered: the name, the severity and the job, and nothing that identifies a person or an amount.
-    let (_, firing) = sink
-        .alerts()
-        .into_iter()
-        .find(|(s, a)| s == "firing" && a["labels"]["alertname"] == PROOF_ALERT)
-        .unwrap();
-    assert_eq!(firing["labels"]["severity"], "critical");
-    assert_eq!(firing["labels"]["job"], "openbilling");
-    for (_, alert) in sink.alerts() {
+    assert!(
+        !stack.firing_alerts(PROOF_ALERT).await.is_empty(),
+        "the sink heard {PROOF_ALERT} firing, but Prometheus does not list it firing"
+    );
+    // What was delivered for the proof alert: the name, the severity and the job, and nothing that identifies a person
+    // or an amount (the other rules' alerts, if any, are not the subject of the label check).
+    let proof = sink.named_since(before_proof, PROOF_ALERT);
+    for (_, alert) in &proof {
         let keys: BTreeSet<&str> = alert["labels"]
             .as_object()
             .unwrap()
@@ -640,32 +932,35 @@ async fn the_real_collector_prometheus_and_grafana_answer_what_the_dashboards_an
             BTreeSet::from(["alertname", "job", "severity"]),
             "labels of {alert}"
         );
-        assert_eq!(alert["labels"]["alertname"], PROOF_ALERT, "{alert}");
+        assert_eq!(alert["labels"]["severity"], "critical", "{alert}");
+        assert_eq!(alert["labels"]["job"], "openbilling", "{alert}");
     }
-    let everything = serde_json::to_string(&*sink.bodies.lock().unwrap()).unwrap();
-    for secret in [
-        "evt-obs",
-        OWNER,
-        MEMBER,
-        "acct-obs",
-        "7000000",
-        "credit-obs",
-    ] {
+    // Everything the sink received, parsed and as raw bytes (head included), against everything the test sent.
+    let parsed = serde_json::to_string(&lock(&sink.state).bodies).unwrap();
+    let everything = format!("{parsed}\n{}", sink.raw_text());
+    for secret in sent_identities() {
         assert!(
-            !everything.contains(secret),
+            !everything.contains(&secret),
             "{secret} is in what the webhook received: {everything}"
         );
     }
     // Traffic has stopped: the 10 s window empties, the ratio has no value, the alert ends and Alertmanager says so.
+    // A `resolved` counts only if it arrived after this marker, and Prometheus must no longer list the alert.
+    let after_traffic = sink.marker();
     let stopped = Instant::now();
     wait_until(
         "the alert is delivered resolved",
         Duration::from_secs(90),
-        || async { sink.has("resolved", PROOF_ALERT) },
+        || async { sink.has_since(after_traffic, "resolved", PROOF_ALERT) },
     )
     .await;
     eprintln!(
         "alert resolved delivered {:?} after traffic stopped",
         stopped.elapsed()
     );
+    assert!(
+        stack.firing_alerts(PROOF_ALERT).await.is_empty(),
+        "{PROOF_ALERT} was delivered resolved but Prometheus still lists it firing"
+    );
+    sink.assert_clean();
 }

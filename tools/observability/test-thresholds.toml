@@ -3,8 +3,13 @@
 # deploy/alerts/openbilling.rules.yaml. Everything it does not name keeps the defaults of tools/dashboards/thresholds.toml.
 # A 10 s window and a 2 s `for`, so that the proof takes a minute and not a quarter of an hour: the 4xx ratio crosses
 # `critical` (0.2) as soon as the test sends refused requests, and leaves it once the window holds none.
+# The warning level is set just under critical (a warning must stay below it), so that its band, [0.199, 0.2), is too
+# narrow for the Warning alert to hold for `for` while the ratio jumps to about 1 and falls to nothing: the proof's
+# alert is the Critical one, and the test also filters on its name.
 [defaults]
 window = "10s"
 
 [signals.http_4xx_ratio]
+warning = 0.199
+critical = 0.2
 for = "2s"

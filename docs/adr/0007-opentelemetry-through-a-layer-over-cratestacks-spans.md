@@ -30,12 +30,18 @@ unit-tested with `promtool test rules`; the chart can render them as a `Promethe
 digest in `versions.env`, *verified 2026-11-28* from Docker Hub's registry) and Prometheus sends its alerts to it, in
 both legs. Prometheus loads a second, test-only rules file that `run.sh` generates with `alerts.py --thresholds
 tools/observability/test-thresholds.toml --out` (a 10 s window, a 2 s `for` on the 4xx ratio), beside the shipped one. The
-scenario then sends conflicting usage (409, a 4xx) to the real service until Alertmanager's webhook, a sink the test
-serves on 127.0.0.1, receives `OpenbillingHttp4xxCritical` as `firing`; it asserts the labels are exactly `alertname`,
-`severity` (`critical`) and `job` (`openbilling`), that no event id, owner, member, account or amount appears anywhere in
-what the sink received, and that, once the traffic stops, the same alert is delivered `resolved` within 90 s. It passed
-*locally on 2026-11-28* in both legs (firing after about 2 s, resolved about 12 s after the traffic stopped; the whole
-scenario about 30 s). The CI run id is added after CI. The timers (`group_wait` 1 s, `group_interval` 2 s) are test
+scenario starts the sink before any traffic; before the proof it waits until Prometheus no longer lists the alert
+firing, Alertmanager holds it no longer active and the sink's last word on it is `resolved`, for more than the 10 s
+window, and takes a marker. It then sends conflicting usage (409, a 4xx) to the real service until Alertmanager's webhook
+receives `OpenbillingHttp4xxCritical` as `firing` *after* that marker (the shipped rule of the same name stays `pending`
+for its 10 minutes and is not looked at, and the test file's Warning level is set to a band too narrow to hold). For the
+proof alert it asserts the labels are exactly `alertname`, `severity` (`critical`) and `job` (`openbilling`); that no
+event id, owner, member, account or amount the test sent appears in what the sink received, parsed or as raw bytes; and,
+once the traffic stops, that a `resolved` arrives after a second marker and Prometheus no longer lists the alert firing,
+within 90 s. The sink fails the test on a request it cannot read (it reads `Content-Length` and chunked bodies) or a body
+that is not JSON. The rules check reads `/api/v1/rules` for the test-only file's group and its `for` of 2 s. It passed
+*locally on 2026-11-28* in both legs, twice each, after the fixes of review (firing after 4 to 6 s, resolved 10 to 12 s
+after the traffic stopped; the whole scenario 52 to 58 s). The CI run id is added after CI. The timers (`group_wait` 1 s, `group_interval` 2 s) are test
 values; Alertmanager routing for a deployment stays the deployer's.
 
 ## Summary

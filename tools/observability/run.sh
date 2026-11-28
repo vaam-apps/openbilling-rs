@@ -11,13 +11,13 @@
 # (`--web.enable-otlp-receiver`, /api/v1/otlp/v1/metrics), configured by prometheus-otlp.yaml (ADR 0007).
 #
 # Alertmanager (v0.35.1) runs beside Prometheus, with one webhook receiver: a sink the e2e test itself serves on
-# OBS_SINK_PORT (default: a free port picked here), so that the test can prove an alert fires and resolves (ADR 0007).
+# OBS_SINK_PORT (default 9199), so that the test can prove an alert fires and resolves (ADR 0007).
 # Prometheus also loads test-only rules, generated here from test-thresholds.toml.
 #
 # Needs: python3, curl, tar, cargo, and OPENBILLING_TEST_DATABASE_URL (a PostgreSQL 19 whose user may create
 # databases). Binaries are fetched by tools/observability/fetch.py at the pins of versions.env into
 # OBS_CACHE (default ~/.cache/openbilling-observability) and checked by digest. Ports (change them if taken):
-# OBS_OTLP_PORT 4318, OBS_EXPORTER_PORT 8889 (scrape leg only), OBS_PROMETHEUS_PORT 9090, OBS_GRAFANA_PORT 3000, OBS_ALERTMANAGER_PORT 9093, OBS_SINK_PORT (free).
+# OBS_OTLP_PORT 4318, OBS_EXPORTER_PORT 8889 (scrape leg only), OBS_PROMETHEUS_PORT 9090, OBS_GRAFANA_PORT 3000, OBS_ALERTMANAGER_PORT 9093, OBS_SINK_PORT 9199.
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -34,6 +34,7 @@ exporter_port=${OBS_EXPORTER_PORT:-8889}
 prom_port=${OBS_PROMETHEUS_PORT:-9090}
 grafana_port=${OBS_GRAFANA_PORT:-3000}
 am_port=${OBS_ALERTMANAGER_PORT:-9093}
+sink_port=${OBS_SINK_PORT:-9199}
 
 mkdir -p "$cache"
 otelcol_dir=$cache/otelcol-$OTELCOL_TAG
@@ -107,7 +108,6 @@ port_free "the Collector's OTLP receiver" "$otlp_port"
 port_free Prometheus "$prom_port"
 port_free Grafana "$grafana_port"
 port_free Alertmanager "$am_port"
-sink_port=${OBS_SINK_PORT:-$(python3 -I -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')}
 port_free "the alert sink" "$sink_port"
 
 # The test-only rules: the shipped generator over a partial thresholds file (a 10 s window, a 2 s `for`).
@@ -125,7 +125,7 @@ start_alertmanager() {
 
 start_prometheus() {
   # Prometheus, with the shipped alert rules and the test-only ones, sending alerts to Alertmanager.
-  rules="s#@RULES@#$root/deploy/alerts/openbilling.rules.yaml#; s#@TEST_RULES@#$work/test-rules/openbilling.rules.yaml#; s/127.0.0.1:9093/127.0.0.1:$am_port/"
+  rules="s#@RULES@#$root/deploy/alerts/openbilling.rules.yaml#; s#@TEST_RULES@#$work/test-rules/openbilling.rules.yaml#; s/@AM_PORT@/$am_port/"
   if [ "$leg" = scrape ]; then
     sed "$rules; s/127.0.0.1:8889/127.0.0.1:$exporter_port/" "$here/prometheus.yaml" >"$work/prometheus.yaml"
     flags=""
