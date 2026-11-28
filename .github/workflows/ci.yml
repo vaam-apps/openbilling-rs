@@ -97,6 +97,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The package carries the licence: copies of the root's files, which must not drift.
+      - name: The SDK's licence files are the root's
+        run: |
+          for f in LICENSE NOTICE; do
+            cmp "$f" "crates/openbilling-sdk/$f" \
+              || { echo "::error::crates/openbilling-sdk/$f differs from the root's: cp $f crates/openbilling-sdk/ and commit"; exit 1; }
+          done
       - name: Install the CrateStack CLI
         run: npm install --global @cratestack/cli@0.20.6
       - name: The schema checks

@@ -46,9 +46,9 @@ match client.open_account(&open, &key).await {
 
 | | |
 |---|---|
-| `Client` | `new(base_url)`, `set_token`, `clear_token`; one method per procedure of the API (`get_balance`, `get_allowed`, `list_credits`, `get_statement`, `get_usage_series`; and, each with an `IdempotencyKey`, `configure`, `open_account`, `grant_credit`, `record_usage`, `record_raw_usage`, `set_debt_limit`, `set_member_cap`, `load_price_list`, `start_top_up`, `reconcile_payment`, `resolve_top_up`, `reconcile_refund`); `raw()` is the generated client, for the models (`accounts`, `lots`, `usage_outcomes`: list and get) |
+| `Client` | `new(base_url)`, `set_token`, `clear_token`; one method per procedure of the API (`get_balance`, `get_allowed`, `list_credits`, `get_statement`, `get_usage_series`; and, each with an `IdempotencyKey`, `configure`, `open_account`, `grant_credit`, `record_usage`, `record_raw_usage`, `set_debt_limit`, `set_member_cap`, `load_price_list`, `start_top_up`, `reconcile_payment`, `resolve_top_up`, `reconcile_refund`); `raw()` is the generated client, for the models (`accounts`, `lots`, `usage_outcomes`: list and get); **its writes do not require an `IdempotencyKey`**, only the facade's methods do |
 | `IdempotencyKey` | 1 to 255 visible ASCII characters. A write cannot be called without one |
-| `Error`, `ErrorClass`, `Classify` | `Invalid`, `Conflict`, `Unavailable`, `Internal`: decide from the class, never from the variant. An error never holds the token |
+| `Error`, `ErrorClass`, `Classify` | `Invalid`, `Conflict`, `Unavailable`, `Internal`: decide from the class, never from the variant. An error never holds the token, and the message of a remote or transport error is cut to 512 bytes |
 | `generated` | What CrateStack generates: the argument and answer types (`procedures::<name>::Args` and `Output`, `types::*`), and the raw client |
 
 Amounts are CrateStack `BigInt`s: micro-units (10^-6) of the account's currency, decimal strings on the wire, `i64`

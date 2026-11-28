@@ -40,6 +40,10 @@ anyhow = "1.0.105"
 clap = { version = "4.6.7", default-features = false, features = ["std", "derive", "help", "usage", "error-context", "suggestions", "color", "wrap_help"] }
 # CrateStack, the external API (ADR 0003). Its crates require each other exactly; it pins sqlx `=0.9.0`.
 cratestack = { package = "cratestack-pg", version = "=0.20.6", default-features = false, features = ["postgres", "codec-json"] }
+# The client-only facade of CrateStack, for `openbilling-sdk` (ADR 0008): no axum, no sqlx. Moves with the line above.
+cratestack-client = { version = "=0.20.6" }
+# The trait CrateStack's request authorizer is declared with.
+async-trait = "0.1.92"
 axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "tokio", "query"] }
 # base64url for JOSE: the version jsonwebtoken 11 uses, already in the lockfile.
 base64 = "0.22.1"
