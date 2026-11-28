@@ -55,7 +55,7 @@ Legend: ✅ built and tested in CI · ⚠️ built, but partial or not yet prove
 | CI | The chart: lint, a values matrix, kubeconform, no secret and every image pinned in each render | ✅ | CI's `chart` job runs `deploy/openbilling/tests/check.sh` |
 | CI | The CrateStack contract: `cratestack check`, `contract check`, `ops.json` current, no operation open to an anonymous caller | ✅ | Run by the `API contract` job |
 | CI | The observability stack: a real Collector, Prometheus, Alertmanager and Grafana against `serve` | ✅ | `observability.yml` runs `tools/observability/run.sh` on both legs, on every pull request that touches code or deploy files and on `main`; it gates nothing, because its binaries come from Docker Hub and dl.grafana.com. Passed on `main` at the v0.6.0 commit (run 46146094172) |
-| CI | The released chart installed in kind, signatures verified | ✅ | `release-check.yml`, after a release or by dispatch; it gates nothing |
+| CI | The released chart installed in kind, signatures verified | ✅ | `release-check.yml`, after a release or by dispatch; it gates nothing. The same check on your own machine, in k3d: [`tools/k3d`](../tools/k3d/README.md) (not yet run) |
 
 ## Ready for production?
 
