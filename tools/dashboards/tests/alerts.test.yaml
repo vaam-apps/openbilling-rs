@@ -224,6 +224,62 @@ tests:
             exp_annotations:
               summary: "critical: 10% of drain passes fail"
               description: "More than 10% of drain passes fail over the window. See deploy/alerts/README.md."
+  - name: payment_mismatches
+    interval: 1m
+    input_series:
+      - series: "openbilling_payments_mismatches_total{job=\"low\"}"
+        values: "0+0.0125x40"
+      - series: "openbilling_payments_mismatches_total{job=\"band\"}"
+        values: "0+0.2625x40"
+      - series: "openbilling_payments_mismatches_total{job=\"high\"}"
+        values: "0+0.75x40"
+    alert_rule_test:
+      - eval_time: 21m
+        alertname: OpenbillingPaymentMismatchesWarning
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: band
+            exp_annotations:
+              summary: "warning: 0.5 payments read back differ from their top-up in the last hour"
+              description: "At least 0.5 payments read back from the payment provider differ from the top-up recorded for them over the last hour (owner, label, currency or amount): read the `field` label on the payments panel, and settle each by hand. See deploy/alerts/README.md."
+      - eval_time: 21m
+        alertname: OpenbillingPaymentMismatchesCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: high
+            exp_annotations:
+              summary: "critical: 10 payments read back differ from their top-up in the last hour"
+              description: "At least 10 payments read back from the payment provider differ from the top-up recorded for them over the last hour (owner, label, currency or amount): read the `field` label on the payments panel, and settle each by hand. See deploy/alerts/README.md."
+  - name: topups_expired
+    interval: 1m
+    input_series:
+      - series: "openbilling_topups_expired_total{job=\"low\"}"
+        values: "0+0.125x40"
+      - series: "openbilling_topups_expired_total{job=\"band\"}"
+        values: "0+1.375x40"
+      - series: "openbilling_topups_expired_total{job=\"high\"}"
+        values: "0+3.75x40"
+    alert_rule_test:
+      - eval_time: 21m
+        alertname: OpenbillingTopUpsExpiredWarning
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: band
+            exp_annotations:
+              summary: "warning: 5 pending top-ups expired in the last hour"
+              description: "At least 5 pending top-ups were older than the reconciler's stop_after over the last hour and are no longer read back: webhooks may be lost. A late webhook or reconcilePayment still settles them. See deploy/alerts/README.md."
+      - eval_time: 21m
+        alertname: OpenbillingTopUpsExpiredCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: high
+            exp_annotations:
+              summary: "critical: 50 pending top-ups expired in the last hour"
+              description: "At least 50 pending top-ups were older than the reconciler's stop_after over the last hour and are no longer read back: webhooks may be lost. A late webhook or reconcilePayment still settles them. See deploy/alerts/README.md."
   - name: pool_used_ratio
     interval: 1m
     input_series:

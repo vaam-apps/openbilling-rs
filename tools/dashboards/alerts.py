@@ -22,6 +22,8 @@ ROOT = Path(__file__).resolve().parents[2]
 RULES_NAME = "openbilling.rules.yaml"
 HTTP = "http_server_request_duration_seconds_count"
 JOB = "openbilling"
+INCREASE_WINDOW = "1h"  # the range of the `increase` signals; their summaries say "the last hour"
+INCREASE_TEST_MINUTES = 20  # a test evaluates an `increase` signal this long after its counter starts
 
 # name -> what the signal is. `ratio` signals are `part / total`, `gauge` signals are one metric's max.
 # `numerator` and `rest` are the series a unit test feeds: the part, and the remainder of the total.
@@ -90,6 +92,22 @@ SIGNALS = {
         "meaning": "More than {pct} of drain passes fail over the window.",
         "unit": "percent",
     },
+    "payment_mismatches": {
+        "alert": "OpenbillingPaymentMismatches",
+        "kind": "increase",
+        "metric": "openbilling_payments_mismatches_total",
+        "summary": "{} payments read back differ from their top-up in the last hour",
+        "meaning": "At least {value} payments read back from the payment provider differ from the top-up recorded for them over the last hour (owner, label, currency or amount): read the `field` label on the payments panel, and settle each by hand.",
+        "unit": "payments",
+    },
+    "topups_expired": {
+        "alert": "OpenbillingTopUpsExpired",
+        "kind": "increase",
+        "metric": "openbilling_topups_expired_total",
+        "summary": "{} pending top-ups expired in the last hour",
+        "meaning": "At least {value} pending top-ups were older than the reconciler's stop_after over the last hour and are no longer read back: webhooks may be lost. A late webhook or reconcilePayment still settles them.",
+        "unit": "top-ups",
+    },
     "pool_used_ratio": {
         "alert": "OpenbillingPoolSaturated",
         "kind": "pool",
@@ -110,6 +128,8 @@ def expression(signal, window):
         )
     if spec["kind"] == "gauge":
         return f"max by (job) ({spec['metric']})"
+    if spec["kind"] == "increase":
+        return f"sum by (job) (increase({spec['metric']}[{INCREASE_WINDOW}]))"
     return 'sum by (job) (db_client_connection_count{state="used"}) / sum by (job) (db_client_connection_max)'
 
 
@@ -123,7 +143,7 @@ def percent(value):
 
 def texts(signal, level, value):
     spec = SIGNALS[signal]
-    shown = percent(value) if spec["kind"] != "gauge" else number(value)
+    shown = number(value) if spec["kind"] in ("gauge", "increase") else percent(value)
     summary = f"{level}: " + spec["summary"].format(shown)
     description = spec["meaning"].format(pct=shown, value=number(value)) + " See deploy/alerts/README.md."
     return summary, description
@@ -209,6 +229,9 @@ def series(spec, ratio):
         ]
     if spec["kind"] == "gauge":
         return [(f"{spec['metric']}{{{job('')}}}", f"{number(ratio)}x40")]
+    if spec["kind"] == "increase":
+        # A counter that reaches `ratio` after INCREASE_TEST_MINUTES, in equal steps from zero.
+        return [(f"{spec['metric']}{{{job('')}}}", f"0+{number(round(ratio / INCREASE_TEST_MINUTES, 9))}x40")]
     return [
         (f'db_client_connection_count{{{job("state=" + chr(34) + "used" + chr(34))}}}', f"{number(round(ratio * 100, 9))}x40"),
         (f"db_client_connection_max{{{job('')}}}", "100x40"),
@@ -228,7 +251,7 @@ def render_tests(config):
     for signal, spec in SIGNALS.items():
         keys = config["signals"][signal]
         warning, critical = keys["warning"], keys["critical"]
-        high = critical * 1.5 if spec["kind"] == "gauge" else min(critical * 1.5, (critical + 1) / 2)
+        high = critical * 1.5 if spec["kind"] in ("gauge", "increase") else min(critical * 1.5, (critical + 1) / 2)
         cases = {"low": warning / 2, "band": (warning + critical) / 2, "high": high}
         lines.append(f"  - name: {signal}")
         lines.append("    interval: 1m")
@@ -241,6 +264,8 @@ def render_tests(config):
         for_minutes = int(keys["for"][:-1])
         window_minutes = int(config["window"][:-1])
         eval_minutes = for_minutes + window_minutes + 4
+        if spec["kind"] == "increase":
+            eval_minutes = INCREASE_TEST_MINUTES + for_minutes
         if not (keys["for"].endswith("m") and config["window"].endswith("m")) or eval_minutes > 38:
             sys.exit(f"{signal}: `for` and window must be minutes and short for the generated tests")
         for level, job in (("warning", "band"), ("critical", "high")):
