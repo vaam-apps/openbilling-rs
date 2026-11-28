@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.6.0](https://github.com/vaam-apps/openbilling-rs/compare/v0.5.0...v0.6.0) (2026-11-28)
+
+
+### Features
+
+* an operator resolves a mismatched top-up once, by crediting its recorded terms or dismissing it ([#38](https://github.com/vaam-apps/openbilling-rs/issues/38)) ([1d5f6e8](https://github.com/vaam-apps/openbilling-rs/commit/1d5f6e8921084e0a63d45f51c73712e607839389))
+* **observability:** run Alertmanager and prove an alert fires and resolves ([#37](https://github.com/vaam-apps/openbilling-rs/issues/37)) ([a98ded9](https://github.com/vaam-apps/openbilling-rs/commit/a98ded9bd27fba76fd7eaaa2c0aa333a64d77bed))
+* **observability:** run the stack through Prometheus's native OTLP receiver ([#36](https://github.com/vaam-apps/openbilling-rs/issues/36)) ([deb715b](https://github.com/vaam-apps/openbilling-rs/commit/deb715b1c8d3ca339232b5f089e10c75a74199bb))
+* payment and top-up panels and alerts ([#34](https://github.com/vaam-apps/openbilling-rs/issues/34)) ([58d650e](https://github.com/vaam-apps/openbilling-rs/commit/58d650edd25efb1aa8f0d5c307a3051a3bae46cb))
+* read a top-up back one last time before it expires ([#35](https://github.com/vaam-apps/openbilling-rs/issues/35)) ([3eb2cee](https://github.com/vaam-apps/openbilling-rs/commit/3eb2ceed3cd64d85080777d129a463e8165dde1c))
+* refuse a payment read back with changed details, and reconcile pending top-ups ([#32](https://github.com/vaam-apps/openbilling-rs/issues/32)) ([ab41e2d](https://github.com/vaam-apps/openbilling-rs/commit/ab41e2d930c651239296c0ae4fb231e80184194c))
+* verify telemetry against a real Collector, Prometheus and Grafana, and ship generated alert rules ([#31](https://github.com/vaam-apps/openbilling-rs/issues/31)) ([3b7c97e](https://github.com/vaam-apps/openbilling-rs/commit/3b7c97ec1a53f411e410f470504472d786723f5c))
+
 ## [0.5.0](https://github.com/vaam-apps/openbilling-rs/compare/v0.4.0...v0.5.0) (2026-11-28)
 
 
