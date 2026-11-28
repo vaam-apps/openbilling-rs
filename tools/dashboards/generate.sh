@@ -6,3 +6,4 @@ cd "$(dirname "$0")"
 for script in service.py queue_dashboard.py; do
   python3 -B "$script"
 done
+python3 -B alerts.py
