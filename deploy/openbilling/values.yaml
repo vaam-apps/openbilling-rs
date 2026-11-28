@@ -62,6 +62,13 @@ openbilling:
       # -- The longest a retention run waits for a lock (a detach waits for every transaction on the table) or runs a
       # statement: `1s` to `1h`, like `300s` or `5m`. A run that times out is retried at the next hour.
       timeout: 5m
+    # `payments` and `reconcile`, not set by default, so the binary's defaults stand (ADR 0003, amended 2026-11-28).
+    # `payments.unrecorded` is what to do with a succeeded payment no top-up was recorded for (one started before
+    # top-ups were recorded, or one openbilling never asked for): `refuse` (the default: credit nothing, count a
+    # mismatch) or `credit` (as before, from what the provider reports). `reconcile` says how the service reads back a
+    # pending top-up whose webhook did not come: `pending_after: 15m` (not read before it is this old, `1s` to `7d`),
+    # `read_again_after: 15m` (`1s` to `1d`), `stop_after: 7d` (no longer read, `1m` to `90d`, longer than
+    # `pending_after`), `every: 1m` (a pass, `1s` to `1h`) and `batch: 100` (`1` to `1000`). Only with a payment provider.
     # `vpay.token`, not set by default: the tunables of a vpay token the service mints itself (only with OPENBILLING_VPAY_CLIENT_ID and
     # OPENBILLING_VPAY_CLIENT_KEY_FILE in `controllers.main.containers.main.env`; the binary refuses them otherwise).
     # Each key is optional and left out here, so the adapter's default stands: `audience: vpay:v1`, `scope` none (vpay

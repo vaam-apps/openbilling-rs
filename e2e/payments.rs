@@ -4,7 +4,7 @@
 //! reads back as succeeded reverses part of it.
 
 use openbilling_core::{Amount, CreditId, RefundStatus};
-use openbilling_testkit::payments::{ProviderFixture, SignedWebhook};
+use openbilling_testkit::payments::{Alteration, ProviderFixture, SignedWebhook};
 use openbilling_vpay::stand_in;
 use serde_json::json;
 
@@ -17,18 +17,13 @@ async fn deliver(d: &Deployment, hook: &SignedWebhook) -> crate::support::Answer
     d.webhook(hook.body.clone(), signature.as_deref()).await
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn a_signed_payment_webhook_credits_once_and_a_succeeded_refund_reverses_it() {
-    if crate::support::database_url().is_none() {
-        return;
-    }
-    let fixture = stand_in::fixture().await;
-    let files = TempDir::new();
+/// The environment that points a service at the stand-in `fixture`, with its token and secrets written under `files`.
+fn vpay_env(fixture: &stand_in::Fixture, files: &TempDir) -> Vec<(String, String)> {
     let token = files.path().join("vpay-token");
     std::fs::write(&token, stand_in::TOKEN).unwrap();
     let secrets = files.path().join("vpay-webhook-secrets");
     std::fs::write(&secrets, format!("{}\n", stand_in::SECRET)).unwrap();
-    let extra = vec![
+    vec![
         (
             "OPENBILLING_VPAY_BASE_URL".to_owned(),
             fixture.stand_in.base_url.clone(),
@@ -46,7 +41,17 @@ async fn a_signed_payment_webhook_credits_once_and_a_succeeded_refund_reverses_i
             "OPENBILLING_VPAY_PAYMENT_METHOD_TYPES".to_owned(),
             "test_rail".to_owned(),
         ),
-    ];
+    ]
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_signed_payment_webhook_credits_once_and_a_succeeded_refund_reverses_it() {
+    if crate::support::database_url().is_none() {
+        return;
+    }
+    let fixture = stand_in::fixture().await;
+    let files = TempDir::new();
+    let extra = vpay_env(&fixture, &files);
     let Some(deployment) = Deployment::start(1, &extra).await else {
         return;
     };
@@ -161,4 +166,102 @@ async fn a_signed_payment_webhook_credits_once_and_a_succeeded_refund_reverses_i
         .ok();
     assert_eq!(credits.body[0]["source"], "payment");
     assert_eq!(credits.body[0]["creditId"], payment.as_str());
+}
+
+/// A paid top-up whose webhook never came is found by the reconciler, which reads it back and credits it once; one a
+/// payer changed after it was asked for (here its amount) is never credited, the webhook and the operator's
+/// `reconcilePayment` answer it as the contract says, and a top-up still unpaid is left alone. The service runs with
+/// short `reconcile` values (the file's, documented).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_paid_top_up_with_no_webhook_is_credited_once_by_the_reconciler_and_an_altered_one_never()
+{
+    if crate::support::database_url().is_none() {
+        return;
+    }
+    let fixture = stand_in::fixture().await;
+    let files = TempDir::new();
+    let config = files.path().join("config.yaml");
+    std::fs::write(
+        &config,
+        "reconcile:\n  pending_after: 1s\n  read_again_after: 1s\n  every: 1s\n  batch: 10\n",
+    )
+    .unwrap();
+    let mut extra = vpay_env(&fixture, &files);
+    extra.push((
+        "OPENBILLING_CONFIG".to_owned(),
+        config.to_str().unwrap().to_owned(),
+    ));
+    let Some(deployment) = Deployment::start(1, &extra).await else {
+        return;
+    };
+    let d = &deployment;
+    d.configure().await;
+    d.open("acct-ex-9", "tenant-ex-9").await;
+    d.open("acct-ex-9b", "tenant-ex-9b").await;
+
+    let start = |owner: &'static str, key: &'static str| async move {
+        let started = d
+            .write(
+                "startTopUp",
+                Who::Owner(owner),
+                json!({"key": key, "owner": owner, "currency": "EUR", "label": "main",
+                       "amountMicros": "12340000", "successUrl": "https://service.example/paid",
+                       "cancelUrl": "https://service.example/cancel"}),
+            )
+            .await
+            .ok();
+        CreditId::new(started.body["payment"].as_str().unwrap()).unwrap()
+    };
+    let paid = start("tenant-ex-9", "topup-ex-9-paid").await;
+    let altered = start("tenant-ex-9b", "topup-ex-9-altered").await;
+    let waiting = start("tenant-ex-9", "topup-ex-9-waiting").await;
+    // Starting the same top-up again is the same payment, recorded again as a replay.
+    assert_eq!(start("tenant-ex-9", "topup-ex-9-paid").await, paid);
+
+    // The payer of `altered` changes its amount before paying; `paid` is paid as asked; no webhook is delivered.
+    fixture.alter(&altered, Alteration::Amount).await;
+    fixture.pay(&altered).await;
+    fixture.pay(&paid).await;
+    let mut credited = false;
+    for _ in 0..40 {
+        if d.net("tenant-ex-9").await == 12_340_000 {
+            credited = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+    assert!(credited, "the reconciler credited the paid top-up");
+    // Read again and again, it stays credited once; the unpaid one and the altered one are not credited.
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    assert_eq!(d.net("tenant-ex-9").await, 12_340_000, "once");
+    assert_eq!(d.net("tenant-ex-9b").await, 0, "never the altered one");
+
+    // The webhook for the altered payment is acknowledged as a mismatch (the provider need not retry it); the
+    // operator's reconcile of it is a conflict that names the field and no value.
+    let hook = deliver(d, &fixture.payment_webhook(&altered, now()))
+        .await
+        .ok();
+    assert_eq!(hook.body["outcome"], "mismatch", "{}", hook.text);
+    let operator = d
+        .write(
+            "reconcilePayment",
+            Who::Operator,
+            json!({"id": altered.as_str()}),
+        )
+        .await;
+    assert_eq!(operator.status, 409, "{}", operator.text);
+    assert!(operator.text.contains("amount"), "{}", operator.text);
+    assert_eq!(d.net("tenant-ex-9b").await, 0);
+
+    // Paid later, the waiting one is credited by a later pass.
+    fixture.pay(&waiting).await;
+    let mut both = false;
+    for _ in 0..40 {
+        if d.net("tenant-ex-9").await == 2 * 12_340_000 {
+            both = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+    assert!(both, "the top-up paid later was credited by a later pass");
 }

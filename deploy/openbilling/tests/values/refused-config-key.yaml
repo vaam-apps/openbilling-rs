@@ -1,4 +1,4 @@
-# expect: openbilling.config.listen: not a key of the configuration file, which holds `allowed`, `retention` and `vpay`
+# expect: openbilling.config.listen: not a key of the configuration file, which holds `allowed`, `retention`, `vpay`, `payments` and `reconcile`
 openbilling:
   config:
     listen: 0.0.0.0:8080

@@ -22,6 +22,21 @@ pub struct SignedWebhook {
     pub body: Vec<u8>,
 }
 
+/// What the provider's side can change about a payment that already exists, after openbilling asked for it: what a
+/// payer, an operator of the provider or an attacker with its API can do. A read back must report it faithfully; the
+/// comparison with what was asked for is the ledger's (ADR 0003, amended 2026-11-28).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Alteration {
+    /// The owner reference now names another owner.
+    Owner,
+    /// The label reference now names another label.
+    Label,
+    /// The amount is now larger.
+    Amount,
+    /// The references are gone.
+    StripMetadata,
+}
+
 /// An adapter under test and the stand-in for its provider.
 pub trait ProviderFixture: Send + Sync {
     /// The adapter.
@@ -44,6 +59,10 @@ pub trait ProviderFixture: Send + Sync {
 
     /// The provider's side: the payer paid.
     fn pay(&self, payment: &CreditId) -> impl Future<Output = ()> + Send;
+
+    /// The provider's side: `payment` was changed as `alteration` says. A fixture against a real provider, which
+    /// cannot do this, panics, and its case list leaves out the cases that call it.
+    fn alter(&self, payment: &CreditId, alteration: Alteration) -> impl Future<Output = ()> + Send;
 
     /// The provider's side: the payment was canceled.
     fn cancel(&self, payment: &CreditId) -> impl Future<Output = ()> + Send;
@@ -161,6 +180,62 @@ pub async fn a_paid_payment_reads_succeeded_and_a_canceled_one_canceled<F: Provi
     let status = |id| async move { provider.read_payment(id).await.expect("read").status };
     assert_eq!(status(&paid.payment).await, PaymentStatus::Succeeded);
     assert_eq!(status(&canceled.payment).await, PaymentStatus::Canceled);
+}
+
+/// A read back reports the payment as the provider holds it now, whatever it was asked for: a changed owner, label or
+/// amount, or no references at all. The adapter compares nothing and corrects nothing.
+pub async fn a_read_back_reports_the_payment_as_the_provider_holds_it_now<F: ProviderFixture>(
+    fixture: F,
+) {
+    let provider = fixture.provider();
+    let asked = request(&fixture, "k1", fixture.amount());
+    let created = provider.create_payment(&asked).await.expect("a payment");
+    let first = provider.read_payment(&created.payment).await.expect("read");
+
+    fixture.alter(&created.payment, Alteration::Owner).await;
+    let view = provider.read_payment(&created.payment).await.expect("read");
+    let to = view.to.expect("still referenced");
+    assert_ne!(to.owner, asked.to.owner);
+    assert_eq!(to.label, asked.to.label);
+
+    fixture.alter(&created.payment, Alteration::Label).await;
+    let view = provider.read_payment(&created.payment).await.expect("read");
+    assert_ne!(view.to.expect("still referenced").label, asked.to.label);
+
+    fixture.alter(&created.payment, Alteration::Amount).await;
+    let view = provider.read_payment(&created.payment).await.expect("read");
+    assert!(view.amount.micros() > first.amount.micros());
+    assert_eq!(view.currency, first.currency);
+
+    fixture
+        .alter(&created.payment, Alteration::StripMetadata)
+        .await;
+    let view = provider.read_payment(&created.payment).await.expect("read");
+    assert_eq!(view.to, None);
+}
+
+/// A pending payment reads back the same every time, until the provider moves it: only its status changes.
+pub async fn a_pending_payment_reads_back_unchanged_until_the_provider_moves_it<
+    F: ProviderFixture,
+>(
+    fixture: F,
+) {
+    let provider = fixture.provider();
+    let created = provider
+        .create_payment(&request(&fixture, "k1", fixture.amount()))
+        .await
+        .expect("a payment");
+    let first = provider.read_payment(&created.payment).await.expect("read");
+    let second = provider.read_payment(&created.payment).await.expect("read");
+    assert_eq!(first, second);
+    assert_eq!(first.status, PaymentStatus::Pending);
+    fixture.pay(&created.payment).await;
+    let paid = provider.read_payment(&created.payment).await.expect("read");
+    assert_eq!(paid.status, PaymentStatus::Succeeded);
+    assert_eq!(
+        (paid.amount, paid.currency, paid.to),
+        (first.amount, first.currency, first.to)
+    );
 }
 
 /// A payment or a refund the provider does not know is `not_found`; an amount it cannot represent is refused
@@ -308,6 +383,8 @@ macro_rules! payment_conformance {
             a_payment_is_created_once_per_key_and_read_back_pending,
             a_paid_payment_reads_succeeded_and_a_canceled_one_canceled,
             unknown_objects_and_inexact_amounts_are_refused,
+            a_read_back_reports_the_payment_as_the_provider_holds_it_now,
+            a_pending_payment_reads_back_unchanged_until_the_provider_moves_it,
             a_foreign_payment_has_no_target,
             a_refund_is_read_back_with_its_payment_and_status,
             a_signed_webhook_names_its_object_and_nothing_else,

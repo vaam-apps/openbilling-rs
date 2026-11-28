@@ -1,0 +1,5 @@
+# expect: openbilling.config.reconcile.pending_after: a span from 1s to 7d written like 15m, 2h or 7d
+openbilling:
+  config:
+    reconcile:
+      pending_after: 8d

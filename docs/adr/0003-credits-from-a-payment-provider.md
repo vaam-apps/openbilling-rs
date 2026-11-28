@@ -20,6 +20,77 @@ assertion's signature and claims as vpay's OP does; it has not met a real vpay. 
 `vpay-sandbox.yml` runs the three conformance cases that need no payer against a real vpay once its variables and
 secrets exist, and until it has run green this stays unverified. The original text below is not rewritten.
 
+*Amended 2026-11-28 (ANR-1405, the top-up is recorded and the read-back is compared with it):* the two *Still open*
+rows about a payment whose metadata was changed at vpay and about a periodic reconciliation are **built**. **This
+reverses the rejected alternative "keep the top-up's target in an openbilling table"**: the reason given there (a
+new table and its migration, when vpay carries metadata) did not hold against the risk, because a read-back that is
+believed for its target and its amount lets whoever can change a payment at vpay move credit to another account or
+credit another amount. Points 3 and 4 are read with this note.
+
+1. **`startTopUp` records the top-up** (`ob_top_up`: payment id, idempotency key, owner, currency, label, amount) right
+   after vpay made the payment and before the payer is sent to it; if recording fails the caller gets the error and
+   retries with the same key, which gives the same payment (vpay's 24-hour idempotency: *verified 2026-11-28* in the
+   `vpay-merchant-api` skill, vpay-skills `19f15ba`, `SKILL.md` and `references/idempotency.md`), recorded again as a
+   replay. The account is also checked before vpay is asked, so a typo in the owner or the label leaves no payment
+   intent at vpay (the record checks it again, in SQL).
+   The same payment recorded with other terms is `top_up_conflict` (`OB011`, class `conflict`); an account that does
+   not exist is refused at once as `unknown_account`.
+2. **The comparison is SQL** (`ob_settle_top_up`, rule 12): what `read_payment` reports (owner and label from the
+   metadata `openbilling_owner` and `openbilling_label`, currency, amount) is compared with the recorded terms, and a
+   succeeded payment that agrees is credited from the **recorded** terms, never from the read-back. A difference in
+   any field credits nothing, marks the top-up `mismatched` with the first field that differs (`owner`, `label`,
+   `currency` or `amount`) and is **sticky**: it is answered again, whatever vpay reports next. The adapter reports
+   faithfully and compares nothing. The refusal is `SettleError::ReadBackMismatch`, class `conflict`, naming the field
+   and no value; it is counted once in `openbilling.payments.mismatches` (label `field`) and logged as a warning with
+   the field and the class: only by the call that marks the top-up (`ob_settle_top_up` answers `o_marked`), never by
+   an answer repeated for a mismatch already marked. `reconcilePayment` answers `409`; the webhook acknowledges it (`200`, outcome `mismatch`),
+   as it does a payment not settled, because the refusal is final and a retry would read the same.
+3. **A succeeded payment with no recorded top-up** (one started before this change, or one openbilling never asked
+   for) follows the deployer's `payments.unrecorded`, **`refuse` by default** (fail closed: nothing is credited, a
+   mismatch of the field `unrecorded`), or `credit` (as before, from the read-back; for a deployment that has top-ups
+   in flight from an earlier version). A payment with no owner reference is not ours either way. The policy is an
+   argument of the SQL function, not a literal. Under `refuse` the payment is **recorded** as a `mismatched` top-up of
+   the field `unrecorded` (no idempotency key, the owner, currency, label and amount read back), so an operator can list
+   it, it is sticky and it is counted once, **with one exception: a late record.** When `startTopUp` created the
+   payment at the provider but `ob_record_top_up` failed or was slow, a webhook can settle first and leave this row,
+   and the retried record would conflict (`OB011`) on a row that is final: the payer paid and is never credited.
+   So `ob_record_top_up`, finding a `mismatched` row of the field `unrecorded` whose owner, currency, label and amount
+   equal the terms it records, upgrades it to a normal `pending` top-up carrying the key (answer `false`: this call
+   recorded it), unread, and the next settle or reconciliation pass credits it from the recorded terms. If any of the
+   four differ it is `OB011` as before and the row stays refused. The guard trigger allows exactly that transition
+   (`mismatched`/`unrecorded` with no key to `pending` with a key, terms and creation time unchanged) and no other
+   way out of `mismatched`; read values that could not be a row (outside an id's, a label's or a
+   currency's alphabet, or an amount not above zero) are refused and counted on every read, since there is nothing to
+   keep. **Upgrade path:** a top-up started before this change has no record, so set `payments.unrecorded: credit`
+   when upgrading, keep it until every top-up started before the upgrade has finished (at most `reconcile.stop_after`,
+   7 days by default, after the upgrade, plus the time a payer takes to pay), then set `refuse`. **Recovering a false
+   positive** (a top-up marked mismatched that the operator has checked at vpay and finds right) is, today, manual: an
+   operator adjustment credit of the recorded amount to the recorded account, through the API's operator credit. A
+   procedure that closes a mismatched top-up and credits its recorded terms is a follow-up (the table's last rows).
+4. **Pending top-ups are read back on a timer** (`reconcile_pending`, `serve`, only with a provider): vpay has no
+   status filter on its list, so the pending top-ups are listed from `ob_top_up`. `ob_claim_pending_top_ups` takes the
+   ones due (at least `reconcile.pending_after` old, less than `stop_after` old, not read in the last `read_again_after`,
+   at most `batch`, **the least recently read first**: never read, then by `last_read_at`, then the oldest, so a
+   backlog larger than a batch is covered before any top-up is read twice; `ob_top_up_pending_read`, a partial index
+   `WHERE state = 'pending'`, serves that order) with `FOR UPDATE SKIP LOCKED` under the `LIMIT`, in a materialized CTE so only the
+   batch is locked and the age tests are ranges on `created_at` that `ob_top_up_pending` serves, so any number of instances share the work and a top-up is read by one
+   of them at a time; a webhook racing the pass books once, by the ledger's once-only id. Defaults: `pending_after` 15m,
+   `read_again_after` 15m, `stop_after` 7d, `every` 1m, `batch` 100 (the configuration file's `reconcile`, ranges in
+   `bin/openbilling/README.md`). A pending top-up older than `stop_after` **becomes `expired`**: each pass first runs
+   `ob_expire_pending_top_ups` (at most `batch` rows per step, repeated up to ten times while a step is full, the
+   oldest first on `ob_top_up_pending`), so the rows the claim scans are the ones in the window however many were
+   abandoned (*measured 2026-11-28*, 255 000 rows: 200 000 credited, 50 000 expired, 5 000 pending in the window; the
+   claim is one index scan of 13 buffers, 0.4 ms, and the expiry finds nothing in 2 buffers). The reconciler never
+   reads an expired top-up. It is not final: a webhook or the operator's `reconcilePayment` still settles it
+   (expired to credited, canceled or mismatched; the guard allows nothing else out of `expired`). Counted in
+   `openbilling.topups.reconciled` (label `outcome`) and, for the move to `expired`, in `openbilling.topups.expired`
+   (no labels). An expired top-up whose payment succeeded but whose webhook never came is **not credited automatically**: an
+   operator watches `openbilling.topups.expired` and settles it with `reconcilePayment`. A final read at expiry would
+   close that gap; it is not built.
+5. **Proven against the stand-in only**: the stand-in can change a payment's owner, label and amount after it was
+   asked for, and the suites hold the behaviour above; vpay itself has not been asked (the sandbox workflow runs
+   three cases that need no payer and none of these).
+
 *Amended 2026-11-27 (ANR-1142, a token verifier):* the verifier point 16 waited for is built, as
 `crates/openbilling-jwt`, behind the same `TokenVerifier` port. Point 16 carries a marker. What it is:
 
@@ -243,9 +314,11 @@ by their provider ids.
 | Several issuers, DPoP-bound tokens | One issuer, plain bearer tokens, as built; add a trust map and DPoP when a deployment needs them |
 | An `Idempotency-Key` is namespaced by the exact `Authorization` header (CrateStack 0.20.6's default fingerprint, *verified 2026-11-27* in `cratestack-axum-0.20.6/src/idempotency/fingerprint.rs`), so a retry with a refreshed token is not replayed by point 17's layer: it runs again, and the ledger's once-only ids answer it (the end-to-end suite's once-only scenario shows both) | Key the layer on the verified `sub` (`with_principal_fingerprint`, after the token is verified) so a key survives a token refresh; until then point 17's second sentence is what holds |
 | ~~Minting and rotating the vpay token~~ | ~~A `client_credentials` client with an RS256 `private_key_jwt` beside the service, or in the adapter~~ **Built 2026-11-28** (ANR-1332), in the adapter, as the owner decided; proven against the stand-in only, see the amendment at the top |
-| The token minting against a real vpay | Run `vpay-sandbox.yml` once a sandbox, a registered client and its key exist: it runs 3 of the suite's 7 cases (the others need a payer to act) |
-| Payments whose `metadata` was changed at vpay | Record the top-up's target in openbilling when it is created, and refuse a read-back that differs |
-| A periodic reconciliation of pending top-ups | List pending payments and read each back, as vpay's reconciler does for rails |
+| The token minting against a real vpay | Run `vpay-sandbox.yml` once a sandbox, a registered client and its key exist: it runs 3 of the suite's 9 cases (the others need a payer to act) |
+| ~~Payments whose `metadata` was changed at vpay~~ | ~~Record the top-up's target in openbilling when it is created, and refuse a read-back that differs~~ **Built 2026-11-28** (ANR-1405), see the amendment at the top: a mismatch is final, and no operator procedure resolves it yet |
+| ~~A periodic reconciliation of pending top-ups~~ | ~~List pending payments and read each back, as vpay's reconciler does for rails~~ **Built 2026-11-28** (ANR-1405), from openbilling's own table, since vpay's list has no status filter |
+| Resolving a mismatched top-up | A mismatch is sticky and only reported (a counter, a warning, a `409`). An operator procedure that closes one after a person looked (credit the recorded terms, or write it off) is not built; it needs the owner's rule for who may decide |
+| An unrecorded payment: one vpay holds that openbilling never recorded | `startTopUp` records after vpay answers; a crash between the two leaves a payment vpay holds and openbilling never recorded, which `payments.unrecorded` then decides (under `refuse` it is kept as a mismatched top-up for the operator). Recording first needs a payment id vpay has not given yet |
 | Payment ids of two providers in one ledger | A provider prefix in the credit id when a second adapter comes |
 | Chargebacks from vpay | vpay has none; map them when a provider reports them |
 | ~~Raw events through the API (ADR 0004)~~ | ~~A `recordRawUsage` mutation over `PriceBook::intake_raw`, and an operator's `loadPriceList`; `recordUsage` takes pre-priced events only~~ **Built 2026-11-27** (ANR-1142): `recordRawUsage` and `loadPriceList` as recommended, with `setDebtLimit` and `setMemberCap`; `UsageOutcome` carries a raw event's rating, and a statement's usage lines are per day and meter |

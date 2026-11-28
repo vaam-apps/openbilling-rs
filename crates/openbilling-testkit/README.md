@@ -84,6 +84,25 @@ before the store's clock; a margin of `m` keeps every day on or after `today - (
 | `the_window_and_the_current_partition_are_never_touched` | Even the shortest margin (one day) leaves today and every day of the window |
 | `concurrent_runs_drop_each_partition_once` | Four runs at once: every expired partition is dropped exactly once, a run that finds another working does nothing |
 
+## The top-up suite
+
+`top_up` is the conformance suite of `TopUpLedger` ([ADR 0003](../../docs/adr/0003-credits-from-a-payment-provider.md),
+amended 2026-11-28): `top_up_conformance!(factory)`, where `factory` is an `async fn(UnrecordedTopUps) -> Option<S>` making a
+fresh store (`LedgerStore` and `TopUpLedger`) that applies the given policy for a payment no top-up was recorded for. The
+cases build the provider's answer themselves, as a `PaymentView`.
+
+| Case | Holds |
+|---|---|
+| `a_top_up_is_recorded_once_and_other_terms_conflict` | The same terms again are a replay; another amount or label is `top_up_conflict`; an account that does not exist is `unknown_account` |
+| `a_payment_that_differs_credits_nothing_and_stays_refused` | A changed owner, no owner, a changed label, currency or amount, or a pending payment that already differs: each is a mismatch naming its field, credits nothing, and is answered again even when the provider later agrees |
+| `an_unrecorded_payment_follows_the_policy` | `Refuse`: a mismatch of `unrecorded` (kept as a mismatched top-up); `Credit`: credited once from the read-back; no owner reference is not ours; pending and canceled are just that |
+| `a_succeeded_payment_credits_the_recorded_terms_once` | Eight settles at once book once, the rest are replays |
+| `a_canceled_top_up_is_final` | A later success is not credited |
+| `claims_respect_the_windows_and_are_disjoint` | Not before `pending_after`, not after `stop_after`, not again before `read_again_after`, never one top-up to two callers, a settled one is not claimed, the batch limit holds |
+| `a_late_record_upgrades_an_unrecorded_payment_only_when_the_terms_agree` | A payment settled before its record (`refuse`) is upgraded by a late record with the very terms and then credited once; other terms stay `TopUpConflict` |
+| `an_expired_top_up_is_not_claimed_and_is_still_settled` | `expire_stale_top_ups` moves rows older than `stop_after` to expired once; they are never claimed; a settle still credits, cancels or refuses them |
+| `successive_claims_cover_every_due_top_up_before_repeating` | With more due than a batch, claims take the least recently read first and cover all before any repeats |
+
 ## The payment provider suite
 
 `payments` is the conformance suite of `PaymentProvider` ([ADR 0003](../../docs/adr/0003-credits-from-a-payment-provider.md)):
@@ -96,6 +115,8 @@ provider does. `openbilling-vpay`'s stand-in is the first.
 | `a_payment_is_created_once_per_key_and_read_back_pending` | One payment per key; read back pending with its amount, currency and target |
 | `a_paid_payment_reads_succeeded_and_a_canceled_one_canceled` | The provider's word decides the status |
 | `unknown_objects_and_inexact_amounts_are_refused` | `not_found` for a payment or a refund it does not know; `inexact_amount` before anything is asked |
+| `a_read_back_reports_the_payment_as_the_provider_holds_it_now` | A payment changed at the provider after it was asked for (owner, label, amount, or its references removed) reads back as changed: the adapter compares and corrects nothing. `ProviderFixture::alter` does the changing; a fixture against a real provider panics there and leaves these two cases out |
+| `a_pending_payment_reads_back_unchanged_until_the_provider_moves_it` | Two reads of a pending payment agree; paying it moves only its status |
 | `a_foreign_payment_has_no_target` | A payment openbilling did not ask for credits nothing |
 | `a_refund_is_read_back_with_its_payment_and_status` | All four refund statuses |
 | `a_signed_webhook_names_its_object_and_nothing_else` | A payment, a refund, or nothing |
@@ -104,7 +125,7 @@ provider does. `openbilling-vpay`'s stand-in is the first.
 ## Tests
 
 The suites run where an implementation runs them: `openbilling-pg`'s `tests/ledger.rs`, `tests/price_book.rs` and
-`tests/retention.rs`, which need a PostgreSQL 19, and `openbilling-vpay`'s `tests/conformance.rs` for the payment suite, which needs
+`tests/retention.rs` and `tests/top_ups.rs`, which need a PostgreSQL 19, and `openbilling-vpay`'s `tests/conformance.rs` for the payment suite, which needs
 nothing. The
 crate has no tests of its own; there is no second implementation of the rules to run it against (agent guide,
 rule 12).

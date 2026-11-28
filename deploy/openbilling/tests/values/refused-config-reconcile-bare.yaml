@@ -1,0 +1,5 @@
+# expect: openbilling.config.reconcile.every: a span from 1s to 1h written like 15m, 2h or 7d
+openbilling:
+  config:
+    reconcile:
+      every: 60

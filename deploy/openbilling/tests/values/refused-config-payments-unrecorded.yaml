@@ -1,0 +1,5 @@
+# expect: openbilling.config.payments.unrecorded: refuse or credit
+openbilling:
+  config:
+    payments:
+      unrecorded: maybe

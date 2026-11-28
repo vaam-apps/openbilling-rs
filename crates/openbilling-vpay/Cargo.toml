@@ -35,6 +35,7 @@ stand-in = ["dep:axum", "dep:openbilling-testkit", "tokio/net", "tokio/rt", "tok
 [dev-dependencies]
 openbilling-vpay = { path = ".", features = ["stand-in"] }
 openbilling-pg.workspace = true
+openbilling-metrics.workspace = true
 openbilling-testkit.workspace = true
 sqlx.workspace = true
 tokio = { workspace = true, features = ["macros", "net", "rt", "rt-multi-thread", "sync"] }

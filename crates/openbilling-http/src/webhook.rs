@@ -15,10 +15,11 @@ use cratestack::axum::extract::State;
 use cratestack::axum::http::{HeaderMap, StatusCode};
 use cratestack::axum::response::{IntoResponse, Response};
 use openbilling_core::{
-    LedgerStore, PaymentError, PaymentProvider, PaymentRefusal, Timestamp, WebhookHeaders,
-    settle_hint,
+    LedgerStore, PaymentError, PaymentProvider, PaymentRefusal, SettleError, Timestamp,
+    TopUpLedger, WebhookHeaders, settle_hint,
 };
 
+use crate::generated::cratestack_schema::Settlement;
 use crate::procedures::{Services, settlement as settlement_of};
 
 /// The largest webhook body read, in bytes.
@@ -60,7 +61,10 @@ fn refused(error: &PaymentError) -> CratestackError {
 }
 
 /// `POST /webhooks/payments`.
-pub(crate) async fn receive<L: LedgerStore + 'static, P: PaymentProvider + 'static>(
+pub(crate) async fn receive<
+    L: LedgerStore + TopUpLedger + 'static,
+    P: PaymentProvider + 'static,
+>(
     State(services): State<Arc<Services<L, P>>>,
     headers: HeaderMap,
     body: Bytes,
@@ -86,6 +90,19 @@ pub(crate) async fn receive<L: LedgerStore + 'static, P: PaymentProvider + 'stat
     };
     match settle_hint(&services.ledger, provider, &hint).await {
         Ok(settled) => (StatusCode::OK, Json(settlement_of(&settled))).into_response(),
+        // A payment that differs from its top-up is acknowledged, as a payment not settled is: the refusal is final
+        // (the ledger marked it, nothing was credited), and an error status would only have the provider send the
+        // same webhook again. The operator's `reconcilePayment` answers it as a conflict.
+        Err(SettleError::ReadBackMismatch(_)) => (
+            StatusCode::OK,
+            Json(Settlement {
+                outcome: "mismatch".to_owned(),
+                accountId: None,
+                transaction: None,
+                replayed: false,
+            }),
+        )
+            .into_response(),
         Err(error) => answer(crate::errors::settle(&error)),
     }
 }

@@ -17,6 +17,8 @@
 //!   after the window a usage partition is dropped (ADR 0001, point 10, amended 2026-11-28);
 //! - the payment provider port, [`PaymentProvider`] (ADR 0003), with [`PaymentError`], and [`settle_payment`] and
 //!   [`settle_refund`], which book what a provider, read back, says succeeded;
+//! - top-ups (ADR 0003, amended 2026-11-28): [`TopUp`] and its port [`TopUpLedger`], [`MismatchField`],
+//!   [`UnrecordedTopUps`], and [`reconcile_pending`], which reads the pending ones back;
 //! - the price book (ADR 0004): [`RawEvent`], [`Quantity`], [`Dimensions`], [`MeterId`], [`Rated`], [`Loaded`],
 //!   and its port, [`PriceBook`];
 //! - [`Error`], [`ErrorClass`] and [`Classify`], errors that tell a caller what to do.
@@ -36,6 +38,7 @@ mod retention;
 mod settle;
 mod store;
 mod time;
+mod top_up;
 mod usage;
 
 pub use amount::Amount;
@@ -64,4 +67,8 @@ pub use store::{
     Reversal,
 };
 pub use time::{Timestamp, UtcDay, UtcMonth};
+pub use top_up::{
+    MismatchField, ReconcileReport, ReconcileSettings, TopUp, TopUpLedger, TopUpSettled,
+    UnrecordedTopUps, reconcile_pending,
+};
 pub use usage::{Intake, IntakeReport, UsageEvent};

@@ -18,6 +18,10 @@
 //! [`retention_conformance!`] runs the cases of partition retention ([`retention`], ADR 0001, point 10): a store also
 //! gives them a [`retention::RetentionFixture`], because no port can age a record.
 //!
+//! [`top_up_conformance!`] runs the cases of top-ups ([`top_up`], ADR 0003 amended 2026-11-28): recorded once, a payment
+//! read back compared with its top-up, the credit booked from the recorded terms once, and the pending ones claimed
+//! for reconciliation once.
+//!
 //! [`payment_conformance!`] does the same for a payment provider adapter ([`payments`], ADR 0003), against a
 //! stand-in for the provider that the adapter reaches over the network.
 //!
@@ -32,6 +36,7 @@ pub mod fixtures;
 pub mod payments;
 pub mod price_cases;
 pub mod retention;
+pub mod top_up;
 
 /// Runs every conformance case against the store `$factory` makes: `async fn() -> Option<S>`, a fresh empty store
 /// per case, or `None` to skip it.
@@ -84,6 +89,28 @@ macro_rules! retention_conformance {
             a_partition_inside_the_window_plus_the_margin_is_kept,
             the_window_and_the_current_partition_are_never_touched,
             concurrent_runs_drop_each_partition_once,
+        );
+    };
+}
+
+/// Runs every conformance case of top-ups (ADR 0003, amended 2026-11-28) against the store `$factory` makes:
+/// `async fn(UnrecordedTopUps) -> Option<S>` where `S` implements [`LedgerStore`](openbilling_core::LedgerStore) and
+/// [`TopUpLedger`](openbilling_core::TopUpLedger), a fresh empty store per call that applies the given policy for a
+/// payment no top-up was recorded for, or `None` to skip it.
+#[macro_export]
+macro_rules! top_up_conformance {
+    ($factory:path) => {
+        $crate::__top_up_cases!(
+            $factory;
+            a_top_up_is_recorded_once_and_other_terms_conflict,
+            a_payment_that_differs_credits_nothing_and_stays_refused,
+            an_unrecorded_payment_follows_the_policy,
+            a_succeeded_payment_credits_the_recorded_terms_once,
+            a_canceled_top_up_is_final,
+            claims_respect_the_windows_and_are_disjoint,
+            a_late_record_upgrades_an_unrecorded_payment_only_when_the_terms_agree,
+            an_expired_top_up_is_not_claimed_and_is_still_settled,
+            successive_claims_cover_every_due_top_up_before_repeating,
         );
     };
 }
@@ -149,6 +176,19 @@ macro_rules! __retention_cases {
                 if let Some(store) = $factory().await {
                     $crate::retention::$case(store).await;
                 }
+            }
+        )*
+    };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __top_up_cases {
+    ($factory:path; $($case:ident),* $(,)?) => {
+        $(
+            #[::tokio::test(flavor = "multi_thread", worker_threads = 4)]
+            async fn $case() {
+                $crate::top_up::$case($factory).await;
             }
         )*
     };

@@ -1,0 +1,5 @@
+# expect: openbilling.config.payments.other: not a key; payments holds only unrecorded
+openbilling:
+  config:
+    payments:
+      other: refuse

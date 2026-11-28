@@ -72,11 +72,13 @@ pub enum Rule {
     BackDated,
     /// Another version already takes effect at the same instant.
     VersionConflict,
+    /// A top-up recorded again with other terms than the first time (ADR 0003, amended 2026-11-28).
+    TopUpConflict,
 }
 
 impl Rule {
     /// Every rule, in declaration order.
-    pub const ALL: [Self; 26] = [
+    pub const ALL: [Self; 27] = [
         Self::TooManyEvents,
         Self::NegativeAmount,
         Self::DifferingDuplicate,
@@ -103,6 +105,7 @@ impl Rule {
         Self::PriceListMismatch,
         Self::BackDated,
         Self::VersionConflict,
+        Self::TopUpConflict,
     ];
 
     /// The rule's stable name, for logs and metrics.
@@ -135,6 +138,7 @@ impl Rule {
             Self::PriceListMismatch => "price_list_mismatch",
             Self::BackDated => "back_dated",
             Self::VersionConflict => "version_conflict",
+            Self::TopUpConflict => "top_up_conflict",
         }
     }
 
@@ -176,6 +180,7 @@ impl Rule {
                 "the version would take effect before now or before an event already rated"
             }
             Self::VersionConflict => "another version takes effect at the same time",
+            Self::TopUpConflict => "the payment was already recorded as another top-up",
         }
     }
 }
@@ -187,7 +192,8 @@ impl Classify for Rule {
             | Self::AccountConflict
             | Self::CreditConflict
             | Self::ReversalCap
-            | Self::VersionConflict => ErrorClass::Conflict,
+            | Self::VersionConflict
+            | Self::TopUpConflict => ErrorClass::Conflict,
             Self::TooManyEvents
             | Self::NegativeAmount
             | Self::DifferingDuplicate

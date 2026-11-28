@@ -35,11 +35,11 @@ The refusals values cannot say. Each names the value to change. Run before the c
   The file holds policy only; secrets and endpoints are environment variables. */ -}}
   {{- $config := dig "config" dict (.Values.openbilling | default dict) -}}
   {{- if not (kindIs "map" $config) -}}
-    {{- fail "openbilling.config: a map; it holds `allowed`, `retention` and `vpay`" -}}
+    {{- fail "openbilling.config: a map; it holds `allowed`, `retention`, `vpay`, `payments` and `reconcile`" -}}
   {{- end -}}
   {{- range $key, $_ := $config -}}
-    {{- if not (has $key (list "allowed" "retention" "vpay")) -}}
-      {{- fail (printf "openbilling.config.%s: not a key of the configuration file, which holds `allowed`, `retention` and `vpay`; secrets and endpoints are environment variables" $key) -}}
+    {{- if not (has $key (list "allowed" "retention" "vpay" "payments" "reconcile")) -}}
+      {{- fail (printf "openbilling.config.%s: not a key of the configuration file, which holds `allowed`, `retention`, `vpay`, `payments` and `reconcile`; secrets and endpoints are environment variables" $key) -}}
     {{- end -}}
   {{- end -}}
   {{- $allowed := dig "allowed" dict $config -}}
@@ -84,6 +84,58 @@ The refusals values cannot say. Each names the value to change. Run before the c
     {{- if gt $secs 3600 -}}
       {{- fail "openbilling.config.retention.timeout: from 1s to 1h written like 300s or 5m" -}}
     {{- end -}}
+  {{- end -}}
+
+  {{- /* payments.unrecorded: what to do with a succeeded payment no top-up was recorded for (ADR 0003, amended
+  2026-11-28). */ -}}
+  {{- $payments := dig "payments" dict $config -}}
+  {{- if not (kindIs "map" $payments) -}}
+    {{- fail "openbilling.config.payments: a map holding unrecorded" -}}
+  {{- end -}}
+  {{- range $key, $value := $payments -}}
+    {{- if ne $key "unrecorded" -}}
+      {{- fail (printf "openbilling.config.payments.%s: not a key; payments holds only unrecorded" $key) -}}
+    {{- end -}}
+    {{- if not (has (toString $value) (list "refuse" "credit")) -}}
+      {{- fail "openbilling.config.payments.unrecorded: refuse or credit" -}}
+    {{- end -}}
+  {{- end -}}
+
+  {{- /* reconcile: which pending top-ups the service reads back from the provider, and how often. Each span is
+  digits and one of s, m, h or d, no leading zero, inside its range; stop_after is longer than pending_after. */ -}}
+  {{- $reconcile := dig "reconcile" dict $config -}}
+  {{- if not (kindIs "map" $reconcile) -}}
+    {{- fail "openbilling.config.reconcile: a map of pending_after, read_again_after, stop_after, every and batch" -}}
+  {{- end -}}
+  {{- $spans := dict "pending_after" (list 1 604800 "1s to 7d") "read_again_after" (list 1 86400 "1s to 1d") "stop_after" (list 60 7776000 "1m to 90d") "every" (list 1 3600 "1s to 1h") -}}
+  {{- $units := dict "s" 1 "m" 60 "h" 3600 "d" 86400 -}}
+  {{- $seconds := dict -}}
+  {{- range $key, $value := $reconcile -}}
+    {{- if hasKey $spans $key -}}
+      {{- $range := get $spans $key -}}
+      {{- $text := toString $value -}}
+      {{- if not (regexMatch "^[1-9][0-9]{0,5}[smhd]$" $text) -}}
+        {{- fail (printf "openbilling.config.reconcile.%s: a span from %s written like 15m, 2h or 7d" $key (index $range 2)) -}}
+      {{- end -}}
+      {{- $unit := regexFind "[smhd]$" $text -}}
+      {{- $secs := mul (int (trimSuffix $unit $text)) (get $units $unit) -}}
+      {{- if or (lt $secs (int (index $range 0))) (gt $secs (int (index $range 1))) -}}
+        {{- fail (printf "openbilling.config.reconcile.%s: a span from %s written like 15m, 2h or 7d" $key (index $range 2)) -}}
+      {{- end -}}
+      {{- $_ := set $seconds $key $secs -}}
+    {{- else if eq $key "batch" -}}
+      {{- if not (or (kindIs "float64" $value) (kindIs "int64" $value) (kindIs "int" $value)) -}}
+        {{- fail "openbilling.config.reconcile.batch: a whole number from 1 to 1000" -}}
+      {{- end -}}
+      {{- if or (lt (float64 $value) 1.0) (gt (float64 $value) 1000.0) (ne (float64 $value) (floor (float64 $value))) -}}
+        {{- fail "openbilling.config.reconcile.batch: a whole number from 1 to 1000" -}}
+      {{- end -}}
+    {{- else -}}
+      {{- fail (printf "openbilling.config.reconcile.%s: not a key; the keys are pending_after, read_again_after, stop_after, every and batch" $key) -}}
+    {{- end -}}
+  {{- end -}}
+  {{- if le (int (dig "stop_after" 604800 $seconds)) (int (dig "pending_after" 900 $seconds)) -}}
+    {{- fail "openbilling.config.reconcile.stop_after: longer than reconcile.pending_after" -}}
   {{- end -}}
 
   {{- /* vpay.token: the tunables of a minted vpay token (the binary also refuses them without a client key). */ -}}

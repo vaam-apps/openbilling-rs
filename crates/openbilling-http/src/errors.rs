@@ -53,6 +53,10 @@ pub fn settle(error: &SettleError) -> CratestackError {
     match error {
         SettleError::Provider(error) => payment(error),
         SettleError::Ledger(error) => ledger(error),
+        // The fixed sentence names the field and holds no value.
+        SettleError::ReadBackMismatch(_) => {
+            of_class(error.class(), format!("read_back_mismatch: {error}"))
+        }
     }
 }
 

@@ -210,12 +210,17 @@ async fn the_webhook_verifies_reads_back_and_believes_nothing_else() {
         StatusCode::BAD_REQUEST
     );
 
-    // The event says "succeeded"; vpay, read back, says the payment is still pending: nothing is booked, and the
-    // ledger (down here) is never asked.
+    // The event says "succeeded"; vpay, read back, says the payment is still pending. Nothing is believed from the
+    // event, and what the read-back means for the top-up is the ledger's to say (ADR 0003, amended 2026-11-28):
+    // it is down here, so vpay is told to retry.
     let pending = fixture.payment_webhook(&created.payment, now());
     let answer = raw(&app, webhook_request(&pending)).await;
-    assert_eq!(answer.status, StatusCode::OK, "{}", answer.text);
-    assert_eq!(answer.body["outcome"], "payment_not_settled");
+    assert_eq!(
+        answer.status,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "{}",
+        answer.text
+    );
 
     // Paid: the ledger must book it, and it is down, so vpay is told to retry.
     fixture.pay(&created.payment).await;

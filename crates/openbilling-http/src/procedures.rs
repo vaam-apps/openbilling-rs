@@ -12,8 +12,9 @@ use openbilling_core::{
     AccountId, AccountLabel, AllowedPolicy, Amount, CreditId, CreditSource, CreditTarget, Credited,
     CurrencyCode, IdempotencyKey, LedgerConfig, LotKind as CoreLotKind, LotOrder, MemberId,
     NewAccount, OwnerId, PaymentProvider, PaymentRequest, PaymentTarget, PriceBook, ReturnUrls,
-    Settled, WithinKind, settle_payment, settle_refund,
+    Settled, TopUp, TopUpLedger, WithinKind, settle_payment, settle_refund,
 };
+use openbilling_core::{LedgerError, Refusal, Rule};
 
 use crate::errors::{invalid, ledger, payment, settle};
 use crate::generated::cratestack_schema::{
@@ -114,7 +115,7 @@ impl<L, P> Procedures<L, P> {
 
 impl<L, P> procedures::ProcedureRegistry for Procedures<L, P>
 where
-    L: PriceBook + 'static,
+    L: PriceBook + TopUpLedger + 'static,
     P: PaymentProvider + 'static,
 {
     async fn get_balance(
@@ -434,10 +435,38 @@ where
                 cancel: args.cancelUrl,
             },
         };
+        // The account is checked before the provider is asked, so a typo in the owner or the label leaves no payment
+        // intent at the provider. The record below checks it again (in SQL, in the commit that records it).
+        let at = self.0.ledger.now().await.map_err(|e| ledger(&e))?;
+        let balance = self
+            .0
+            .ledger
+            .balance(&request.to.owner, &request.currency, at)
+            .await
+            .map_err(|e| ledger(&e))?;
+        if !balance.accounts.iter().any(|a| a.label == request.to.label) {
+            return Err(ledger(&LedgerError::Refused(Refusal::new(
+                Rule::UnknownAccount,
+            ))));
+        }
         let created = provider
             .create_payment(&request)
             .await
             .map_err(|e| payment(&e))?;
+        // Recorded before the payer is sent away (ADR 0003, amended 2026-11-28): what the provider reports back is
+        // compared with it. A retry with the same key gets the same payment and records it as a replay. If recording
+        // fails the payer is not sent: the caller retries, and the payment is the same one.
+        self.0
+            .ledger
+            .record_top_up(&TopUp {
+                payment: created.payment.clone(),
+                key: request.idempotency_key.clone(),
+                to: request.to.clone(),
+                currency: request.currency.clone(),
+                amount: request.amount,
+            })
+            .await
+            .map_err(|e| ledger(&e))?;
         Ok(TopUpStarted {
             payment: created.payment.into_string(),
             status: created.status.as_str().to_owned(),

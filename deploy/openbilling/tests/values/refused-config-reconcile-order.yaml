@@ -1,0 +1,6 @@
+# expect: openbilling.config.reconcile.stop_after: longer than reconcile.pending_after
+openbilling:
+  config:
+    reconcile:
+      pending_after: 2d
+      stop_after: 1d
