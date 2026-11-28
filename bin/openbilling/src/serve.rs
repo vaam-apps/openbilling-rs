@@ -219,6 +219,13 @@ async fn reconcile_forever(
                 if report.expired > 0 {
                     global().add(Counter::TopUpsExpired, &[], report.expired);
                 }
+                if let Some(class) = report.expire_error {
+                    count_error(class, "reconcile");
+                    tracing::warn!(
+                        openbilling.error.class = class.as_str(),
+                        "expiring stale top-ups failed; the due ones were still read back"
+                    );
+                }
                 if report.credited + report.mismatched + report.failed > 0 {
                     anstream::eprintln!(
                         "{ACCENT}openbilling:{ACCENT:#} read back {} pending top-up(s): {} credited, {} differed, {} failed",

@@ -26,7 +26,7 @@
 //! reconcile:                  # reading back the pending top-ups whose webhook did not come (only with a payment provider)
 //!   pending_after: 15m        # a top-up is not read before it is this old; 1s to 7d
 //!   read_again_after: 15m     # read again after this long while still pending; 1s to 1d
-//!   stop_after: 7d            # no longer read when older than this (stays pending; reconcilePayment still settles it); 1m to 90d, above pending_after
+//!   stop_after: 7d            # older than this, it becomes `expired` and is no longer read (a webhook or reconcilePayment still settles it); 1m to 90d, above pending_after
 //!   every: 1m                 # how often a pass runs; 1s to 1h
 //!   batch: 100                # the most top-ups a pass reads; 1 to 1000
 //! vpay:

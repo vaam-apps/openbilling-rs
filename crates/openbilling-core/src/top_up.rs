@@ -14,7 +14,7 @@ use crate::payment::{IdempotencyKey, PaymentProvider, PaymentStatus, PaymentTarg
 use crate::refusal::LedgerError;
 use crate::settle::{SettleError, Settled, settle_payment};
 use crate::store::Credited;
-use crate::{Amount, CurrencyCode};
+use crate::{Amount, Classify, CurrencyCode, ErrorClass};
 
 /// The field a payment read back differs in from the top-up that was recorded. A closed set: it names the field, never
 /// its value, so an error and a metric label hold nothing a caller sent.
@@ -197,6 +197,8 @@ pub struct ReconcileReport {
     pub failed: u32,
     /// Pending top-ups this pass moved to `expired` (not looked at: not part of [`Self::total`]).
     pub expired: u64,
+    /// The class of the error that stopped this pass's expiry, if one did; the claim still ran.
+    pub expire_error: Option<ErrorClass>,
 }
 
 impl ReconcileReport {
@@ -218,7 +220,7 @@ impl ReconcileReport {
 ///
 /// # Errors
 ///
-/// [`LedgerError`] when the claim fails.
+/// [`LedgerError`] when the claim fails. A failed expiry is reported in [`ReconcileReport::expire_error`] and the claim still runs.
 pub async fn reconcile_pending<L, P>(
     ledger: &L,
     provider: &P,
@@ -230,11 +232,19 @@ where
 {
     let mut report = ReconcileReport::default();
     // Bounded steps, so a large backlog is worked off over passes and one pass never holds many rows.
+    // A failed expiry is reported and never stops the claim: the due top-ups are still read back.
     for _ in 0..10 {
-        let n = ledger.expire_stale_top_ups(settings).await?;
-        report.expired += n;
-        if n < u64::from(settings.batch.max(1)) {
-            break;
+        match ledger.expire_stale_top_ups(settings).await {
+            Ok(n) => {
+                report.expired += n;
+                if n < u64::from(settings.batch.max(1)) {
+                    break;
+                }
+            }
+            Err(error) => {
+                report.expire_error = Some(error.class());
+                break;
+            }
         }
     }
     for id in ledger.claim_pending_top_ups(settings).await? {

@@ -84,7 +84,9 @@ credit another amount. Points 3 and 4 are read with this note.
    reads an expired top-up. It is not final: a webhook or the operator's `reconcilePayment` still settles it
    (expired to credited, canceled or mismatched; the guard allows nothing else out of `expired`). Counted in
    `openbilling.topups.reconciled` (label `outcome`) and, for the move to `expired`, in `openbilling.topups.expired`
-   (no labels).
+   (no labels). An expired top-up whose payment succeeded but whose webhook never came is **not credited automatically**: an
+   operator watches `openbilling.topups.expired` and settles it with `reconcilePayment`. A final read at expiry would
+   close that gap; it is not built.
 5. **Proven against the stand-in only**: the stand-in can change a payment's owner, label and amount after it was
    asked for, and the suites hold the behaviour above; vpay itself has not been asked (the sandbox workflow runs
    three cases that need no payer and none of these).
