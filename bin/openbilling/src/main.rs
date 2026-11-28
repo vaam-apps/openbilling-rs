@@ -42,6 +42,13 @@ environment. No setting is read from both:
           debt_limit: at_or_above   # the debt against its limit
           balance: at_or_above      # the debt against the drawable credit
           member_cap: at_or_above   # a member's usage this month against the cap
+        vpay:
+          token:                    # only with a client key below; each key optional
+            audience: vpay:v1       # the audience of the token asked for
+            scope: payments:write   # the scope asked for; default none: the client's registered scopes
+            refresh_skew_secs: 30   # how long before expiry a token is replaced (at most half its life, at most 600)
+            retries: 2              # retries of a transient failure of the token endpoint (at most 10)
+            retry_backoff_ms: 200   # the pause before the first retry, doubling (at most 5000)
   OPENBILLING_DATABASE_URL, or OPENBILLING_DATABASE_URL_FILE (a file holding it)
       The PostgreSQL 19 database. Never printed.
   OPENBILLING_LISTEN
@@ -71,15 +78,6 @@ environment. No setting is read from both:
   OPENBILLING_VPAY_ASSERTION_AUDIENCE
       The assertion's aud: vpay's own name for its token endpoint or issuer, when vpay is reached by
       another URL than the one it publishes; default the token endpoint.
-  OPENBILLING_VPAY_TOKEN_AUDIENCE
-      The audience of the token asked for; default vpay:v1.
-  OPENBILLING_VPAY_TOKEN_SCOPE
-      The scope asked for; default none, which grants the client's registered scopes.
-  OPENBILLING_VPAY_TOKEN_REFRESH_SKEW_SECS
-      How long before expiry a token is replaced (at most half its life); default 30, at most 600.
-  OPENBILLING_VPAY_TOKEN_RETRIES, OPENBILLING_VPAY_TOKEN_RETRY_BACKOFF_MS
-      Retries of a transient failure of the token endpoint, default 2 (at most 10), and the pause before
-      the first, default 200, doubling (at most 5000).
   OPENBILLING_VPAY_WEBHOOK_SECRETS_FILE
       A file holding vpay's webhook secrets, one per line.
   OPENBILLING_VPAY_CURRENCIES

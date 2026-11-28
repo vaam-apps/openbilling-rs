@@ -1,0 +1,14 @@
+# A configuration file that tunes a minted vpay token: the chart accepts it (the binary accepts it only beside a client
+# key, which the chart leaves to `env`, so check.sh does not hand this file to the binary).
+openbilling:
+  database:
+    existingSecret: billing-db-app
+    key: uri
+  config:
+    vpay:
+      token:
+        audience: vpay:v1
+        scope: payments:write
+        refresh_skew_secs: 45
+        retries: 3
+        retry_backoff_ms: 100
