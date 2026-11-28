@@ -123,20 +123,26 @@ pub struct ReconcileSettings {
     pub pending_after: Duration,
     /// A top-up read and still pending is read again after this long.
     pub read_again_after: Duration,
-    /// A top-up older than this is no longer read: the payment is long abandoned. It becomes `expired`
-    /// ([`TopUpLedger::expire_stale_top_ups`]), and a webhook or an operator's `reconcilePayment` still settles it.
+    /// A top-up this old is read back one last time ([`TopUpLedger::claim_expiring_top_ups`]); only one still
+    /// pending at the provider becomes `expired` ([`TopUpLedger::expire_top_up`]), and a webhook or an operator's
+    /// `reconcilePayment` still settles it.
     pub stop_after: Duration,
+    /// How long after `stop_after` the backstop ([`TopUpLedger::expire_stale_top_ups`]) expires a top-up whose last
+    /// read never came to an answer (the provider kept failing, or the process stopped between claim and settle).
+    pub last_read_for: Duration,
     /// The most top-ups one pass claims.
     pub batch: u32,
 }
 
 impl Default for ReconcileSettings {
-    /// 15 minutes before the first read, 15 minutes between reads, 7 days at most, 100 at a time.
+    /// 15 minutes before the first read, 15 minutes between reads, a last read at 7 days with a day's grace for it,
+    /// 100 at a time.
     fn default() -> Self {
         Self {
             pending_after: Duration::from_secs(15 * 60),
             read_again_after: Duration::from_secs(15 * 60),
             stop_after: Duration::from_secs(7 * 24 * 3600),
+            last_read_for: Duration::from_secs(24 * 3600),
             batch: 100,
         }
     }
@@ -170,17 +176,88 @@ pub trait TopUpLedger: Send + Sync {
         settings: &ReconcileSettings,
     ) -> impl Future<Output = Result<Vec<CreditId>, LedgerError>> + Send;
 
-    /// Moves the pending top-ups older than `settings.stop_after` to `expired`, at most `settings.batch` of them, and
-    /// answers how many. An expired top-up is never claimed, and a webhook or `reconcilePayment` still settles it.
+    /// Claims up to `settings.batch` pending top-ups that reached `stop_after` and are due for their last read: older
+    /// than `stop_after` and not claimed in the last `read_again_after`, the oldest first. Disjoint from
+    /// [`Self::claim_pending_top_ups`]. A claim is visible at once to every other caller. A top-up claimed and not
+    /// settled stays pending and is claimed again after `read_again_after`.
+    fn claim_expiring_top_ups(
+        &self,
+        settings: &ReconcileSettings,
+    ) -> impl Future<Output = Result<Vec<CreditId>, LedgerError>> + Send;
+
+    /// Moves one top-up to `expired` when it is still pending and at least `settings.stop_after` old, and answers
+    /// whether it did: `false` means it was settled meanwhile (a webhook, another pass) and nothing changed.
+    fn expire_top_up(
+        &self,
+        payment: &CreditId,
+        settings: &ReconcileSettings,
+    ) -> impl Future<Output = Result<bool, LedgerError>> + Send;
+
+    /// The backstop: moves the pending top-ups older than `settings.stop_after + settings.last_read_for` to
+    /// `expired` without a read, at most `settings.batch` of them, and answers how many. An expired top-up is never
+    /// claimed, and a webhook or `reconcilePayment` still settles it.
     fn expire_stale_top_ups(
         &self,
         settings: &ReconcileSettings,
     ) -> impl Future<Output = Result<u64, LedgerError>> + Send;
 }
 
+/// What the reads of one kind (due, or last) did, by outcome. Each top-up is counted once.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ReadOutcomes {
+    /// Top-ups credited now.
+    pub credited: u32,
+    /// Top-ups found credited already (a replay: the webhook, or another pass, booked them first).
+    pub replayed: u32,
+    /// Top-ups the provider still holds as unpaid. For a last read these are the ones moved to `expired`.
+    pub pending: u32,
+    /// Payments that are not ours (no top-up and no owner reference): nothing was moved.
+    pub not_ours: u32,
+    /// Top-ups the provider canceled.
+    pub canceled: u32,
+    /// Top-ups whose payment differs from what was recorded.
+    pub mismatched: u32,
+    /// Top-ups that could not be read or settled now; they are read again later.
+    pub failed: u32,
+    /// Last reads only: top-ups settled by someone else between the read and the move to `expired`.
+    pub settled_meanwhile: u32,
+}
+
+impl ReadOutcomes {
+    /// How many top-ups were looked at.
+    #[must_use]
+    pub const fn total(&self) -> u32 {
+        self.credited
+            + self.replayed
+            + self.pending
+            + self.not_ours
+            + self.canceled
+            + self.mismatched
+            + self.failed
+            + self.settled_meanwhile
+    }
+
+    fn count(&mut self, result: &Result<Settled, SettleError>) {
+        match result {
+            Ok(Settled::Credited(credited)) if credited.replayed => self.replayed += 1,
+            Ok(Settled::Credited(_)) => self.credited += 1,
+            Ok(Settled::PaymentNotSettled(PaymentStatus::Canceled)) => self.canceled += 1,
+            Ok(Settled::NotOurs) => self.not_ours += 1,
+            Ok(_) => self.pending += 1,
+            Err(SettleError::ReadBackMismatch(_)) => self.mismatched += 1,
+            Err(_) => self.failed += 1,
+        }
+    }
+}
+
 /// What one reconciliation pass did, by outcome.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ReconcileReport {
+    /// The last reads of the top-ups that reached `stop_after`: `last.pending` is how many a last read found still
+    /// pending and moved to `expired`.
+    pub last: ReadOutcomes,
+    /// Top-ups whose last read failed with an error that is not worth retrying and that were expired unread.
+    pub expired_unread: u32,
     /// Top-ups credited now.
     pub credited: u32,
     /// Top-ups found credited already (a replay: the webhook, or another pass, booked them first).
@@ -195,17 +272,19 @@ pub struct ReconcileReport {
     pub mismatched: u32,
     /// Top-ups that could not be read or settled now; they are read again later.
     pub failed: u32,
-    /// Pending top-ups this pass moved to `expired` (not looked at: not part of [`Self::total`]).
+    /// Pending top-ups the backstop moved to `expired` without a read (not part of [`Self::total`]).
     pub expired: u64,
     /// The class of the error that stopped this pass's expiry, if one did; the claim still ran.
     pub expire_error: Option<ErrorClass>,
 }
 
 impl ReconcileReport {
-    /// How many top-ups the pass looked at.
+    /// How many top-ups the pass looked at, due reads and last reads.
     #[must_use]
     pub const fn total(&self) -> u32 {
-        self.credited
+        self.last.total()
+            + self.expired_unread
+            + self.credited
             + self.replayed
             + self.pending
             + self.not_ours
@@ -215,8 +294,12 @@ impl ReconcileReport {
     }
 }
 
-/// One reconciliation pass: claims the pending top-ups that are due and reads each back from the provider. A top-up
-/// that cannot be settled now is counted and left to a later pass; one failure never stops the others.
+/// One reconciliation pass. First the backstop expires what stayed pending past `stop_after + last_read_for`. Then
+/// the top-ups that reached `stop_after` are claimed and read back one last time: one that is paid is credited, one
+/// the provider canceled or that differs is closed, and only one still pending at the provider becomes `expired`. A
+/// read that fails as `unavailable` leaves the top-up pending for a later pass; any other failure expires it unread.
+/// Last, the top-ups that are due are claimed and read back. A top-up that cannot be settled now is counted and left
+/// to a later pass; one failure never stops the others. One pass reads at most `2 * batch` payments.
 ///
 /// # Errors
 ///
@@ -247,8 +330,33 @@ where
             }
         }
     }
+    // The last read comes first, so a top-up past `stop_after` is never left unread because the batch was spent on
+    // younger ones.
+    for id in ledger.claim_expiring_top_ups(settings).await? {
+        let result = settle_payment(ledger, provider, &id).await;
+        match &result {
+            Ok(
+                Settled::Credited(_)
+                | Settled::NotOurs
+                | Settled::PaymentNotSettled(PaymentStatus::Canceled),
+            )
+            | Err(SettleError::ReadBackMismatch(_)) => report.last.count(&result),
+            Ok(_) => match ledger.expire_top_up(&id, settings).await {
+                Ok(true) => report.last.pending += 1,
+                Ok(false) => report.last.settled_meanwhile += 1,
+                Err(_) => report.last.failed += 1,
+            },
+            Err(error) if error.class() == ErrorClass::Unavailable => report.last.failed += 1,
+            Err(_) => match ledger.expire_top_up(&id, settings).await {
+                Ok(true) => report.expired_unread += 1,
+                Ok(false) => report.last.settled_meanwhile += 1,
+                Err(_) => report.last.failed += 1,
+            },
+        }
+    }
     for id in ledger.claim_pending_top_ups(settings).await? {
-        match settle_payment(ledger, provider, &id).await {
+        let result = settle_payment(ledger, provider, &id).await;
+        match &result {
             Ok(Settled::Credited(credited)) if credited.replayed => report.replayed += 1,
             Ok(Settled::Credited(_)) => report.credited += 1,
             Ok(Settled::PaymentNotSettled(PaymentStatus::Canceled)) => report.canceled += 1,
@@ -279,6 +387,7 @@ mod tests {
         assert_eq!(s.pending_after, Duration::from_secs(900));
         assert_eq!(s.read_again_after, Duration::from_secs(900));
         assert_eq!(s.stop_after, Duration::from_secs(604_800));
+        assert_eq!(s.last_read_for, Duration::from_secs(86_400));
         assert_eq!(s.batch, 100);
         assert_eq!(UnrecordedTopUps::default(), UnrecordedTopUps::Refuse);
     }

@@ -39,6 +39,7 @@ reconcile:                  # reading back the pending top-ups whose webhook did
   pending_after: 15m        # a top-up is not read before it is this old; 1s to 7d
   read_again_after: 15m     # read again after this long while still pending; 1s to 1d
   stop_after: 7d            # no longer read when older than this; 1m to 90d, longer than pending_after
+  last_read_for: 1d         # after stop_after, how long a failing last read is retried before the top-up is expired unread; 1m to 30d
   every: 1m                 # how often a pass runs; 1s to 1h
   batch: 100                # the most top-ups a pass reads; 1 to 1000
 vpay:
@@ -77,9 +78,9 @@ its recorded terms is a follow-up.
 a payment provider is configured, first after one `every`, and reads back the pending top-ups that are at least
 `pending_after` old and less than `stop_after` old, not read in the last `read_again_after`, at most `batch` a pass.
 Several instances share the work (a claim takes each top-up for one of them), and a webhook racing a pass books once. A top-up
-older than `stop_after` becomes `expired` (counted in `openbilling.topups.expired`) and is not read again; a webhook or the operator's `reconcilePayment` still settles it; the pass reads the least recently read first. Stopping the service cancels a running pass. Every
+that reaches `stop_after` is read back one last time: paid, it is credited; canceled or different, it is closed; only one still pending at the provider becomes `expired` (counted in `openbilling.topups.expired`, and as the outcome `expired` of `openbilling.topups.reconciled`) and is not read again; a webhook or the operator's `reconcilePayment` still settles it. A last read that fails as unavailable is tried again after `read_again_after`; one that fails otherwise, or any top-up still pending at `stop_after + last_read_for`, is expired unread. A pass reads at most twice `batch` payments, the last reads first; the due ones least recently read first. Stopping the service cancels a running pass. Every
 value has the default shown; a value outside its range, or a `stop_after` not longer than `pending_after`, stops `serve`
-at start. It logs counts only (credited, differed, failed) and counts the outcomes in `openbilling.topups.reconciled` (`credited`, `replayed` for one found credited already, `pending`, `not_ours`, `canceled`, `mismatch`, `error`, which a pass that panicked also counts; the next pass runs); a
+at start. It logs counts only (credited, differed, failed) and counts the outcomes in `openbilling.topups.reconciled` (`credited`, `replayed` for one found credited already, `pending`, `expired` for a last read that found it still pending, `not_ours`, `canceled`, `mismatch`, `error`, which a pass that panicked also counts; the next pass runs); a
 failed pass is logged by class and counted in `openbilling.errors` (`source=reconcile`). A payment that differs from its top-up in
 any field is never credited and stays refused: the webhook acknowledges it, `reconcilePayment` answers `409`, and it is
 counted in `openbilling.payments.mismatches` and logged as a warning that names the field. **Nothing resolves a mismatch yet.**

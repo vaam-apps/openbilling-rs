@@ -59,6 +59,7 @@ fn due_now() -> ReconcileSettings {
         pending_after: Duration::ZERO,
         read_again_after: Duration::from_secs(3600),
         stop_after: Duration::from_secs(3600),
+        last_read_for: Duration::from_secs(3600),
         batch: 100,
     }
 }
@@ -442,6 +443,7 @@ pub async fn an_expired_top_up_is_not_claimed_and_is_still_settled<S: TopUpStore
     tokio::time::sleep(Duration::from_millis(60)).await;
     let stale = ReconcileSettings {
         stop_after: Duration::from_millis(50),
+        last_read_for: Duration::ZERO,
         read_again_after: Duration::ZERO,
         ..due_now()
     };
@@ -529,4 +531,202 @@ pub async fn successive_claims_cover_every_due_top_up_before_repeating<S: TopUpS
         }
     }
     assert_eq!(seen.len(), 10, "every due top-up was claimed");
+}
+
+/// Settings under which a top-up is past `stop_after` after a short sleep, and is claimed again at once.
+fn past_stop() -> ReconcileSettings {
+    ReconcileSettings {
+        stop_after: Duration::from_millis(50),
+        read_again_after: Duration::from_secs(3600),
+        ..due_now()
+    }
+}
+
+/// A top-up that reached `stop_after` is claimed for a last read, once, by `claim_expiring_top_ups` and never by the
+/// due claim; a younger one is not claimed; it is claimed again only after `read_again_after`.
+pub async fn a_top_up_past_stop_after_is_claimed_once_for_a_last_read<S: TopUpStore>(
+    make: impl AsyncFn(UnrecordedTopUps) -> Option<S>,
+) {
+    let Some(store) = make(UnrecordedTopUps::Refuse).await else {
+        return;
+    };
+    ready(&store).await;
+    for id in ["l1", "l2", "l3"] {
+        store.record_top_up(&top_up(id)).await.unwrap();
+    }
+    tokio::time::sleep(Duration::from_millis(60)).await;
+    store.record_top_up(&top_up("l4")).await.unwrap();
+    let settings = past_stop();
+    assert!(
+        store
+            .claim_pending_top_ups(&settings)
+            .await
+            .unwrap()
+            .iter()
+            .all(|id| id.as_str() == "l4"),
+        "the due claim never takes what reached stop_after"
+    );
+    let mut claimed: Vec<String> = store
+        .claim_expiring_top_ups(&settings)
+        .await
+        .unwrap()
+        .iter()
+        .map(|id| id.as_str().to_owned())
+        .collect();
+    claimed.sort();
+    assert_eq!(claimed, ["l1", "l2", "l3"], "l4 is too young");
+    assert!(
+        store
+            .claim_expiring_top_ups(&settings)
+            .await
+            .unwrap()
+            .is_empty(),
+        "claimed once"
+    );
+    let again = ReconcileSettings {
+        read_again_after: Duration::ZERO,
+        batch: 2,
+        ..settings
+    };
+    assert_eq!(
+        store.claim_expiring_top_ups(&again).await.unwrap().len(),
+        2,
+        "claimed again after read_again_after, at most a batch"
+    );
+}
+
+/// A top-up a last read found still pending is moved to `expired` once, and a later settle still credits it. One
+/// that is not yet `stop_after` old is not moved.
+pub async fn a_last_read_still_pending_expires_it_and_a_late_settle_still_credits<S: TopUpStore>(
+    make: impl AsyncFn(UnrecordedTopUps) -> Option<S>,
+) {
+    let Some(store) = make(UnrecordedTopUps::Refuse).await else {
+        return;
+    };
+    ready(&store).await;
+    store.record_top_up(&top_up("e1")).await.unwrap();
+    let settings = past_stop();
+    assert!(
+        !store
+            .expire_top_up(&credit_id("e1"), &settings)
+            .await
+            .unwrap(),
+        "not old enough"
+    );
+    tokio::time::sleep(Duration::from_millis(60)).await;
+    assert!(
+        store
+            .expire_top_up(&credit_id("e1"), &settings)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !store
+            .expire_top_up(&credit_id("e1"), &settings)
+            .await
+            .unwrap(),
+        "once"
+    );
+    assert!(
+        store
+            .claim_expiring_top_ups(&ReconcileSettings {
+                read_again_after: Duration::ZERO,
+                ..settings
+            })
+            .await
+            .unwrap()
+            .is_empty(),
+        "an expired top-up is not claimed"
+    );
+    let TopUpSettled::Credited(credited) = store
+        .settle_top_up(&view("e1", PaymentStatus::Succeeded))
+        .await
+        .unwrap()
+    else {
+        panic!("credited")
+    };
+    assert!(!credited.replayed);
+    assert_eq!(net(&store, "o1").await, AMOUNT);
+}
+
+/// A top-up settled between the last read and the move is not touched: the move answers `false`, no error, and the
+/// state stays final.
+pub async fn expire_top_up_never_moves_a_settled_top_up<S: TopUpStore>(
+    make: impl AsyncFn(UnrecordedTopUps) -> Option<S>,
+) {
+    let Some(store) = make(UnrecordedTopUps::Refuse).await else {
+        return;
+    };
+    ready(&store).await;
+    for id in ["s1", "s2"] {
+        store.record_top_up(&top_up(id)).await.unwrap();
+    }
+    store
+        .settle_top_up(&view("s1", PaymentStatus::Succeeded))
+        .await
+        .unwrap();
+    store
+        .settle_top_up(&view("s2", PaymentStatus::Canceled))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(60)).await;
+    let settings = past_stop();
+    for id in ["s1", "s2"] {
+        assert!(
+            !store
+                .expire_top_up(&credit_id(id), &settings)
+                .await
+                .unwrap(),
+            "{id} is settled"
+        );
+    }
+    assert!(
+        store
+            .claim_expiring_top_ups(&ReconcileSettings {
+                read_again_after: Duration::ZERO,
+                ..settings
+            })
+            .await
+            .unwrap()
+            .is_empty(),
+        "a settled top-up is not claimed"
+    );
+    let TopUpSettled::Credited(again) = store
+        .settle_top_up(&view("s1", PaymentStatus::Succeeded))
+        .await
+        .unwrap()
+    else {
+        panic!("credited")
+    };
+    assert!(again.replayed);
+    assert_eq!(net(&store, "o1").await, AMOUNT, "credited once");
+}
+
+/// The backstop expires an unread top-up only after `stop_after + last_read_for`.
+pub async fn the_backstop_expires_unread_ones_after_last_read_for<S: TopUpStore>(
+    make: impl AsyncFn(UnrecordedTopUps) -> Option<S>,
+) {
+    let Some(store) = make(UnrecordedTopUps::Refuse).await else {
+        return;
+    };
+    ready(&store).await;
+    for id in ["b1", "b2"] {
+        store.record_top_up(&top_up(id)).await.unwrap();
+    }
+    tokio::time::sleep(Duration::from_millis(60)).await;
+    let graced = ReconcileSettings {
+        last_read_for: Duration::from_secs(3600),
+        ..past_stop()
+    };
+    assert_eq!(
+        store.expire_stale_top_ups(&graced).await.unwrap(),
+        0,
+        "still inside the time for its last read"
+    );
+    let over = ReconcileSettings {
+        last_read_for: Duration::from_millis(10),
+        ..past_stop()
+    };
+    assert_eq!(store.expire_stale_top_ups(&over).await.unwrap(), 2);
+    assert_eq!(store.expire_stale_top_ups(&over).await.unwrap(), 0, "once");
 }

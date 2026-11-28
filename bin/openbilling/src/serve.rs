@@ -200,13 +200,14 @@ async fn reconcile_forever(
         match result {
             Ok(report) => {
                 for (outcome, n) in [
-                    ("credited", report.credited),
-                    ("replayed", report.replayed),
+                    ("credited", report.credited + report.last.credited),
+                    ("replayed", report.replayed + report.last.replayed),
                     ("pending", report.pending),
-                    ("not_ours", report.not_ours),
-                    ("canceled", report.canceled),
-                    ("mismatch", report.mismatched),
-                    ("error", report.failed),
+                    ("expired", report.last.pending),
+                    ("not_ours", report.not_ours + report.last.not_ours),
+                    ("canceled", report.canceled + report.last.canceled),
+                    ("mismatch", report.mismatched + report.last.mismatched),
+                    ("error", report.failed + report.last.failed),
                 ] {
                     if n > 0 {
                         global().add(
@@ -216,8 +217,13 @@ async fn reconcile_forever(
                         );
                     }
                 }
-                if report.expired > 0 {
-                    global().add(Counter::TopUpsExpired, &[], report.expired);
+                // Every top-up moved to `expired` this pass: after a last read that found it pending, unread because the
+                // read failed for good, or by the backstop.
+                let expired = report.expired
+                    + u64::from(report.last.pending)
+                    + u64::from(report.expired_unread);
+                if expired > 0 {
+                    global().add(Counter::TopUpsExpired, &[], expired);
                 }
                 if let Some(class) = report.expire_error {
                     count_error(class, "reconcile");
@@ -226,13 +232,18 @@ async fn reconcile_forever(
                         "expiring stale top-ups failed; the due ones were still read back"
                     );
                 }
-                if report.credited + report.mismatched + report.failed > 0 {
+                let (credited, mismatched, failed) = (
+                    report.credited + report.last.credited,
+                    report.mismatched + report.last.mismatched,
+                    report.failed + report.last.failed,
+                );
+                if credited + mismatched + failed + report.last.pending + report.expired_unread > 0
+                {
                     anstream::eprintln!(
-                        "{ACCENT}openbilling:{ACCENT:#} read back {} pending top-up(s): {} credited, {} differed, {} failed",
+                        "{ACCENT}openbilling:{ACCENT:#} read back {} pending top-up(s): {credited} credited, {mismatched} differed, {failed} failed; {} expired after a last read, {} expired unread",
                         report.total(),
-                        report.credited,
-                        report.mismatched,
-                        report.failed
+                        report.last.pending,
+                        report.expired_unread
                     );
                 }
             }

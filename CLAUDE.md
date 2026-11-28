@@ -31,7 +31,7 @@ YAML file's `vpay.token`), **proven against the stand-in only**; the gated workf
 SQL with it and credited from the recorded terms, and one that differs (owner, label, currency or amount) credits nothing, stays
 refused and is counted in `openbilling.payments.mismatches`; a succeeded payment with no recorded top-up follows
 `payments.unrecorded` (default `refuse`); `serve` reads the pending top-ups back on a timer (`reconcile:` in the configuration
-file, `openbilling.topups.reconciled`); a late record upgrades a payment a webhook refused as `unrecorded` when its terms agree, and a pending top-up older than `stop_after` becomes `expired` (still settled by a webhook, never read by the pass; `openbilling.topups.expired`). **Proven against the stand-in only**, which can change a payment after it was asked
+file, `openbilling.topups.reconciled`); a late record upgrades a payment a webhook refused as `unrecorded` when its terms agree, and a pending top-up that reaches `stop_after` is read back one last time (ANR-1473): paid, it is credited; only one still pending at the provider becomes `expired` (still settled by a webhook; `openbilling.topups.expired`; the backstop at `stop_after + last_read_for`). **Proven against the stand-in only**, which can change a payment after it was asked
 for; vpay has not been asked, and no operator procedure resolves a mismatch.
 **Slice ANR-1144** ([ADR 0005](docs/adr/0005-release-fixed-versions-image-and-chart.md)): the release pipeline:
 release-please (versions from the commits, a GitHub App token), the image (`docker/openbilling`: since 0.4.0 a static

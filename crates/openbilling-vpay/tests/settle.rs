@@ -285,6 +285,7 @@ async fn the_reconciler_and_a_webhook_credit_a_paid_top_up_once() {
         read_again_after: std::time::Duration::from_secs(3600),
         stop_after: std::time::Duration::from_secs(3600),
         batch: 100,
+        ..Default::default()
     };
     let at = ledger.now().await.unwrap();
     let hint_of = |payment: &openbilling_core::CreditId| {
@@ -345,4 +346,45 @@ async fn the_reconciler_and_a_webhook_credit_a_paid_top_up_once() {
         .unwrap();
     assert_eq!(report.credited, 1);
     assert_eq!(available(&ledger).await, 3 * f.amount().micros());
+}
+
+/// A paid top-up that never got a webhook ends credited by the pass that reaches its `stop_after`, with no operator;
+/// an unpaid one ends `expired`, and a second pass books nothing more.
+#[tokio::test]
+async fn a_paid_top_up_with_no_webhook_ends_credited_after_expiry() {
+    let Some((ledger, f)) = ready().await else {
+        return;
+    };
+    let paid = start(&ledger, &f, "k-late-paid").await;
+    let unpaid = start(&ledger, &f, "k-late-unpaid").await;
+    f.pay(&paid.payment).await;
+    let settings = ReconcileSettings {
+        pending_after: std::time::Duration::from_millis(10),
+        read_again_after: std::time::Duration::from_secs(3600),
+        stop_after: std::time::Duration::from_millis(50),
+        last_read_for: std::time::Duration::from_secs(3600),
+        batch: 100,
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+    let report = reconcile_pending(&ledger, &f.provider, &settings)
+        .await
+        .unwrap();
+    assert_eq!(report.last.credited, 1, "{report:?}");
+    assert_eq!(report.last.pending, 1, "the unpaid one expires: {report:?}");
+    assert_eq!(report.expired_unread, 0);
+    assert_eq!(available(&ledger).await, f.amount().micros());
+    let again = reconcile_pending(&ledger, &f.provider, &settings)
+        .await
+        .unwrap();
+    assert_eq!(again.total(), 0, "nothing more: {again:?}");
+    assert_eq!(available(&ledger).await, f.amount().micros(), "once");
+    // The expired one is still settled when it is paid later.
+    f.pay(&unpaid.payment).await;
+    assert!(matches!(
+        settle_payment(&ledger, &f.provider, &unpaid.payment)
+            .await
+            .unwrap(),
+        Settled::Credited(_)
+    ));
+    assert_eq!(available(&ledger).await, 2 * f.amount().micros());
 }

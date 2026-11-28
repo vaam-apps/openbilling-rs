@@ -41,11 +41,11 @@ pub enum Counter {
     /// Payments read back that differ from the top-up recorded for them (ADR 0003, amended 2026-11-28): `field` is
     /// `owner`, `label`, `currency`, `amount` or `unrecorded`. Counted once, where the ledger decides.
     PaymentMismatches,
-    /// Pending top-ups the reconciler read back: `outcome` is `credited`, `replayed`, `pending`, `not_ours`,
-    /// `canceled`, `mismatch` or `error` (a pass that panicked is an `error` too).
+    /// Pending top-ups the reconciler read back: `outcome` is `credited`, `replayed`, `pending`, `expired` (a
+    /// last read at `stop_after` still found it pending), `not_ours`, `canceled`, `mismatch` or `error` (a pass that panicked is an `error` too).
     TopUpsReconciled,
-    /// Pending top-ups moved to `expired` because they were older than the reconciler's `stop_after`: no labels. They
-    /// are still settled by a webhook or `reconcilePayment`.
+    /// Pending top-ups moved to `expired`, after a last read that found them pending, unread, or by the backstop: no
+    /// labels. They are still settled by a webhook or `reconcilePayment`.
     TopUpsExpired,
     /// Errors by class: `class` is `invalid`, `conflict`, `unavailable` or `internal`; `source` is where.
     Errors,
@@ -105,7 +105,7 @@ impl Counter {
             }
             Self::TopUpsReconciled => "Pending top-ups the reconciler read back, by outcome",
             Self::TopUpsExpired => {
-                "Pending top-ups moved to expired, no longer read by the reconciler"
+                "Pending top-ups moved to expired after a last read still found them pending (or, past the grace, unread)"
             }
             Self::Errors => "Errors by class and where they happened",
             Self::TelemetryDropped => {
@@ -224,7 +224,7 @@ pub const BUCKETS: [f64; 11] = [
 
 /// The database operations a histogram names: a closed set, so a span's `db.operation` maps into it and anything
 /// else is `other`.
-pub const DB_OPERATIONS: [&str; 26] = [
+pub const DB_OPERATIONS: [&str; 28] = [
     "now",
     "configure",
     "open_account",
@@ -250,6 +250,8 @@ pub const DB_OPERATIONS: [&str; 26] = [
     "record_top_up",
     "settle_top_up",
     "claim_pending_top_ups",
+    "claim_expiring_top_ups",
+    "expire_top_up",
     "expire_pending_top_ups",
 ];
 

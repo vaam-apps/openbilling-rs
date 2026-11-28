@@ -100,7 +100,11 @@ cases build the provider's answer themselves, as a `PaymentView`.
 | `a_canceled_top_up_is_final` | A later success is not credited |
 | `claims_respect_the_windows_and_are_disjoint` | Not before `pending_after`, not after `stop_after`, not again before `read_again_after`, never one top-up to two callers, a settled one is not claimed, the batch limit holds |
 | `a_late_record_upgrades_an_unrecorded_payment_only_when_the_terms_agree` | A payment settled before its record (`refuse`) is upgraded by a late record with the very terms and then credited once; other terms stay `TopUpConflict` |
-| `an_expired_top_up_is_not_claimed_and_is_still_settled` | `expire_stale_top_ups` moves rows older than `stop_after` to expired once; they are never claimed; a settle still credits, cancels or refuses them |
+| `an_expired_top_up_is_not_claimed_and_is_still_settled` | `expire_stale_top_ups` moves rows older than `stop_after + last_read_for` to expired once; they are never claimed; a settle still credits, cancels or refuses them |
+| `a_top_up_past_stop_after_is_claimed_once_for_a_last_read` | `claim_expiring_top_ups` takes what reached `stop_after`, once, never a younger one, never through the due claim, again only after `read_again_after`, at most a batch |
+| `a_last_read_still_pending_expires_it_and_a_late_settle_still_credits` | `expire_top_up` moves a pending, old enough top-up to expired once, not a young one; it is not claimed; a settle still credits it |
+| `expire_top_up_never_moves_a_settled_top_up` | A credited or canceled top-up answers `false`, is not claimed, and stays credited once |
+| `the_backstop_expires_unread_ones_after_last_read_for` | `expire_stale_top_ups` waits `stop_after + last_read_for` |
 | `successive_claims_cover_every_due_top_up_before_repeating` | With more due than a batch, claims take the least recently read first and cover all before any repeats |
 
 ## The payment provider suite
