@@ -11,9 +11,9 @@
 
 CREATE TABLE ob_top_up (
     payment_id     text        PRIMARY KEY,
-    idem_key       text        NOT NULL,
+    idem_key       text,
     owner          text        NOT NULL,
-    currency       text        NOT NULL REFERENCES ob_currency (code),
+    currency       text        NOT NULL,
     label          text        NOT NULL,
     amount         bigint      NOT NULL,
     created_at     timestamptz NOT NULL DEFAULT now(),
@@ -22,6 +22,10 @@ CREATE TABLE ob_top_up (
     last_read_at   timestamptz,
     CONSTRAINT ob_top_up_payment_id CHECK (ob_is_id(payment_id, 255)),
     CONSTRAINT ob_top_up_owner CHECK (ob_is_id(owner, 255)),
+    CONSTRAINT ob_top_up_currency CHECK (ob_in_alphabet(currency, 16, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789')),
+    CONSTRAINT ob_top_up_label CHECK (ob_in_alphabet(label, 64, 'abcdefghijklmnopqrstuvwxyz0123456789_-')),
+    -- Only a payment that was never asked for (an `unrecorded` one, kept so an operator can see it) has no key.
+    CONSTRAINT ob_top_up_key CHECK (idem_key IS NOT NULL OR coalesce(mismatch_field, '') = 'unrecorded'),
     CONSTRAINT ob_top_up_amount CHECK (amount > 0),
     CONSTRAINT ob_top_up_state CHECK (state IN ('pending', 'credited', 'canceled', 'mismatched')),
     CONSTRAINT ob_top_up_mismatch CHECK ((state = 'mismatched') = (mismatch_field IS NOT NULL)),
@@ -29,7 +33,9 @@ CREATE TABLE ob_top_up (
         CHECK (mismatch_field IS NULL OR mismatch_field IN ('owner', 'label', 'currency', 'amount', 'unrecorded'))
 );
 
--- What the reconciler scans: the pending ones, oldest read first.
+-- What the reconciler scans: the pending ones by creation. It serves the claim's range (`created_at` between the stop
+-- and the start of the window) and its ORDER BY at once, so a claim starts at the youngest end of the abandoned ones
+-- and never walks them (an index on the last read would put them first).
 CREATE INDEX ob_top_up_pending ON ob_top_up (created_at) WHERE state = 'pending';
 
 -- A top-up's terms never change, it is never deleted, and it leaves `pending` once, for a final state: credited,
@@ -101,15 +107,22 @@ $$;
 --   `not_ours`   no top-up, and no owner reference: not a payment of ours;
 --   `mismatch`   `o_field` says which of `owner`, `label`, `currency`, `amount` differs, or `unrecorded`. A mismatch of
 --                a recorded top-up is final: it is answered again, and never credited.
+-- `o_marked` is true only in the call that marked the top-up mismatched (the first), so a caller counts and warns
+-- once. Under `refuse` a succeeded payment with no top-up is recorded as a `mismatched` top-up of the field
+-- `unrecorded` with the values read back, so an operator can list it and it is counted once. When the values read
+-- back could not be a row (an id, a label or a currency outside its alphabet, an amount not above zero) there is
+-- nothing to keep: it answers `mismatch` with `o_marked` true on every read.
 -- The row is locked first, so a webhook and the reconciler settling at once book once. `plpgsql`: control flow.
 CREATE FUNCTION ob_settle_top_up(p_payment_id text, p_status text, p_owner text, p_currency text, p_label text,
                                  p_amount bigint, p_unrecorded text)
     RETURNS TABLE (o_outcome text, o_field text, o_account_id text, o_txn_id uuid, o_replayed boolean,
-                   o_repaid bigint, o_debt_added bigint)
+                   o_repaid bigint, o_debt_added bigint, o_marked boolean)
     LANGUAGE plpgsql AS $$
 DECLARE
-    v_top   ob_top_up%ROWTYPE;
-    v_field text;
+    v_top      ob_top_up%ROWTYPE;
+    v_field    text;
+    v_inserted boolean;
+    v_fits     boolean;
 BEGIN
     IF p_status IS NULL OR p_status NOT IN ('pending', 'succeeded', 'canceled')
        OR p_unrecorded IS NULL OR p_unrecorded NOT IN ('refuse', 'credit') THEN
@@ -119,33 +132,47 @@ BEGIN
 
     IF NOT FOUND THEN
         IF p_status = 'canceled' THEN
-            RETURN QUERY SELECT 'canceled', NULL::text, NULL::text, NULL::uuid, false, 0::bigint, 0::bigint;
+            RETURN QUERY SELECT 'canceled', NULL::text, NULL::text, NULL::uuid, false, 0::bigint, 0::bigint, false;
         ELSIF p_status = 'pending' THEN
-            RETURN QUERY SELECT 'pending', NULL::text, NULL::text, NULL::uuid, false, 0::bigint, 0::bigint;
+            RETURN QUERY SELECT 'pending', NULL::text, NULL::text, NULL::uuid, false, 0::bigint, 0::bigint, false;
         ELSIF p_owner IS NULL OR p_label IS NULL THEN
-            RETURN QUERY SELECT 'not_ours', NULL::text, NULL::text, NULL::uuid, false, 0::bigint, 0::bigint;
+            RETURN QUERY SELECT 'not_ours', NULL::text, NULL::text, NULL::uuid, false, 0::bigint, 0::bigint, false;
         ELSIF p_unrecorded = 'refuse' THEN
-            RETURN QUERY SELECT 'mismatch', 'unrecorded', NULL::text, NULL::uuid, false, 0::bigint, 0::bigint;
+            v_fits := ob_is_id(p_payment_id, 255) AND ob_is_id(p_owner, 255) AND p_amount > 0
+                      AND ob_in_alphabet(p_currency, 16, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789')
+                      AND ob_in_alphabet(p_label, 64, 'abcdefghijklmnopqrstuvwxyz0123456789_-');
+            IF v_fits THEN
+                INSERT INTO ob_top_up (payment_id, idem_key, owner, currency, label, amount, state, mismatch_field,
+                                       last_read_at)
+                    VALUES (p_payment_id, NULL, p_owner, p_currency, p_label, p_amount, 'mismatched', 'unrecorded',
+                            clock_timestamp())
+                    ON CONFLICT (payment_id) DO NOTHING
+                    RETURNING true INTO v_inserted;
+            END IF;
+            -- Another call recorded it first: it is not this call's mark.
+            RETURN QUERY SELECT 'mismatch', 'unrecorded', NULL::text, NULL::uuid, false, 0::bigint, 0::bigint,
+                                (v_inserted IS NOT NULL OR NOT v_fits);
         ELSE
             RETURN QUERY SELECT 'credited', NULL::text, c.o_account_id, c.o_txn_id, c.o_replayed, c.o_repaid,
-                                c.o_debt_added
+                                c.o_debt_added, false
                 FROM ob_credit('payment', p_payment_id, NULL, p_owner, p_currency, p_label, p_amount, NULL) c;
         END IF;
         RETURN;
     END IF;
 
     IF v_top.state = 'mismatched' THEN
-        RETURN QUERY SELECT 'mismatch', v_top.mismatch_field, NULL::text, NULL::uuid, false, 0::bigint, 0::bigint;
+        RETURN QUERY SELECT 'mismatch', v_top.mismatch_field, NULL::text, NULL::uuid, false, 0::bigint, 0::bigint,
+                            false;
         RETURN;
     END IF;
     IF v_top.state = 'canceled' THEN
-        RETURN QUERY SELECT 'canceled', NULL::text, NULL::text, NULL::uuid, false, 0::bigint, 0::bigint;
+        RETURN QUERY SELECT 'canceled', NULL::text, NULL::text, NULL::uuid, false, 0::bigint, 0::bigint, false;
         RETURN;
     END IF;
     IF v_top.state = 'credited' THEN
         -- Booked already: the credit of the recorded terms answers again as a replay.
         RETURN QUERY SELECT 'credited', NULL::text, c.o_account_id, c.o_txn_id, c.o_replayed, c.o_repaid,
-                            c.o_debt_added
+                            c.o_debt_added, false
             FROM ob_credit('payment', v_top.payment_id, NULL, v_top.owner, v_top.currency, v_top.label,
                            v_top.amount, NULL) c;
         RETURN;
@@ -153,8 +180,9 @@ BEGIN
 
     -- Pending.
     IF p_status = 'canceled' THEN
-        UPDATE ob_top_up SET state = 'canceled', last_read_at = now() WHERE payment_id = v_top.payment_id;
-        RETURN QUERY SELECT 'canceled', NULL::text, NULL::text, NULL::uuid, false, 0::bigint, 0::bigint;
+        UPDATE ob_top_up SET state = 'canceled', last_read_at = clock_timestamp()
+            WHERE payment_id = v_top.payment_id;
+        RETURN QUERY SELECT 'canceled', NULL::text, NULL::text, NULL::uuid, false, 0::bigint, 0::bigint, false;
         RETURN;
     END IF;
     v_field := CASE
@@ -164,43 +192,51 @@ BEGIN
         WHEN p_amount IS DISTINCT FROM v_top.amount THEN 'amount'
     END;
     IF v_field IS NOT NULL THEN
-        UPDATE ob_top_up SET state = 'mismatched', mismatch_field = v_field, last_read_at = now()
+        UPDATE ob_top_up SET state = 'mismatched', mismatch_field = v_field, last_read_at = clock_timestamp()
             WHERE payment_id = v_top.payment_id;
-        RETURN QUERY SELECT 'mismatch', v_field, NULL::text, NULL::uuid, false, 0::bigint, 0::bigint;
+        RETURN QUERY SELECT 'mismatch', v_field, NULL::text, NULL::uuid, false, 0::bigint, 0::bigint, true;
         RETURN;
     END IF;
     IF p_status = 'pending' THEN
-        UPDATE ob_top_up SET last_read_at = now() WHERE payment_id = v_top.payment_id;
-        RETURN QUERY SELECT 'pending', NULL::text, NULL::text, NULL::uuid, false, 0::bigint, 0::bigint;
+        UPDATE ob_top_up SET last_read_at = clock_timestamp() WHERE payment_id = v_top.payment_id;
+        RETURN QUERY SELECT 'pending', NULL::text, NULL::text, NULL::uuid, false, 0::bigint, 0::bigint, false;
         RETURN;
     END IF;
     -- Succeeded and agreeing: book the recorded terms.
     RETURN QUERY SELECT 'credited', NULL::text, c.o_account_id, c.o_txn_id, c.o_replayed, c.o_repaid,
-                        c.o_debt_added
+                        c.o_debt_added, false
         FROM ob_credit('payment', v_top.payment_id, NULL, v_top.owner, v_top.currency, v_top.label,
                        v_top.amount, NULL) c;
-    UPDATE ob_top_up SET state = 'credited', last_read_at = now() WHERE payment_id = v_top.payment_id;
+    UPDATE ob_top_up SET state = 'credited', last_read_at = clock_timestamp() WHERE payment_id = v_top.payment_id;
 END
 $$;
 
 -- Claims the pending top-ups that are due to be read back: at least `p_pending_after_micros` old and less than
 -- `p_stop_after_micros` old, and never read, or last read at least `p_read_again_micros` ago; at most `p_limit`, the
--- longest unread first. The claim is the update of `last_read_at`, committed with the statement, and the rows are taken
--- with `FOR UPDATE SKIP LOCKED`, so two callers at once never get the same top-up. Plain SQL: a SQL-standard body.
+-- oldest first. The claim is the update of `last_read_at`, committed with the statement. The rows are picked
+-- first, in a materialized CTE, with `FOR UPDATE SKIP LOCKED` under the LIMIT, so only `p_limit` rows are ever locked
+-- and two callers at once never get the same top-up. The age tests are ranges on the stored columns (sargable), and
+-- `ob_top_up_pending` serves both the range and the ORDER BY. Plain SQL: a SQL-standard body.
 CREATE FUNCTION ob_claim_pending_top_ups(p_pending_after_micros bigint, p_read_again_micros bigint,
                                          p_stop_after_micros bigint, p_limit integer)
     RETURNS TABLE (o_payment_id text)
     LANGUAGE sql
 BEGIN ATOMIC
-    UPDATE ob_top_up t SET last_read_at = now()
-    WHERE t.payment_id IN (
+    WITH picked AS MATERIALIZED (
         SELECT d.payment_id FROM ob_top_up d
         WHERE d.state = 'pending'
-          AND now() - d.created_at >= p_pending_after_micros * interval '1 microsecond'
-          AND now() - d.created_at < p_stop_after_micros * interval '1 microsecond'
-          AND (d.last_read_at IS NULL OR now() - d.last_read_at >= p_read_again_micros * interval '1 microsecond')
-        ORDER BY coalesce(d.last_read_at, d.created_at)
+          AND d.created_at <= now() - (make_interval(secs => (p_pending_after_micros / 1000000)::double precision)
+                                       + (p_pending_after_micros % 1000000) * interval '1 microsecond')
+          AND d.created_at > now() - (make_interval(secs => (p_stop_after_micros / 1000000)::double precision)
+                                      + (p_stop_after_micros % 1000000) * interval '1 microsecond')
+          AND (d.last_read_at IS NULL
+               OR d.last_read_at <= now() - (make_interval(secs => (p_read_again_micros / 1000000)::double precision)
+                                             + (p_read_again_micros % 1000000) * interval '1 microsecond'))
+        ORDER BY d.created_at
         LIMIT p_limit
         FOR UPDATE SKIP LOCKED)
+    UPDATE ob_top_up t SET last_read_at = clock_timestamp()
+    FROM picked p
+    WHERE t.payment_id = p.payment_id
     RETURNING t.payment_id;
 END;

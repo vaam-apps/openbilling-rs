@@ -6,7 +6,7 @@
 //! `VPAY_SANDBOX_WEBHOOK_SECRET` (without it the webhook case is skipped), `VPAY_SANDBOX_KEY_ID`,
 //! `VPAY_SANDBOX_TOKEN_URL`, `VPAY_SANDBOX_ASSERTION_AUDIENCE`.
 //!
-//! Three of the suite's seven cases run: a payment created once per key and read back pending, objects vpay does
+//! Three of the suite's nine cases run: a payment created once per key and read back pending, objects vpay does
 //! not know and an amount it cannot hold, and forged, stale and tampered webhooks (when the secret is given). The
 //! other four need the payer or the rail to act (`pay`, `cancel`, `refund`, a payment openbilling did not ask for),
 //! which no client of vpay can do, so they stay on the stand-in. This file is run by the gated workflow

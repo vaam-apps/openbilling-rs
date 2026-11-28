@@ -95,7 +95,7 @@ cases build the provider's answer themselves, as a `PaymentView`.
 |---|---|
 | `a_top_up_is_recorded_once_and_other_terms_conflict` | The same terms again are a replay; another amount or label is `top_up_conflict`; an account that does not exist is `unknown_account` |
 | `a_payment_that_differs_credits_nothing_and_stays_refused` | A changed owner, no owner, a changed label, currency or amount, or a pending payment that already differs: each is a mismatch naming its field, credits nothing, and is answered again even when the provider later agrees |
-| `an_unrecorded_payment_follows_the_policy` | `Refuse`: a mismatch of `unrecorded`; `Credit`: credited once from the read-back; no owner reference is not ours; pending and canceled are just that |
+| `an_unrecorded_payment_follows_the_policy` | `Refuse`: a mismatch of `unrecorded` (kept as a mismatched top-up); `Credit`: credited once from the read-back; no owner reference is not ours; pending and canceled are just that |
 | `a_succeeded_payment_credits_the_recorded_terms_once` | Eight settles at once book once, the rest are replays |
 | `a_canceled_top_up_is_final` | A later success is not credited |
 | `claims_respect_the_windows_and_are_disjoint` | Not before `pending_after`, not after `stop_after`, not again before `read_again_after`, never one top-up to two callers, a settled one is not claimed, the batch limit holds |

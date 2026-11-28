@@ -1069,8 +1069,9 @@ impl TopUpLedger for PgLedger {
     }
 
     #[tracing::instrument(name = "db.query", skip_all, fields(db.system = "postgresql", db.operation = "settle_top_up"))]
+    #[allow(clippy::type_complexity)] // one row of `ob_settle_top_up`, read once into locals
     async fn settle_top_up(&self, payment: &PaymentView) -> Result<TopUpSettled, LedgerError> {
-        let (outcome, field, account, txn, replayed, repaid, debt_added): (
+        let (outcome, field, account, txn, replayed, repaid, debt_added, marked): (
             String,
             Option<String>,
             Option<String>,
@@ -1078,8 +1079,10 @@ impl TopUpLedger for PgLedger {
             bool,
             i64,
             i64,
+            bool,
         ) = sqlx::query_as(
-            "SELECT o_outcome, o_field, o_account_id, o_txn_id::text, o_replayed, o_repaid, o_debt_added \
+            "SELECT o_outcome, o_field, o_account_id, o_txn_id::text, o_replayed, o_repaid, o_debt_added, \
+                    o_marked \
              FROM ob_settle_top_up($1, $2, $3, $4, $5, $6, $7)",
         )
         .bind(payment.id.as_str())
@@ -1109,13 +1112,17 @@ impl TopUpLedger for PgLedger {
                     .as_deref()
                     .and_then(MismatchField::from_name)
                     .ok_or_else(corrupt)?;
-                // Once, where the ledger decides: the field is a closed name, never a value.
-                global().add(Counter::PaymentMismatches, &[("field", field.as_str())], 1);
-                tracing::warn!(
-                    openbilling.mismatch.field = field.as_str(),
-                    openbilling.error.class = "conflict",
-                    "a payment read back differs from its top-up; not credited"
-                );
+                // Once, where the ledger decides: only the call that marked the top-up (`o_marked`) counts and
+                // warns, so an answer repeated for a sticky row is not a new mismatch. The field is a closed name,
+                // never a value.
+                if marked {
+                    global().add(Counter::PaymentMismatches, &[("field", field.as_str())], 1);
+                    tracing::warn!(
+                        openbilling.mismatch.field = field.as_str(),
+                        openbilling.error.class = "conflict",
+                        "a payment read back differs from its top-up; not credited"
+                    );
+                }
                 Ok(TopUpSettled::Mismatch(field))
             }
             _ => Err(corrupt()),

@@ -221,6 +221,11 @@ async fn an_altered_top_up_is_refused_with_a_conflict_and_counted() {
             .await
             .unwrap_err();
         assert!(matches!(error, SettleError::ReadBackMismatch(got) if got == field));
+        // Answered again, the mark is sticky and is not a new mismatch: the counter does not move a second time.
+        let again = settle_payment(&ledger, &f.provider, &created.payment)
+            .await
+            .unwrap_err();
+        assert!(matches!(again, SettleError::ReadBackMismatch(got) if got == field));
         assert_eq!(error.class(), ErrorClass::Conflict);
         let said = error.to_string();
         assert!(
@@ -229,7 +234,34 @@ async fn an_altered_top_up_is_refused_with_a_conflict_and_counted() {
         );
     }
     assert_eq!(available(&ledger).await, 0, "nothing was credited");
-    assert_eq!(mismatches("amount"), before + 1);
+    assert_eq!(
+        mismatches("amount"),
+        before + 1,
+        "settled twice, counted once"
+    );
+}
+
+/// A succeeded payment nobody recorded, under the default `refuse`: refused every time it is read, counted once.
+#[tokio::test]
+async fn an_unrecorded_payment_is_refused_each_time_and_counted_once() {
+    let Some((ledger, f)) = ready().await else {
+        return;
+    };
+    let before = mismatches("unrecorded");
+    let asked = request(&f, "k-unrecorded", f.amount());
+    let created = f.provider.create_payment(&asked).await.unwrap();
+    f.pay(&created.payment).await;
+    for _ in 0..3 {
+        let error = settle_payment(&ledger, &f.provider, &created.payment)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            SettleError::ReadBackMismatch(MismatchField::Unrecorded)
+        ));
+    }
+    assert_eq!(available(&ledger).await, 0);
+    assert_eq!(mismatches("unrecorded"), before + 1);
 }
 
 /// A paid top-up whose webhook never came is credited once by the reconciler, and a webhook racing it books nothing
@@ -261,7 +293,18 @@ async fn the_reconciler_credits_a_paid_top_up_once_while_a_webhook_races() {
         settle_hint(&ledger, &f.provider, &hint),
     );
     let report = report.unwrap();
-    assert!(matches!(hooked.unwrap(), Settled::Credited(_)));
+    let Settled::Credited(webhook) = hooked.unwrap() else {
+        panic!("the webhook answers credited")
+    };
+    // Whoever locked the row first booked it; the other found it booked. Exactly one credit and one replay, whichever won.
+    let booked = u32::from(!webhook.replayed) + report.credited;
+    let replays = u32::from(webhook.replayed) + report.replayed;
+    assert_eq!(
+        (booked, replays),
+        (1, 1),
+        "one credit and one replay, report {report:?}, webhook replayed {}",
+        webhook.replayed
+    );
     assert_eq!(
         (
             report.pending,
