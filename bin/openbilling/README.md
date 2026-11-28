@@ -31,12 +31,13 @@ allowed:
   member_cap: at_or_above   # refuse when the member's usage this month >= cap; above; never
 retention:
   margin: 90d               # drop a day's usage partition this long after the intake window (7 days); 1d to 3650d
+  timeout: 5m               # the longest a retention run waits for a lock or runs a statement; 1s to 1h
 ```
 
 `retention.margin` is how long a day's usage partition outlives the intake window before `serve` detaches and drops it
 (the owner's decision of 2026-11-28, ADR 0001, amended, G1 to G5: "drop after W plus a margin, default 90 days,
 configurable"); it is written as digits and a `d`, and anything else, `0d`, `3651d`, `90` or `1.5d` included, stops
-`serve` at start. The job has no interval of its own: it runs once at start and then hourly, with the job that makes
+`serve` at start (no leading zero: `010d` is refused). `timeout` is the `lock_timeout` and `statement_timeout` of the job's connection, because a detach waits for every transaction on the table; a run that times out is logged and retried at the next hour. The job has no interval of its own: it runs in the background, at once and then hourly (so the service never waits for it to listen), with the job that makes
 partitions ahead, and two instances take turns through an advisory lock. It logs how many partitions it dropped, never
 their names, and counts them in `openbilling.partitions.dropped`. A failure of the job is logged by class and counted
 in `openbilling.errors` (`source=retention`); it does not stop the service.

@@ -96,8 +96,14 @@ async fn drain_forever(ledger: PgLedger) {
 /// the store's job takes an advisory lock, so on several instances one runs and the others do nothing. Only counts
 /// are logged.
 async fn partitions_forever(ledger: PgLedger) {
+    // The first pass runs at once, in the background: a detach waits for every transaction on the table, and the
+    // service must not wait for it to listen (a rolling restart would never become ready).
+    let mut first = true;
     loop {
-        tokio::time::sleep(PARTITIONS_EVERY).await;
+        if !first {
+            tokio::time::sleep(PARTITIONS_EVERY).await;
+        }
+        first = false;
         let pass = tracing::info_span!("partitions.run");
         if let Err(error) = ledger.prepare_partitions().instrument(pass).await {
             count_error(error.class(), "partitions");
@@ -225,6 +231,7 @@ async fn run(settings: Settings) -> Result<()> {
         &store,
         LedgerSettings {
             retention_margin: settings.retention_margin,
+            retention_timeout: settings.retention_timeout,
             ..LedgerSettings::default()
         },
     );
@@ -232,22 +239,6 @@ async fn run(settings: Settings) -> Result<()> {
         .prepare_partitions()
         .await
         .context("preparing partitions")?;
-    // Once at start too, so a restarted service does not wait an hour for the first drop. A failure is not fatal:
-    // the hourly job tries again.
-    match ledger.run_retention().await {
-        Ok(first) if !first.dropped.is_empty() => anstream::eprintln!(
-            "{ACCENT}openbilling:{ACCENT:#} dropped {} expired usage partition(s)",
-            first.dropped.len()
-        ),
-        Ok(_) => {}
-        Err(error) => {
-            count_error(error.class(), "retention");
-            anstream::eprintln!(
-                "{WARN}openbilling:{WARN:#} dropping expired partitions failed ({})",
-                error.class()
-            );
-        }
-    }
     prepare(store.pool())
         .await
         .map_err(|_| anyhow::anyhow!("creating CrateStack's idempotency table failed"))?;

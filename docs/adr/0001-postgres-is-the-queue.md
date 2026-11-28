@@ -30,7 +30,7 @@ below is updated to A1.
 | B5 | **The balance row is updated once per event, not once per batch**: each event's draw depends on what the one before it left. Updating once per batch is left open, with the busy-account question below | 22 |
 | B6 | **The limit is a debt limit** per owner and currency, none by default: a debit is refused `limit` when the debt it leaves would pass it, or would pass the largest amount | 23 |
 | B7 | **The drain claims an event id before it takes any balance lock**: it inserts the id's outcome as `pending`, in id order, then locks balances in (owner, currency) order, then decides. A drain waiting on an id holds no balance lock, so drains cannot deadlock on a reused id. A constraint trigger refuses a commit that leaves an outcome pending | 13, 14, 15 |
-| B8 | **Detaching and dropping old partitions was not built in this slice**; creating them ahead is (`ob_prepare_partitions`). *Amended 2026-11-28 (G1 to G5): built, by the owner's decision, see below* | 10 |
+| B8 | **Detaching and dropping old partitions is not built yet**; creating them ahead is (`ob_prepare_partitions`) | 10 |
 
 *Amended 2026-11-27 (the price book, slice 3):* [ADR 0004](0004-a-versioned-price-book-in-sql.md) builds rating.
 What it changes here:
@@ -69,7 +69,7 @@ and F2):
 | F4 | **The file holds policy, the environment secrets and endpoints.** No setting is read from both, so neither overrides the other; an unknown key or value is refused at start, and with no file every check is `at_or_above`. The chart renders its `openbilling.config` value into a ConfigMap, mounted and named by `OPENBILLING_CONFIG`, and refuses what the binary would | — |
 
 
-*Amended 2026-11-28 (partition retention, B8 built):* the owner's decision of that day, in their words: **"Drop after
+*Amended 2026-11-28 (partition retention; B8, above, is built by this):* the owner's decision of that day, in their words: **"Drop after
 W plus a margin, default 90 days, configurable."** W is the intake window of point 8 (default 7 days). The margin is a
 business value, so it is configuration behind a port with a documented default, never a constant. Built by the
 migration `20261128000001_partition_retention.sql`, the port `PartitionRetention` and `openbilling serve`. What it
@@ -81,7 +81,7 @@ changes:
 | G2 | **The first condition of point 10 is this one**: "intake has refused every event of that day for at least one full day" is now "the day is older than `W + margin`". The margin is kept so that a long margin also keeps the rows for audit and support; the replay guarantee needs only the grace day, because outcomes are kept for good (point 14) | 9, 10 |
 | G3 | **The second condition holds in SQL**: a partition holding an event still `received`, a row on or after the cutoff, or whose day has an outcome still `pending`, is never listed, never dropped, and refused by the function that drops (`OB904`) | 10, 29 |
 | G4 | **`DETACH PARTITION … CONCURRENTLY` cannot run in a transaction block, a function or a procedure** (*verified 2026-11-28* against PostgreSQL 19.0: "cannot run inside a transaction block", "cannot be executed from a function or procedure"; the 19 documentation of `ALTER TABLE` names the restriction). So the job is three SQL calls on one connection: `ob_expired_partitions` decides and returns the statement, the store runs that statement as a top-level command, and `ob_drop_partition` checks again and drops. A run cut short leaves a detached table or a partition marked pending-detach (`DETACH … FINALIZE`), which the next run finishes; every step is safe to repeat | 10 |
-| G5 | **One run at a time, on any number of instances**: a session-level advisory lock (`ob_retention_try_lock`), because the detach cannot be inside the transaction that would hold a transaction-level one. A run that does not get it does nothing and says so. The connection is closed after the run, so the lock cannot outlive it. `serve` runs the job once at start and then hourly, after preparing partitions; it logs counts only and counts the partitions dropped in `openbilling.partitions.dropped` | 10, 27 |
+| G5 | **One run at a time, on any number of instances**: a session-level advisory lock (`ob_retention_try_lock`), because the detach cannot be inside the transaction that would hold a transaction-level one. A run that does not get it does nothing and says so. The connection is closed after the run, so the lock cannot outlive it. A detach waits for every transaction that holds a lock on the table, so the connection has a `lock_timeout` and `statement_timeout` (`retention.timeout`, default 5 minutes). PostgreSQL also refuses a second detach while another partition is pending-detach (*verified 2026-11-28*, 19.0), so the plan lists pending partitions first as `finalize`, and one partition failing does not stop the others. The cutoff is pure date arithmetic on the UTC day, never an interval on a timestamp, so the session's TimeZone cannot move it. `serve` runs the job in the background, at once and then hourly, after preparing partitions (the service never waits for it to listen); it logs counts only and counts the partitions dropped in `openbilling.partitions.dropped` | 10, 27 |
 
 ## Summary
 

@@ -386,3 +386,180 @@ async fn the_drop_function_refuses_what_is_not_droppable() {
             .contains(&"ob_usage_event_20200101".to_owned())
     );
 }
+
+/// The cutoff is the UTC day `window + margin` days ago whatever the session's TimeZone, around a DST change
+/// (an interval of days on a timestamptz follows the zone; date arithmetic does not).
+#[tokio::test]
+async fn the_cutoff_does_not_move_with_the_session_time_zone() {
+    let Some(fix) = fixture().await else {
+        return;
+    };
+    let mut conn = fix.pool.acquire().await.unwrap();
+    let plain: i32 = sqlx::query_scalar("SELECT ob_day(ob_retention_cutoff(7, 90))")
+        .fetch_one(&mut *conn)
+        .await
+        .unwrap();
+    let today: i32 = sqlx::query_scalar("SELECT ob_day(ob_utc_day(now()))")
+        .fetch_one(&mut *conn)
+        .await
+        .unwrap();
+    assert_eq!(plain, today - 97);
+    for zone in [
+        "UTC",
+        "America/Los_Angeles",
+        "Pacific/Auckland",
+        "Pacific/Kiritimati",
+        "Europe/Berlin",
+    ] {
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!("SET TimeZone = '{zone}'")))
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+        let cutoff: i32 = sqlx::query_scalar("SELECT ob_day(ob_retention_cutoff(7, 90))")
+            .fetch_one(&mut *conn)
+            .await
+            .unwrap();
+        assert_eq!(cutoff, plain, "{zone}");
+        // A window and a margin that span a DST change in each zone: the day count stays exact.
+        let spans: i32 = sqlx::query_scalar("SELECT ob_day(ob_retention_cutoff(200, 200))")
+            .fetch_one(&mut *conn)
+            .await
+            .unwrap();
+        assert_eq!(spans, today - 400, "{zone}");
+    }
+}
+
+/// A pending-detach partition that is not the oldest is finished first, so the others can be detached; and one
+/// partition failing (here a detach cancelled by the lock timeout) does not starve the rest.
+#[tokio::test]
+async fn a_pending_partition_that_is_not_the_oldest_is_finalized_first() {
+    let Some(fix) = fixture().await else {
+        return;
+    };
+    setup(&fix.ledger).await;
+    let window = i64::from(fix.window_days());
+    for (id, ago) in [("a", 20), ("b", 21), ("c", 22)] {
+        fix.plant(id, window + ago, Planted::Applied).await;
+    }
+    // `b` (not the oldest, which is `c`) is left pending-detach by a cancelled detach.
+    let b = format!("ob_usage_event_{}", day_text(&fix, window + 21).await);
+    let mut holder = fix.pool.begin().await.unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "LOCK TABLE {b} IN ACCESS SHARE MODE"
+    )))
+    .execute(&mut *holder)
+    .await
+    .unwrap();
+    let mut detacher = fix.pool.acquire().await.unwrap();
+    sqlx::raw_sql("SET statement_timeout = '300ms'")
+        .execute(&mut *detacher)
+        .await
+        .unwrap();
+    assert!(
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+            "ALTER TABLE ob_usage_event DETACH PARTITION {b} CONCURRENTLY"
+        )))
+        .execute(&mut *detacher)
+        .await
+        .is_err()
+    );
+    holder.rollback().await.unwrap();
+    drop(detacher);
+    // Oldest-first alone would try `c` and fail with "already pending detach": the plan puts `finalize` first.
+    let plan: Vec<(String, String)> =
+        sqlx::query_as("SELECT partition_name, action FROM ob_expired_partitions(7, 2)")
+            .fetch_all(&fix.pool)
+            .await
+            .unwrap();
+    assert_eq!(plan[0], (b.clone(), "finalize".to_owned()), "{plan:?}");
+    let report = fix.ledger.drop_expired_partitions(margin(2)).await.unwrap();
+    assert_eq!(report.dropped.len(), 3, "{report:?}");
+}
+
+/// One partition failing does not starve the others, and what was dropped before is reported by the counter.
+#[tokio::test]
+async fn a_failing_partition_does_not_stop_the_rest() {
+    let Some(store) = support::fresh_store().await else {
+        return;
+    };
+    let ledger = PgLedger::new(
+        &store,
+        LedgerSettings {
+            retention_timeout: std::time::Duration::from_millis(400),
+            ..LedgerSettings::default()
+        },
+    );
+    ledger.prepare_partitions().await.unwrap();
+    let fix = PgFixture {
+        ledger: ledger.clone(),
+        pool: store.pool().clone(),
+    };
+    setup(&ledger).await;
+    let window = i64::from(fix.window_days());
+    // `held` is the oldest, so its detach is first and hits the timeout; `skipped` would need a detach PostgreSQL
+    // refuses while `held` is pending, so it waits; `orphan` is already detached and is dropped after the failure.
+    fix.plant("held", window + 22, Planted::Applied).await;
+    fix.plant("skipped", window + 21, Planted::Applied).await;
+    fix.plant("orphan", window + 20, Planted::Applied).await;
+    let held = format!("ob_usage_event_{}", day_text(&fix, window + 22).await);
+    let skipped = format!("ob_usage_event_{}", day_text(&fix, window + 21).await);
+    let orphan = format!("ob_usage_event_{}", day_text(&fix, window + 20).await);
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+        "ALTER TABLE ob_usage_event DETACH PARTITION {orphan} CONCURRENTLY"
+    )))
+    .execute(&fix.pool)
+    .await
+    .unwrap();
+    let mut holder = fix.pool.begin().await.unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "LOCK TABLE {held} IN ACCESS SHARE MODE"
+    )))
+    .execute(&mut *holder)
+    .await
+    .unwrap();
+    let error = ledger.drop_expired_partitions(margin(2)).await.unwrap_err();
+    assert_eq!(
+        openbilling_core::Classify::class(&error),
+        openbilling_core::ErrorClass::Unavailable
+    );
+    let left = names(&fix.pool).await;
+    assert!(!left.contains(&orphan), "dropped after the failure");
+    assert!(left.contains(&held) && left.contains(&skipped));
+    holder.rollback().await.unwrap();
+    // The next run finishes `held` (pending) first, then detaches and drops `skipped`.
+    let report = ledger.drop_expired_partitions(margin(2)).await.unwrap();
+    assert_eq!(report.dropped.len(), 2, "{report:?}");
+    let left = names(&fix.pool).await;
+    assert!(!left.contains(&held) && !left.contains(&skipped));
+}
+
+/// `ob_drop_partition` refuses a table that is not an ordinary table of our shape, with `OB904`.
+#[tokio::test]
+async fn the_drop_function_refuses_a_foreign_table_and_a_wrong_shape() {
+    let Some(fix) = fixture().await else {
+        return;
+    };
+    for ddl in [
+        "CREATE TABLE ob_usage_event_20200101 (x int)",
+        "CREATE VIEW ob_usage_event_20200102 AS SELECT 1 AS x",
+        "CREATE FOREIGN DATA WRAPPER ob_w",
+    ] {
+        let _ = sqlx::raw_sql(ddl).execute(&fix.pool).await;
+    }
+    sqlx::raw_sql("CREATE SERVER ob_s FOREIGN DATA WRAPPER ob_w; CREATE FOREIGN TABLE ob_usage_event_20200103 (x int) SERVER ob_s")
+        .execute(&fix.pool)
+        .await
+        .unwrap();
+    for name in [
+        "ob_usage_event_20200101",
+        "ob_usage_event_20200102",
+        "ob_usage_event_20200103",
+    ] {
+        let error = sqlx::query_scalar::<_, i32>("SELECT ob_day(ob_drop_partition($1, 7, 2))")
+            .bind(name)
+            .fetch_one(&fix.pool)
+            .await
+            .unwrap_err();
+        assert_eq!(sqlstate(&error), "OB904", "{name}");
+    }
+}

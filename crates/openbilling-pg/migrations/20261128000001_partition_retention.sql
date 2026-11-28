@@ -34,11 +34,22 @@ BEGIN
     IF p_name !~ '^ob_usage_event_[0-9]{8}$' THEN
         RETURN NULL;
     END IF;
-    RETURN to_date(substr(p_name, 16), 'YYYYMMDD');
+    -- `make_date`, not `to_date`: the first is immutable and reads no DateStyle (*verified 2026-11-28*, PostgreSQL 19
+    -- `pg_proc.provolatile`: `make_date` `i`, `to_date` `s`).
+    RETURN make_date(substr(p_name, 16, 4)::integer, substr(p_name, 20, 2)::integer, substr(p_name, 22, 2)::integer);
 EXCEPTION WHEN datetime_field_overflow OR invalid_datetime_format THEN
     RETURN NULL;
 END
 $$;
+
+-- Whether a table has the shape of a usage partition: an ordinary table with the columns the guards read. A foreign
+-- table, a view or a table of another shape that happens to be named like a partition is not ours.
+CREATE FUNCTION ob_partition_shape_ok(p_table regclass) RETURNS boolean
+    LANGUAGE sql STABLE
+    RETURN EXISTS (SELECT 1 FROM pg_class c WHERE c.oid = p_table AND c.relkind = 'r')
+       AND (SELECT count(*) FROM pg_attribute a
+            WHERE a.attrelid = p_table AND NOT a.attisdropped
+              AND a.attname IN ('event_id', 'occurred_on', 'state', 'payload_hash')) = 4;
 
 -- Whether a partition holds what must not be dropped: an event still `received` (undecided), a row for a day on or
 -- after the cutoff (the name lied about the range), or, for its day, an outcome still `pending`. `plpgsql`: the table
@@ -56,22 +67,25 @@ END
 $$;
 
 -- The first day that must stay: a day is expired when its whole range, which ends at the start of the next day, is no
--- later than `now() - (window + margin)`. One day more than intake's own bound (point 8), which is the grace day of
--- point 10. `plpgsql`: `RAISE`.
+-- later than the start of the UTC day `window + margin` days ago. Pure date arithmetic, as intake and
+-- `ob_prepare_partitions` do: an interval of days added to a timestamptz follows the session's TimeZone and its DST.
+-- One day more than intake's own bound (point 8), which is the grace day of point 10. `plpgsql`: `RAISE`.
 CREATE FUNCTION ob_retention_cutoff(p_window_days integer, p_margin_days integer) RETURNS date
     LANGUAGE plpgsql STABLE AS $$
 BEGIN
     IF p_window_days < 1 OR p_margin_days < 0 THEN
         RAISE EXCEPTION 'the window needs a day and the margin cannot be negative' USING ERRCODE = '22023';
     END IF;
-    RETURN ob_utc_day(now() - make_interval(days => p_window_days + p_margin_days));
+    RETURN ob_utc_day(now()) - (p_window_days + p_margin_days);
 END
 $$;
 
 -- What may be removed now, oldest first, and the statement that does the next step: `detach` (an attached partition:
 -- `DETACH PARTITION … CONCURRENTLY`), `finalize` (a partition left marked pending-detach by a detach that was cut
 -- short: `DETACH PARTITION … FINALIZE`) or `drop` (already detached, no statement: `ob_drop_partition` is the step).
--- A partition that holds an undecided event or a pending outcome is never listed. A detached table is listed only if
+-- PostgreSQL refuses a second detach while another partition is pending-detach (*verified 2026-11-28*, 19.0:
+-- "already pending detach"), so every pending-detach partition is listed first as `finalize`, whatever its day: finishing
+-- a detach already begun loses nothing, and the drop is checked on its own. A partition that holds an undecided event or a pending outcome is never listed. A detached table is listed only if
 -- it is named like a partition of ours and has our columns. `plpgsql`: it loops and builds statements with `format`.
 CREATE FUNCTION ob_expired_partitions(p_window_days integer, p_margin_days integer)
     RETURNS TABLE (partition_name text, partition_day date, action text, statement text)
@@ -92,11 +106,11 @@ BEGIN
           AND c.relkind = 'r'
           AND ob_partition_day(c.relname::text) IS NOT NULL
           AND (i.inhparent IS NOT NULL
-               OR EXISTS (SELECT 1 FROM pg_attribute a
-                          WHERE a.attrelid = c.oid AND a.attname = 'payload_hash' AND NOT a.attisdropped))
-        ORDER BY 2
+               OR ob_partition_shape_ok(c.oid::regclass))
+        ORDER BY COALESCE(i.inhdetachpending, false) DESC, 2
     LOOP
-        CONTINUE WHEN r.day >= v_cutoff OR ob_partition_blocked(r.name, r.day, v_cutoff);
+        CONTINUE WHEN NOT (r.attached AND r.pending)
+                      AND (r.day >= v_cutoff OR ob_partition_blocked(r.name, r.day, v_cutoff));
         partition_name := r.name;
         partition_day := r.day;
         IF r.attached AND r.pending THEN
@@ -128,6 +142,9 @@ DECLARE
 BEGIN
     IF v_day IS NULL OR v_table IS NULL THEN
         RAISE EXCEPTION 'ob_drop_partition: not a partition of the usage queue' USING ERRCODE = 'OB904';
+    END IF;
+    IF NOT ob_partition_shape_ok(v_table) THEN
+        RAISE EXCEPTION 'ob_drop_partition: not a table of the usage queue' USING ERRCODE = 'OB904';
     END IF;
     IF v_day >= v_cutoff THEN
         RAISE EXCEPTION 'ob_drop_partition: the day is inside the window plus the margin' USING ERRCODE = 'OB904';

@@ -100,6 +100,7 @@ async fn migrations_apply_once_and_every_function_answers() {
         "ob_open_account",
         "ob_partition_blocked",
         "ob_partition_day",
+        "ob_partition_shape_ok",
         "ob_payload_canonical",
         "ob_payload_hash",
         "ob_prepare_partitions",

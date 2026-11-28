@@ -61,17 +61,28 @@ The refusals values cannot say. Each names the value to change. Run before the c
     {{- fail "openbilling.config.retention: a map holding margin" -}}
   {{- end -}}
   {{- range $key, $_ := $retention -}}
-    {{- if ne $key "margin" -}}
-      {{- fail (printf "openbilling.config.retention.%s: not a key; the only key is margin" $key) -}}
+    {{- if not (has $key (list "margin" "timeout")) -}}
+      {{- fail (printf "openbilling.config.retention.%s: not a key; the keys are margin and timeout" $key) -}}
     {{- end -}}
   {{- end -}}
   {{- if hasKey $retention "margin" -}}
     {{- $margin := toString (get $retention "margin") -}}
-    {{- if not (regexMatch "^[0-9]{1,4}d$" $margin) -}}
+    {{- if not (regexMatch "^[1-9][0-9]{0,3}d$" $margin) -}}
       {{- fail "openbilling.config.retention.margin: a number of days written like 90d, from 1d to 3650d" -}}
     {{- end -}}
     {{- if or (lt (int (trimSuffix "d" $margin)) 1) (gt (int (trimSuffix "d" $margin)) 3650) -}}
       {{- fail "openbilling.config.retention.margin: a number of days written like 90d, from 1d to 3650d" -}}
+    {{- end -}}
+  {{- end -}}
+
+  {{- if hasKey $retention "timeout" -}}
+    {{- $timeout := toString (get $retention "timeout") -}}
+    {{- if not (regexMatch "^[1-9][0-9]{0,3}[sm]$" $timeout) -}}
+      {{- fail "openbilling.config.retention.timeout: from 1s to 1h written like 300s or 5m" -}}
+    {{- end -}}
+    {{- $secs := mul (int (trimSuffix "s" (trimSuffix "m" $timeout))) (ternary 60 1 (hasSuffix "m" $timeout)) -}}
+    {{- if gt $secs 3600 -}}
+      {{- fail "openbilling.config.retention.timeout: from 1s to 1h written like 300s or 5m" -}}
     {{- end -}}
   {{- end -}}
 

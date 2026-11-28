@@ -1,0 +1,5 @@
+# expect: openbilling.config.retention.timeout: from 1s to 1h written like 300s or 5m
+openbilling:
+  config:
+    retention:
+      timeout: 300

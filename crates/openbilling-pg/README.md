@@ -54,7 +54,7 @@ class `OB`; `src/sqlstate.rs` maps each one, in one table, to a refusal or an er
   for each partition the statement the plan returned (`ALTER TABLE … DETACH PARTITION … CONCURRENTLY`, or `FINALIZE` for a
   partition a cut-short detach left pending), run as a top-level command because PostgreSQL 19 refuses it in a transaction
   block, a function or a procedure (*verified 2026-11-28*), then `ob_drop_partition`. A run that stops between the steps is
-  finished by the next; the connection is closed after each run, so the session lock cannot outlive it. Outcomes are kept for
+  finished by the next; PostgreSQL refuses a second detach while another partition is pending-detach (*verified 2026-11-28*), so pending partitions are listed first as `finalize`; one partition failing does not stop the others (each drop is counted as it happens, the first failure is returned); the connection has `lock_timeout` and `statement_timeout` of `LedgerSettings::retention_timeout` (default 5 minutes), and a timeout is `unavailable`; the connection is closed after each run, so the session lock cannot outlive it. Outcomes are kept for
   good, so an id applied in a dropped partition is still refused as `id_reused`. It counts `openbilling.partitions.dropped`.
 - `PgLedger::wakeup()` returns a `Wakeup` listening on `NOTIFY_CHANNEL`; `wait(poll)` answers `Woken::Notified` or
   `Woken::Polled`. Intake notifies after it commits, at most once per interval; a notification carries no data. The

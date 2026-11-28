@@ -1,4 +1,4 @@
-# expect: openbilling.config.retention.every: not a key; the only key is margin
+# expect: openbilling.config.retention.every: not a key; the keys are margin and timeout
 openbilling:
   config:
     retention:

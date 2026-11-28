@@ -11,7 +11,7 @@
 #   3. helm lint, defaults and every accepted values file;
 #   4. helm template of each, then render-check.sh and kubeconform (strict) on the render;
 #   5. the defaults: every /v1 call refused, and the configuration file with every check at_or_above and a retention
-#      margin of 90d, mounted where
+#      margin of 90d and timeout of 5m, mounted where
 #      OPENBILLING_CONFIG says; full.yaml's file is its own;
 #   6. every refused values file is refused, with its message.
 #
@@ -121,17 +121,19 @@ expected_defaults='allowed:
   debt_limit: at_or_above
   member_cap: at_or_above
 retention:
-  margin: 90d'
+  margin: 90d
+  timeout: 5m'
 [ "$(config_of "$work/defaults.yaml")" = "$expected_defaults" ] || {
     config_of "$work/defaults.yaml" >&2
-    die "the defaults' configuration file is not every check at_or_above with a retention margin of 90d"
+    die "the defaults' configuration file is not every check at_or_above with a retention margin of 90d and timeout of 5m"
 }
 expected_full='allowed:
   balance: never
   debt_limit: above
   member_cap: at_or_above
 retention:
-  margin: 30d'
+  margin: 30d
+  timeout: 5m'
 [ "$(config_of "$work/full.yaml")" = "$expected_full" ] || {
     config_of "$work/full.yaml" >&2
     die "full.yaml's configuration file is not its own"

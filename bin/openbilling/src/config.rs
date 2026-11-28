@@ -20,6 +20,7 @@
 //!   member_cap: at_or_above   # refuse when the member's usage this month >= cap; or above; or never
 //! retention:
 //!   margin: 90d               # drop a day's usage partition this long after the intake window; 1d to 3650d
+//!   timeout: 5m               # the longest a run waits for a lock (a detach waits for every transaction on the table); 1s to 1h
 //! ```
 //!
 //! The retention job (ADR 0001, point 10, amended 2026-11-28) runs hourly with the partition job, so it has no
@@ -66,6 +67,8 @@ pub struct Settings {
     /// How long after the window a day's usage partition is dropped: the configuration file's `retention.margin`, or
     /// 90 days.
     pub retention_margin: RetentionMargin,
+    /// The longest a retention run waits for a lock or runs a statement: `retention.timeout`, or 5 minutes.
+    pub retention_timeout: Duration,
     /// OpenTelemetry, from the standard `OTEL_*` variables; `None` unless an endpoint is set.
     pub otel: Option<openbilling_telemetry::Settings>,
 }
@@ -88,22 +91,61 @@ struct File {
 #[serde(deny_unknown_fields)]
 struct RetentionFile {
     margin: Option<String>,
+    timeout: Option<String>,
+}
+
+/// A retention timeout as the file writes it: digits and `s` or `m`, one second to one hour (`300s`, `5m`).
+fn parse_timeout(text: &str) -> Option<Duration> {
+    let (digits, unit) = text.split_at(text.len().checked_sub(1)?);
+    if !digits.starts_with(|c: char| ('1'..='9').contains(&c))
+        || !digits.bytes().all(|b| b.is_ascii_digit())
+        || digits.len() > 4
+    {
+        return None;
+    }
+    let secs = digits.parse::<u64>().ok()?
+        * match unit {
+            "s" => 1,
+            "m" => 60,
+            _ => return None,
+        };
+    (1..=3600)
+        .contains(&secs)
+        .then(|| Duration::from_secs(secs))
 }
 
 /// A margin as the file writes it: digits and a `d`, one day to ten years.
 fn parse_margin(text: &str) -> Option<RetentionMargin> {
     let digits = text.strip_suffix('d')?;
-    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) || digits.len() > 5 {
+    // No leading zero: `090d` and `010d` are refused, as the chart refuses them.
+    if !digits.starts_with(|c: char| ('1'..='9').contains(&c))
+        || !digits.bytes().all(|b| b.is_ascii_digit())
+        || digits.len() > 4
+    {
         return None;
     }
     RetentionMargin::new(digits.parse().ok()?).ok()
 }
 
 /// What the configuration file holds; the defaults when it names none.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FileSettings {
     pub allowed: AllowedPolicy,
     pub retention_margin: RetentionMargin,
+    pub retention_timeout: Duration,
+}
+
+/// The longest a retention run waits for a lock or runs a statement, when the file says nothing: 5 minutes.
+pub const DEFAULT_RETENTION_TIMEOUT: Duration = Duration::from_secs(300);
+
+impl Default for FileSettings {
+    fn default() -> Self {
+        Self {
+            allowed: AllowedPolicy::default(),
+            retention_margin: RetentionMargin::default(),
+            retention_timeout: DEFAULT_RETENTION_TIMEOUT,
+        }
+    }
 }
 
 /// `allowed:`: one comparison per check of `getAllowed`, each `at_or_above` when left out.
@@ -162,6 +204,12 @@ pub fn parse_config(yaml: &str) -> Result<FileSettings> {
             "OPENBILLING_CONFIG: retention.margin is a number of days from 1 to 3650 written like 90d",
         )?,
     };
+    let retention_timeout = match file.retention.timeout {
+        None => DEFAULT_RETENTION_TIMEOUT,
+        Some(text) => parse_timeout(&text).context(
+            "OPENBILLING_CONFIG: retention.timeout is from 1s to 1h written like 300s or 5m",
+        )?,
+    };
     Ok(FileSettings {
         allowed: AllowedPolicy {
             debt_limit: file.allowed.debt_limit.into(),
@@ -169,6 +217,7 @@ pub fn parse_config(yaml: &str) -> Result<FileSettings> {
             member_cap: file.allowed.member_cap.into(),
         },
         retention_margin,
+        retention_timeout,
     })
 }
 
@@ -234,6 +283,7 @@ impl Settings {
             auth: auth(&get)?,
             allowed: file.allowed,
             retention_margin: file.retention_margin,
+            retention_timeout: file.retention_timeout,
             otel,
         })
     }
@@ -530,11 +580,38 @@ mod tests {
                 "{yaml:?}"
             );
         }
+        for (yaml, secs) in [
+            ("{}", 300),
+            ("retention:\n  timeout: 1s\n", 1),
+            ("retention:\n  timeout: 5m\n", 300),
+            ("retention:\n  timeout: 60m\n", 3600),
+            ("retention:\n  timeout: 3600s\n", 3600),
+        ] {
+            assert_eq!(
+                parse_config(yaml).unwrap().retention_timeout.as_secs(),
+                secs,
+                "{yaml:?}"
+            );
+        }
+        for bad in [
+            "retention:\n  timeout: 0s\n",
+            "retention:\n  timeout: 61m\n",
+            "retention:\n  timeout: 3601s\n",
+            "retention:\n  timeout: 05m\n",
+            "retention:\n  timeout: 5\n",
+            "retention:\n  timeout: m\n",
+            "retention:\n  timeout: 5h\n",
+            "retention:\n  timeout: \"\"\n",
+        ] {
+            assert!(parse_config(bad).is_err(), "{bad:?}");
+        }
         for bad in [
             "retention:\n  margin: 0d\n",
             "retention:\n  margin: 3651d\n",
             "retention:\n  margin: 99999d\n",
             "retention:\n  margin: 090000d\n",
+            "retention:\n  margin: 010d\n",
+            "retention:\n  margin: 09d\n",
             "retention:\n  margin: 90\n",
             "retention:\n  margin: d\n",
             "retention:\n  margin: 90D\n",
