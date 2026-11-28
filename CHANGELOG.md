@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.5.0](https://github.com/vaam-apps/openbilling-rs/compare/v0.4.0...v0.5.0) (2026-11-28)
+
+
+### Features
+
+* **pg:** detach and drop usage partitions after the window plus a margin ([#30](https://github.com/vaam-apps/openbilling-rs/issues/30)) ([eb8e8c9](https://github.com/vaam-apps/openbilling-rs/commit/eb8e8c9946866e7849be0442ce0e0cb8af08a896))
+* **vpay:** mint the vpay:v1 token in the adapter ([#29](https://github.com/vaam-apps/openbilling-rs/issues/29)) ([899658d](https://github.com/vaam-apps/openbilling-rs/commit/899658dc0190d93ab06b5be38021608396f270be))
+
+
+### Documentation
+
+* **adr:** accept 0003, 0005 and 0006 (the owner's decision of 2026-11-28) ([#28](https://github.com/vaam-apps/openbilling-rs/issues/28)) ([2461e82](https://github.com/vaam-apps/openbilling-rs/commit/2461e82e45c161e3aaddf9dbbd5af2005333408c))
+* say the release pipeline has run, and bring the agent guide and ADR status lines up to date ([#24](https://github.com/vaam-apps/openbilling-rs/issues/24)) ([929981a](https://github.com/vaam-apps/openbilling-rs/commit/929981a42672ea810b0c57fe562de54f5ac06ed6))
+
+
+### Continuous Integration
+
+* cancel stale runs on a newer push, a merge or a deleted branch ([#27](https://github.com/vaam-apps/openbilling-rs/issues/27)) ([eda6afe](https://github.com/vaam-apps/openbilling-rs/commit/eda6afe7b14190b35399fb7900b80432b3523dce))
+* install the published chart in kind and verify the image and chart signatures ([#26](https://github.com/vaam-apps/openbilling-rs/issues/26)) ([4d4cbed](https://github.com/vaam-apps/openbilling-rs/commit/4d4cbed7c33e084238373ef7c8b6221600e3f8e1))
+
 ## [0.4.0](https://github.com/vaam-apps/openbilling-rs/compare/v0.3.0...v0.4.0) (2026-11-27)
 
 
