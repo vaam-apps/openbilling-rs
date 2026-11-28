@@ -116,6 +116,44 @@ PANELS = [
         ['histogram_quantile(0.95, sum by (le, operation) (rate(db_client_operation_duration_seconds_bucket{job=~"$job"}[$__rate_interval])))'],
         unit='s', fill=10, stacking='none',
     ),
+    row('Payments', y=48),
+    stat(
+        'Payment mismatches (1 h)',
+        'Payments read back that differ from the top-up recorded for them, over the last hour. Colours are the alert thresholds.',
+        (0, 49, 6, 8),
+        ['sum((openbilling_payments_mismatches_total{job=~"$job"} unless openbilling_payments_mismatches_total{job=~"$job"} offset 1h) or increase(openbilling_payments_mismatches_total{job=~"$job"}[1h]))'],
+        unit='short', decimals=0,
+        steps=thresholds.steps('payment_mismatches'), minimum=0,
+    ),
+    timeseries(
+        'Payment mismatches by field',
+        'Increase of mismatching payments by the field that differed: owner, label, currency, amount or unrecorded.',
+        (6, 49, 18, 8),
+        ['sum by (field) (increase(openbilling_payments_mismatches_total{job=~"$job"}[$__interval]))'],
+        unit='short', fill=40, stacking='normal',
+    ),
+    timeseries(
+        'Top-ups reconciled by outcome',
+        'Pending top-ups the reconciler read back per second: credited, replayed, pending, not_ours, canceled, mismatch or error.',
+        (0, 57, 12, 8),
+        ['sum by (outcome) (rate(openbilling_topups_reconciled_total{job=~"$job"}[$__rate_interval]))'],
+        unit='ops', fill=40, stacking='normal',
+    ),
+    stat(
+        'Expired top-ups (1 h)',
+        'Pending top-ups moved to expired in the last hour. Colours are the alert thresholds.',
+        (12, 57, 6, 8),
+        ['sum((openbilling_topups_expired_total{job=~"$job"} unless openbilling_topups_expired_total{job=~"$job"} offset 1h) or increase(openbilling_topups_expired_total{job=~"$job"}[1h]))'],
+        unit='short', decimals=0,
+        steps=thresholds.steps('topups_expired'), minimum=0,
+    ),
+    timeseries(
+        'Expired top-ups over time',
+        'Increase of top-ups the reconciler stopped reading because they were older than its stop_after.',
+        (18, 57, 6, 8),
+        ['sum(increase(openbilling_topups_expired_total{job=~"$job"}[$__interval]))'],
+        unit='short', fill=10, stacking='none',
+    ),
 ]
 
 if __name__ == "__main__":

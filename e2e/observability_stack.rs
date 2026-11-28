@@ -22,21 +22,32 @@ const MEMBER: &str = "member-obs";
 /// Panels whose query is a ratio or a rate over a counter that this workload never records, so that Prometheus has
 /// no series for them and the panel shows "No data" by design (a series that has never counted does not exist,
 /// ADR 0007). Every other panel must answer with a value.
-const EXPECTED_EMPTY: [&str; 4] = [
+const EXPECTED_EMPTY: [&str; 9] = [
     "5xx ratio",
     "Drain error ratio",
     "Telemetry dropped",
     "Refused share of getAllowed",
+    // The workload makes no payment, so the payment counters never count (reconciler, mismatch, expiry).
+    "Payment mismatches (1 h)",
+    "Payment mismatches by field",
+    "Top-ups reconciled by outcome",
+    "Expired top-ups (1 h)",
+    "Expired top-ups over time",
 ];
 
 /// Metrics the dashboards query that have no series after this workload, for the same reason.
-const EXPECTED_ABSENT: [&str; 1] = ["openbilling_telemetry_dropped_total"];
+const EXPECTED_ABSENT: [&str; 4] = [
+    "openbilling_telemetry_dropped_total",
+    "openbilling_payments_mismatches_total",
+    "openbilling_topups_reconciled_total",
+    "openbilling_topups_expired_total",
+];
 
 /// What the files of `deploy/dashboards` hold today (two dashboards): the panels that have targets, and the targets.
 /// A floor, so that a test which found nothing to check cannot pass; raise it with the dashboards.
 const MIN_DASHBOARDS: usize = 2;
-const MIN_PANELS: usize = 26;
-const MIN_TARGETS: usize = 31;
+const MIN_PANELS: usize = 31;
+const MIN_TARGETS: usize = 36;
 
 struct Stack {
     http: reqwest::Client,

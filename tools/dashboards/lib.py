@@ -73,11 +73,13 @@ def timeseries(title, description, place, queries, unit, fill=10, stacking="none
     return _panel("timeseries", title, description, place, queries, field_config, options)
 
 
-def stat(title, description, place, queries, unit, steps, minimum=None):
+def stat(title, description, place, queries, unit, steps, minimum=None, decimals=None):
     """`steps` are (value, color) pairs; the first value is None (the base)."""
     defaults = {"unit": unit}
     if minimum is not None:
         defaults["min"] = minimum
+    if decimals is not None:
+        defaults["decimals"] = decimals
     defaults["thresholds"] = {
         "mode": "absolute",
         "steps": [{"color": color, "value": value} for value, color in steps],

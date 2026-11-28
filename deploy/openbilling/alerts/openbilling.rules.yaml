@@ -116,6 +116,38 @@ groups:
         annotations:
           summary: "critical: 10% of drain passes fail"
           description: "More than 10% of drain passes fail over the window. See deploy/alerts/README.md."
+      - alert: OpenbillingPaymentMismatchesWarning
+        expr: "(sum by (job) ((openbilling_payments_mismatches_total unless openbilling_payments_mismatches_total offset 1h) or increase(openbilling_payments_mismatches_total[1h]))) >= 1 and (sum by (job) ((openbilling_payments_mismatches_total unless openbilling_payments_mismatches_total offset 1h) or increase(openbilling_payments_mismatches_total[1h]))) < 10"
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "warning: 1 or more payments read back differ from their top-up in the last hour"
+          description: "At least 1 payments read back from the payment provider differ from the top-up recorded for them over the last hour (owner, label, currency or amount): read the `field` label on the payments panel, and settle each by hand. See deploy/alerts/README.md."
+      - alert: OpenbillingPaymentMismatchesCritical
+        expr: "(sum by (job) ((openbilling_payments_mismatches_total unless openbilling_payments_mismatches_total offset 1h) or increase(openbilling_payments_mismatches_total[1h]))) >= 10"
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "critical: 10 or more payments read back differ from their top-up in the last hour"
+          description: "At least 10 payments read back from the payment provider differ from the top-up recorded for them over the last hour (owner, label, currency or amount): read the `field` label on the payments panel, and settle each by hand. See deploy/alerts/README.md."
+      - alert: OpenbillingTopUpsExpiredWarning
+        expr: "(sum by (job) ((openbilling_topups_expired_total unless openbilling_topups_expired_total offset 1h) or increase(openbilling_topups_expired_total[1h]))) >= 5 and (sum by (job) ((openbilling_topups_expired_total unless openbilling_topups_expired_total offset 1h) or increase(openbilling_topups_expired_total[1h]))) < 50"
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "warning: 5 or more pending top-ups expired in the last hour"
+          description: "At least 5 pending top-ups were older than the reconciler's stop_after over the last hour and are no longer read back: webhooks may be lost. A late webhook or reconcilePayment still settles them. See deploy/alerts/README.md."
+      - alert: OpenbillingTopUpsExpiredCritical
+        expr: "(sum by (job) ((openbilling_topups_expired_total unless openbilling_topups_expired_total offset 1h) or increase(openbilling_topups_expired_total[1h]))) >= 50"
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "critical: 50 or more pending top-ups expired in the last hour"
+          description: "At least 50 pending top-ups were older than the reconciler's stop_after over the last hour and are no longer read back: webhooks may be lost. A late webhook or reconcilePayment still settles them. See deploy/alerts/README.md."
       - alert: OpenbillingPoolSaturatedWarning
         expr: "(sum by (job) (db_client_connection_count{state=\"used\"}) / sum by (job) (db_client_connection_max)) >= 0.7 and (sum by (job) (db_client_connection_count{state=\"used\"}) / sum by (job) (db_client_connection_max)) < 0.9"
         for: 10m
