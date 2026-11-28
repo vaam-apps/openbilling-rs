@@ -32,7 +32,9 @@ SQL with it and credited from the recorded terms, and one that differs (owner, l
 refused and is counted in `openbilling.payments.mismatches`; a succeeded payment with no recorded top-up follows
 `payments.unrecorded` (default `refuse`); `serve` reads the pending top-ups back on a timer (`reconcile:` in the configuration
 file, `openbilling.topups.reconciled`); a late record upgrades a payment a webhook refused as `unrecorded` when its terms agree, and a pending top-up that reaches `stop_after` is read back one last time (ANR-1473): paid, it is credited; only one still pending at the provider (or one it says does not exist) becomes `expired`; any other failed read leaves it pending (still settled by a webhook; `openbilling.topups.expired`; the backstop at `stop_after + last_read_for`). **Proven against the stand-in only**, which can change a payment after it was asked
-for; vpay has not been asked, and no operator procedure resolves a mismatch.
+for; vpay has not been asked. **ANR-1474** (ADR 0003 amended 2026-11-28): the operator's `resolveTopUp` closes a mismatched top-up once, by
+`credit_recorded` (the recorded terms through `ob_credit`) or `dismiss`, recorded with who decided (`ob_top_up.resolved_by`, never logged); a mismatch no top-up was
+recorded for can only be dismissed; counted in `openbilling.topups.resolved`.
 **Slice ANR-1144** ([ADR 0005](docs/adr/0005-release-fixed-versions-image-and-chart.md)): the release pipeline:
 release-please (versions from the commits, a GitHub App token), the image (`docker/openbilling`: since 0.4.0 a static
 musl binary on `distroless/static`, [ADR 0006](docs/adr/0006-a-static-musl-binary-on-distroless-static.md); a smoke

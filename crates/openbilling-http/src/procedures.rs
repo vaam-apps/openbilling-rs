@@ -11,15 +11,15 @@ use cratestack::{BigInt, CratestackContext, CratestackError};
 use openbilling_core::{
     AccountId, AccountLabel, AllowedPolicy, Amount, CreditId, CreditSource, CreditTarget, Credited,
     CurrencyCode, IdempotencyKey, LedgerConfig, LotKind as CoreLotKind, LotOrder, MemberId,
-    NewAccount, OwnerId, PaymentProvider, PaymentRequest, PaymentTarget, PriceBook, ReturnUrls,
-    Settled, TopUp, TopUpLedger, WithinKind, settle_payment, settle_refund,
+    NewAccount, OwnerId, PaymentProvider, PaymentRequest, PaymentTarget, PriceBook, Resolution,
+    ReturnUrls, Settled, TopUp, TopUpLedger, WithinKind, settle_payment, settle_refund,
 };
 use openbilling_core::{LedgerError, Refusal, Rule};
 
 use crate::errors::{invalid, ledger, payment, settle};
 use crate::generated::cratestack_schema::{
     AccountOpened, Cratestack, CreditBooked, Done, LotKind, OperatorCreditSource, PriceListLoaded,
-    Settlement, TopUpStarted, procedures, queries,
+    Settlement, TopUpResolution, TopUpResolved, TopUpStarted, procedures, queries,
 };
 use crate::intake;
 use crate::time::{date_time, timestamp};
@@ -488,6 +488,45 @@ where
             .await
             .map_err(|e| settle(&e))?;
         Ok(settlement(&settled))
+    }
+
+    async fn resolve_top_up(
+        &self,
+        _db: &Cratestack,
+        ctx: &CratestackContext,
+        args: procedures::resolve_top_up::Args,
+        _authorized: procedures::resolve_top_up::Authorized,
+    ) -> Result<procedures::resolve_top_up::Output, CratestackError> {
+        let payment =
+            CreditId::new(args.args.payment.as_str()).map_err(|e| invalid("payment", &e))?;
+        let resolution = match args.args.outcome {
+            TopUpResolution::credit_recorded => Resolution::CreditRecorded,
+            TopUpResolution::dismiss => Resolution::Dismiss,
+        };
+        // Who decided is the caller's verified subject; a token without one cannot resolve.
+        let Some(subject) = ctx.subject() else {
+            return Err(crate::errors::of_class(
+                openbilling_core::ErrorClass::Invalid,
+                "subject: the token carries no subject to record".to_owned(),
+            ));
+        };
+        let by = OwnerId::new(subject.as_ref()).map_err(|e| invalid("subject", &e))?;
+        let resolved = self
+            .0
+            .ledger
+            .resolve_top_up(&payment, resolution, &by)
+            .await
+            .map_err(|e| ledger(&e))?;
+        Ok(TopUpResolved {
+            outcome: resolved.resolution.as_str().to_owned(),
+            field: resolved.field.as_str().to_owned(),
+            accountId: resolved
+                .credited
+                .as_ref()
+                .map(|c| c.account.as_str().to_owned()),
+            transaction: resolved.credited.as_ref().map(|c| c.transaction.clone()),
+            replayed: resolved.replayed,
+        })
     }
 
     async fn reconcile_refund(
