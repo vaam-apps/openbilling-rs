@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.7.0](https://github.com/vaam-apps/openbilling-rs/compare/v0.6.0...v0.7.0) (2026-11-28)
+
+
+### Features
+
+* **sdk:** add openbilling-sdk, a Rust client generated from the API schema, published to crates.io on a release ([#42](https://github.com/vaam-apps/openbilling-rs/issues/42)) ([0f975fa](https://github.com/vaam-apps/openbilling-rs/commit/0f975fa7e298541ee17c72c4cc72313497138493))
+
+
+### Bug Fixes
+
+* **sdk:** inherit dependencies, package the licence, bound error text, split the publish job ([#43](https://github.com/vaam-apps/openbilling-rs/issues/43)) ([61843a6](https://github.com/vaam-apps/openbilling-rs/commit/61843a6d711048a519a29d3bde1cb1022d9ce090))
+
+
+### Documentation
+
+* a two-column status table in the README, the full table in docs/features.md ([#39](https://github.com/vaam-apps/openbilling-rs/issues/39)) ([07295c7](https://github.com/vaam-apps/openbilling-rs/commit/07295c739f6b6401d6aa9f134f1ce15741f11aa6))
+
+
+### Tests
+
+* a script to try a published release in k3d ([#41](https://github.com/vaam-apps/openbilling-rs/issues/41)) ([3bb93b5](https://github.com/vaam-apps/openbilling-rs/commit/3bb93b50cd99e8f56fed0ef2f1512d29a63277c9))
+
 ## [0.6.0](https://github.com/vaam-apps/openbilling-rs/compare/v0.5.0...v0.6.0) (2026-11-28)
 
 
