@@ -24,7 +24,7 @@ and the probes.
 | `POST /v1/$procs/recordRawUsage` | `producer`, `operator` | `ob_intake` through `PriceBook::intake_raw`: raw events (a meter, a quantity, dimensions as `{key, value}` pairs, each key once), rated at intake by the version in force at their time |
 | `POST /v1/$procs/setDebtLimit`, `setMemberCap` | `operator` | `ob_set_debt_limit`, `ob_set_member_cap`; no amount removes it |
 | `POST /v1/$procs/loadPriceList` | `operator` | `ob_load_price_list`: a YAML price list (ADR 0004) as a new version, or the one already loaded with that content (`replayed`) |
-| `POST /v1/$procs/startTopUp` | the owner, `operator` | Asks the payment provider for a payment and its checkout, and records the top-up (owner, label, currency, amount) before answering: what the provider reports back is compared with it. A failure to record is the ledger's error and the caller retries with the same key |
+| `POST /v1/$procs/startTopUp` | the owner, `operator` | Checks the account exists first (`unknown_account`, nothing is asked of the provider), then asks the payment provider for a payment and its checkout, and records the top-up (owner, label, currency, amount) before answering: what the provider reports back is compared with it. A failure to record is the ledger's error and the caller retries with the same key |
 | `POST /v1/$procs/reconcilePayment`, `reconcileRefund` | `operator` | Reads a payment or a refund back and books it if it succeeded; a payment that differs from its top-up is `409` `read_back_mismatch`, naming the field and no value |
 | `POST /webhooks/payments` | the provider, by its signature | Verifies, reads back, books (`ob_credit` or `ob_reverse`) |
 | `GET /healthz`, `GET /readyz` | anyone | The process answers; the database answers |

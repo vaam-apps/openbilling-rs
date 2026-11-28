@@ -14,6 +14,7 @@ use openbilling_core::{
     NewAccount, OwnerId, PaymentProvider, PaymentRequest, PaymentTarget, PriceBook, ReturnUrls,
     Settled, TopUp, TopUpLedger, WithinKind, settle_payment, settle_refund,
 };
+use openbilling_core::{LedgerError, Refusal, Rule};
 
 use crate::errors::{invalid, ledger, payment, settle};
 use crate::generated::cratestack_schema::{
@@ -434,6 +435,20 @@ where
                 cancel: args.cancelUrl,
             },
         };
+        // The account is checked before the provider is asked, so a typo in the owner or the label leaves no payment
+        // intent at the provider. The record below checks it again (in SQL, in the commit that records it).
+        let at = self.0.ledger.now().await.map_err(|e| ledger(&e))?;
+        let balance = self
+            .0
+            .ledger
+            .balance(&request.to.owner, &request.currency, at)
+            .await
+            .map_err(|e| ledger(&e))?;
+        if !balance.accounts.iter().any(|a| a.label == request.to.label) {
+            return Err(ledger(&LedgerError::Refused(Refusal::new(
+                Rule::UnknownAccount,
+            ))));
+        }
         let created = provider
             .create_payment(&request)
             .await
