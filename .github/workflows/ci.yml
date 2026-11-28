@@ -129,7 +129,13 @@ jobs:
           git diff --exit-code -- deploy tools/dashboards/tests
           test -z "$(git status --porcelain -- deploy tools/dashboards/tests)" || { git status --porcelain -- deploy tools/dashboards/tests; echo "::error::deploy/ or tools/dashboards/tests/ differs from what tools/dashboards/ generates: run sh tools/dashboards/generate.sh and commit"; exit 1; }
       # promtool is taken from the pinned Prometheus image (tools/observability/versions.env), by digest, with no
-      # container runtime: fetch.py reads the registry and checks every layer's sha256.
+      # container runtime: fetch.py reads the registry and checks every layer's sha256 (on a cache miss).
+      # Cached by the pins, as observability.yml does: on a hit fetch.py reads no registry (it re-hashes the file against
+      # the digest recorded beside it), so a Docker Hub outage does not fail this job.
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/prometheus
+          key: promtool-${{ hashFiles('tools/observability/versions.env') }}
       - name: Fetch promtool
         run: |
           . tools/observability/versions.env

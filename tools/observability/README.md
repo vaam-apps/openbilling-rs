@@ -28,7 +28,11 @@ sh tools/observability/run.sh
 ```
 
 The first run fetches about 700 MB (Grafana's tarball is 485 MB) into `OBS_CACHE` (default
-`~/.cache/openbilling-observability`); later runs reuse it. Ports are `OBS_OTLP_PORT` 4318, `OBS_EXPORTER_PORT` 8889,
+`~/.cache/openbilling-observability`); later runs reuse it, after re-hashing: each extracted binary against the digest
+recorded beside it (`<file>.sha256`), the Grafana tarball against its pin, and the extracted Grafana against a stamp
+of that tarball's digest (a mismatch fetches or extracts again; a cache hit reads no registry). The script refuses to
+start when something already answers on one of its ports, fails at once when a server dies, and builds the test
+binary before starting the stack. Ports are `OBS_OTLP_PORT` 4318, `OBS_EXPORTER_PORT` 8889,
 `OBS_PROMETHEUS_PORT` 9090 and `OBS_GRAFANA_PORT` 3000: set others when those are taken. On a failure the script prints
 the tail of each component's log. `.github/workflows/observability.yml` runs this same script.
 
@@ -44,7 +48,8 @@ the tail of each component's log. `.github/workflows/observability.yml` runs thi
 
 [`fetch.py`](fetch.py) (standard library) reads the registry's v2 API: the index must hash to the pinned digest, then
 the linux/amd64 manifest and each layer are checked by sha256, and only the named files are extracted (`tarfile`
-filter `data`). Move a pin by reading the new digest from the registry, editing `versions.env` and marking it
+filter `data`; each file is written to `<name>.part` and renamed). A layer that is zstd needs Python 3.14 and is
+refused clearly otherwise. Move a pin by reading the new digest from the registry, editing `versions.env` and marking it
 *verified* with the date. promtool, used by CI's dashboards job, comes from the same Prometheus pin.
 
 ## Files

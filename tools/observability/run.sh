@@ -32,12 +32,18 @@ python3 -I "$here/fetch.py" image "$OTELCOL_REPO" "$OTELCOL_DIGEST" "$otelcol_di
 python3 -I "$here/fetch.py" image "$PROMETHEUS_REPO" "$PROMETHEUS_DIGEST" "$prom_dir" bin/prometheus bin/promtool
 python3 -I "$here/fetch.py" url "https://dl.grafana.com/oss/release/grafana-$GRAFANA_VERSION.linux-amd64.tar.gz" \
   "$GRAFANA_SHA256" "$grafana_tar"
-if [ ! -x "$grafana_dir/bin/grafana" ]; then
-  rm -rf "$grafana_dir.part"
+# The extracted tree carries the sha256 of the tarball it came from; any other stamp (or none) extracts it again.
+if [ ! -x "$grafana_dir/bin/grafana" ] || [ "$(cat "$grafana_dir/.tarball-sha256" 2>/dev/null)" != "$GRAFANA_SHA256" ]; then
+  rm -rf "$grafana_dir.part" "$grafana_dir"
   mkdir -p "$grafana_dir.part"
   tar -xzf "$grafana_tar" -C "$grafana_dir.part" --strip-components=1
+  printf '%s\n' "$GRAFANA_SHA256" >"$grafana_dir.part/.tarball-sha256"
   mv "$grafana_dir.part" "$grafana_dir"
 fi
+
+# Build the test binary now, so that no server idles (or times out) while cargo compiles.
+cd "$root"
+cargo test -p openbilling --locked --test e2e --no-run
 
 work=$(mktemp -d)
 pids=""
@@ -45,7 +51,13 @@ cleanup() {
   status=$?
   trap - EXIT INT TERM
   for pid in $pids; do kill "$pid" 2>/dev/null || true; done
-  for pid in $pids; do wait "$pid" 2>/dev/null || true; done
+  # Bounded: give each server 10 s to stop on TERM, then KILL it.
+  for pid in $pids; do
+    n=0
+    while kill -0 "$pid" 2>/dev/null && [ "$n" -lt 20 ]; do n=$((n + 1)); sleep 0.5; done
+    kill -9 "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+  done
   for log in otelcol prometheus grafana; do
     if [ "$status" -ne 0 ] && [ -f "$work/$log.log" ]; then
       echo "----- $log.log (last 60 lines) -----"
@@ -57,20 +69,35 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-wait_for() { # name url
+# Refuses to start a server on a port where something already answers: a foreign server would be tested instead.
+port_free() { # name port
+  if curl -s --noproxy '*' --max-time 2 -o /dev/null "http://127.0.0.1:$2/"; then
+    echo "port $2 ($1) already answers: stop what runs there or set OBS_*_PORT" >&2
+    exit 1
+  fi
+}
+
+wait_for() { # name url pid
   i=0
   until curl -sf --noproxy '*' -o /dev/null "$2"; do
+    if ! kill -0 "$3" 2>/dev/null; then echo "$1: the process $3 exited before it was ready" >&2; exit 1; fi
     i=$((i + 1))
     if [ "$i" -gt 120 ]; then echo "$1 was not ready at $2 in 60 s" >&2; exit 1; fi
     sleep 0.5
   done
 }
 
+port_free "the Collector's OTLP receiver" "$otlp_port"
+port_free "the Collector's exporter" "$exporter_port"
+port_free Prometheus "$prom_port"
+port_free Grafana "$grafana_port"
+
 # The Collector.
 sed "s/127.0.0.1:4318/127.0.0.1:$otlp_port/; s/127.0.0.1:8889/127.0.0.1:$exporter_port/" "$here/otelcol.yaml" >"$work/otelcol.yaml"
 "$otelcol_dir/otelcol-contrib" --config "$work/otelcol.yaml" >"$work/otelcol.log" 2>&1 &
-pids="$pids $!"
-wait_for "the Collector's exporter" "http://127.0.0.1:$exporter_port/metrics"
+pid=$!
+pids="$pids $pid"
+wait_for "the Collector's exporter" "http://127.0.0.1:$exporter_port/metrics" "$pid"
 
 # Prometheus, with the shipped alert rules.
 sed "s#@RULES@#$root/deploy/alerts/openbilling.rules.yaml#; s/127.0.0.1:8889/127.0.0.1:$exporter_port/" \
@@ -78,8 +105,9 @@ sed "s#@RULES@#$root/deploy/alerts/openbilling.rules.yaml#; s/127.0.0.1:8889/127
 "$prom_dir/promtool" check config "$work/prometheus.yaml"
 "$prom_dir/prometheus" --config.file="$work/prometheus.yaml" --storage.tsdb.path="$work/tsdb" \
   --web.listen-address="127.0.0.1:$prom_port" >"$work/prometheus.log" 2>&1 &
-pids="$pids $!"
-wait_for Prometheus "http://127.0.0.1:$prom_port/-/ready"
+pid=$!
+pids="$pids $pid"
+wait_for Prometheus "http://127.0.0.1:$prom_port/-/ready" "$pid"
 
 # Grafana, provisioned with the datasource and the dashboards exactly as deploy/dashboards/ holds them.
 mkdir -p "$work/provisioning/datasources" "$work/provisioning/dashboards" "$work/grafana/data" "$work/grafana/logs"
@@ -94,8 +122,9 @@ GF_SECURITY_ADMIN_USER=admin GF_SECURITY_ADMIN_PASSWORD="$password" GF_ANALYTICS
 GF_ANALYTICS_CHECK_FOR_UPDATES=false GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES=false \
 GF_PLUGINS_PREINSTALL_DISABLED=true GF_NEWS_NEWS_FEED_ENABLED=false GF_LOG_MODE=console \
   "$grafana_dir/bin/grafana" server --homepath "$grafana_dir" >"$work/grafana.log" 2>&1 &
-pids="$pids $!"
-wait_for Grafana "http://127.0.0.1:$grafana_port/api/health"
+pid=$!
+pids="$pids $pid"
+wait_for Grafana "http://127.0.0.1:$grafana_port/api/health" "$pid"
 
 # The gated test: it skips without these two, and fails instead under OPENBILLING_OBS_REQUIRE.
 cd "$root"

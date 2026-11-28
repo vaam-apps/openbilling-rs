@@ -10,13 +10,13 @@ on:
     branches: [main]
   pull_request:
     paths:
-      - "tools/observability/**"
-      - "tools/dashboards/**"
-      - "deploy/dashboards/**"
-      - "deploy/alerts/**"
-      - "e2e/observability_stack.rs"
-      - "crates/openbilling-telemetry/**"
-      - "crates/openbilling-metrics/**"
+      - "crates/**"
+      - "bin/**"
+      - "e2e/**"
+      - "deploy/**"
+      - "tools/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
       - ".github/workflows/observability.yml"
   workflow_dispatch:
 
@@ -61,8 +61,10 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      # The Grafana tarball is about 490 MB: cache the fetched binaries, keyed by the pins (fetch.py checks digests
-      # whether or not the cache hits).
+      # The Grafana tarball is about 490 MB: cache the fetched binaries, keyed by the pins. On a hit fetch.py reads no
+      # registry: it re-hashes each extracted binary against the digest recorded beside it and the Grafana tarball
+      # against its pinned sha256 (re-fetching on a mismatch), and run.sh re-extracts Grafana when its stamp differs.
+      # On a miss it fetches and checks every layer's digest.
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ env.OBS_CACHE }}
