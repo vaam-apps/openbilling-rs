@@ -65,12 +65,22 @@ pub(crate) struct Client {
     auth: Auth,
 }
 
-/// Where a request's bearer token comes from.
-#[derive(Clone, Debug)]
+/// Where a request's bearer token comes from. `Debug` is written by hand: a derived one would print `Token`.
+#[derive(Clone)]
 enum Auth {
     Token(String),
     File(std::path::PathBuf),
     Minted(Arc<Minter>),
+}
+
+impl std::fmt::Debug for Auth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Token(_) => f.write_str("Token(<hidden>)"),
+            Self::File(path) => f.debug_tuple("File").field(path).finish(),
+            Self::Minted(minter) => f.debug_tuple("Minted").field(minter).finish(),
+        }
+    }
 }
 
 pub(crate) fn checked_base(raw: &str) -> Result<Url, ConfigError> {

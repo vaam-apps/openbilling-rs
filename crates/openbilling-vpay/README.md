@@ -46,8 +46,9 @@ two during a rotation), `webhook_tolerance_secs` (`webhook::DEFAULT_TOLERANCE_SE
 
 The feature **`stand-in`** adds `stand_in`: a stand-in for the parts of vpay's `/v1` the adapter calls, served in
 process on a loopback port, and a `ProviderFixture` for `openbilling-testkit`'s payment suite. Its `/v1/oauth/token`
-verifies a client assertion as vpay's OP does (RS256 under the registered key, `iss`, `sub`, `aud`, `exp`, a `jti`
-spent once, `audience`, `scope`), issues tokens that expire, can be told to fail (`token_fail`) or to be slow, and
+verifies a client assertion as vpay's OP does (RS256 under the registered key, `iss`, `sub`, `aud`, `exp` at most 300 s
+ahead and at most 60 s past, a `jti` spent once, a form content type, `audience`, `scope`; `stand_in::assertion` signs a
+forged one for a test), issues tokens that expire, can be told to fail (`token_fail`) or to be slow, and
 its `/v1` calls need a token it issued (or the static `TOKEN`). The registered key is a checked-in test key
 (`tests/vectors/test-client-key.pem`). It is test code; no shipping binary enables it.
 
@@ -57,7 +58,7 @@ its `/v1` calls need a token it issued (or the static `TOKEN`). The registered k
 |---|---|
 | Unit tests in `src/` (the form encoding, the signature against a vector computed with `openssl`, malformed headers, the literal `t`, the tolerance both ways, two headers, event names, unit scaling, status mapping, error classes, the base URL, configurations refused, secrets never printed) | nothing |
 | `tests/conformance.rs`: the payment conformance suite of `openbilling-testkit`, 7 cases, against the stand-in, through a minted token | nothing |
-| `tests/token.rs`: the minting: first use, one request shape, reuse, refresh before expiry, one mint under concurrent callers, a refusal and its code, retries and their bound, a replayed or tampered assertion refused, `kid`, scope, a refused token dropped, key rotation without a restart, settings refused, no secret in any error or `Debug` | nothing |
+| `tests/token.rs`: the minting: first use, one request shape, reuse, refresh before expiry, one mint under concurrent callers, a refusal and its code, retries and their bound, a replayed, tampered or over-long assertion refused as vpay's OP refuses it, a lifetime that would overflow the clock, `kid`, scope, a refused token dropped, key rotation without a restart, settings refused, no secret in any error or `Debug` | nothing |
 | `tests/sandbox.rs`: 3 of the 7 conformance cases (the ones that need no payer) against a real vpay | `VPAY_SANDBOX_*` (skips without them; fails under `VPAY_SANDBOX_REQUIRE=1`); run by `.github/workflows/vpay-sandbox.yml`, never by CI's gate |
 | `tests/requests.rs`: the exact bodies, keys and bearer the adapter sends, a key reused for another top-up, a currency not configured, the token file read on every call, vpay's faults and an unreachable vpay classed, an id escaped as a path segment | nothing |
 | `tests/settle.rs`: a paid top-up credits once however often it is settled, foreign and canceled payments book nothing, only a succeeded refund reverses and only once, a label the owner lacks is refused by the ledger | `OPENBILLING_TEST_DATABASE_URL` (skips without it; fails under `OPENBILLING_TEST_REQUIRE_DB=1`) |

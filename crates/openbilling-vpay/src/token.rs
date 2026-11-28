@@ -63,6 +63,9 @@ pub const MAX_BACKOFF: Duration = Duration::from_secs(5);
 pub const MAX_REFRESH_SKEW: Duration = Duration::from_secs(600);
 /// The most retries accepted.
 pub const MAX_RETRIES: u32 = 10;
+/// The longest token lifetime believed: vpay's is 15 minutes, and an answer that says more is not trusted past a day
+/// (it would also overflow the clock: `Instant + Duration` panics).
+const MAX_TOKEN_LIFETIME: Duration = Duration::from_secs(24 * 60 * 60);
 /// The lifetime of an assertion in seconds: vpay's default; it accepts 1 to 300.
 const ASSERTION_LIFETIME_SECS: u64 = 60;
 const ASSERTION_TYPE: &str = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer";
@@ -206,7 +209,7 @@ fn now_secs() -> u64 {
 }
 
 /// A compact RS256 JWS over `claims`.
-fn sign_jwt(
+pub(crate) fn sign_jwt(
     key: &RsaKeyPair,
     key_id: Option<&str>,
     claims: &serde_json::Value,
@@ -346,10 +349,12 @@ impl Minter {
             return Ok(cached.token.clone());
         }
         let (token, lifetime) = self.mint_with_retries().await?;
-        let skew = self.settings.refresh_skew.min(lifetime / 2);
+        let refresh_at = Instant::now()
+            .checked_add(refresh_in(lifetime, self.settings.refresh_skew))
+            .ok_or_else(|| fault(ErrorClass::Internal, Fault::Token))?;
         *cache = Some(Cached {
             token: token.clone(),
-            refresh_at: Instant::now() + (lifetime - skew),
+            refresh_at,
         });
         Ok(token)
     }
@@ -454,6 +459,12 @@ impl Minter {
     }
 }
 
+/// How long a token of `lifetime` is used: its life less the margin, which is at most half of it.
+fn refresh_in(lifetime: Duration, skew: Duration) -> Duration {
+    let lifetime = lifetime.min(MAX_TOKEN_LIFETIME);
+    lifetime - skew.min(lifetime / 2)
+}
+
 enum Attempt {
     Transient(PaymentError),
     Permanent(PaymentError),
@@ -516,6 +527,33 @@ mod tests {
         assert!(AccessToken::new("a b").is_none());
         assert!(AccessToken::new("a\nb").is_none());
         assert!(AccessToken::new("abc.def-ghi_").is_some());
+    }
+
+    #[test]
+    fn the_refresh_margin_is_at_most_half_the_life_and_a_huge_life_is_bounded() {
+        let secs = Duration::from_secs;
+        assert_eq!(refresh_in(secs(900), secs(30)), secs(870));
+        assert_eq!(refresh_in(secs(40), secs(30)), secs(20), "half, not 30");
+        assert_eq!(refresh_in(secs(1), secs(600)), Duration::from_millis(500));
+        assert_eq!(refresh_in(secs(900), secs(0)), secs(900));
+        assert_eq!(refresh_in(secs(u64::MAX), secs(0)), MAX_TOKEN_LIFETIME);
+        assert!(
+            Instant::now()
+                .checked_add(refresh_in(secs(u64::MAX), secs(0)))
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn a_token_answer_with_an_absurd_lifetime_is_read_without_panicking() {
+        let body =
+            br#"{"access_token":"t","token_type":"Bearer","expires_in":18446744073709551615}"#;
+        let (_, lifetime) = issued(body).unwrap();
+        assert!(
+            Instant::now()
+                .checked_add(refresh_in(lifetime, DEFAULT_REFRESH_SKEW))
+                .is_some()
+        );
     }
 
     #[test]

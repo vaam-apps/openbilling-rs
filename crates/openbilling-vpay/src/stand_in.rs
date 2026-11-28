@@ -188,8 +188,10 @@ fn token_error(status: u16, code: &str) -> Response {
         .into_response()
 }
 
-/// Verifies a client assertion as vpay does (`docs/flows/merchant-auth.md`): RS256 under the registered key, `iss`
-/// and `sub` the client, `aud` the OP's token endpoint or issuer, `exp` within 300 s, a `jti` spent once.
+/// Verifies a client assertion as vpay does (`docs/flows/merchant-auth.md`, and `authkestra-op` 0.13.1's
+/// `verify_client_assertion`): RS256 under the registered key, `iss` and `sub` the client, `aud` the OP's token
+/// endpoint or issuer, `exp` not more than 60 s past (the OP's clock leeway) and not more than 300 s ahead (no
+/// leeway on that bound), a `jti` spent once.
 fn verify_assertion(
     vpay: &mut Vpay,
     assertion: &str,
@@ -234,7 +236,7 @@ fn verify_assertion(
         || claims["sub"] != client_id
         || !audiences.iter().any(|a| claims["aud"] == json!(a))
         || exp + 60 < now
-        || exp > now + 300 + 60
+        || exp > now + 300
     {
         return Err("invalid_client");
     }
@@ -245,7 +247,15 @@ fn verify_assertion(
 }
 
 /// `POST /v1/oauth/token`: `client_credentials` with a `private_key_jwt`, as vpay's OP serves it.
-async fn token_endpoint(State(state): State<Shared>, body: Bytes) -> Response {
+async fn token_endpoint(State(state): State<Shared>, headers: HeaderMap, body: Bytes) -> Response {
+    // RFC 6749 §4.4.2 fixes the encoding: vpay's `RawForm` answers any other content type with a 415.
+    let form_encoded = headers
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.starts_with("application/x-www-form-urlencoded"));
+    if !form_encoded {
+        return StatusCode::UNSUPPORTED_MEDIA_TYPE.into_response();
+    }
     let delay = state.lock().unwrap().token_delay_ms;
     if delay > 0 {
         tokio::time::sleep(Duration::from_millis(delay)).await;
@@ -524,6 +534,13 @@ pub async fn start() -> StandIn {
 
 pub fn eur() -> CurrencyCode {
     CurrencyCode::new("EUR").unwrap()
+}
+
+/// A compact RS256 assertion over `claims`, signed with `key_pem`: for a test that forges one the adapter would not
+/// mint (a long life, a wrong claim) to see the stand-in refuse it as vpay's OP does.
+pub fn assertion(key_pem: &str, key_id: Option<&str>, claims: &Value) -> String {
+    let key = parse_key(key_pem).expect("a test key");
+    crate::token::sign_jwt(&key, key_id, claims).expect("a signature")
 }
 
 /// The client credentials for a stand-in: the registered client and its key, every other setting at its default.

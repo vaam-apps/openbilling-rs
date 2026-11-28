@@ -419,3 +419,132 @@ async fn no_error_or_debug_output_holds_the_key_or_a_token() {
         assert!(!text.contains("BEGIN"), "{text}");
     }
 }
+
+fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
+/// A token request for `client_assertion`, as vpay's form decoder reads it; the status it answers.
+async fn post_assertion(stand_in: &StandIn, assertion: &str, content_type: &str) -> u16 {
+    let body = format!(
+        "grant_type=client_credentials&client_id={CLIENT_ID}&audience=vpay%3Av1\
+         &client_assertion_type=urn%3Aietf%3Aparams%3Aoauth%3Aclient-assertion-type%3Ajwt-bearer\
+         &client_assertion={assertion}"
+    );
+    reqwest::Client::new()
+        .post(format!("{}/v1/oauth/token", stand_in.base_url))
+        .header("content-type", content_type)
+        .body(body)
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .as_u16()
+}
+
+#[tokio::test]
+async fn the_stand_in_refuses_an_assertion_as_vpays_op_does() {
+    let stand_in = start().await;
+    let aud = format!("{}/v1/oauth/token", stand_in.base_url);
+    let claims = |tune: &dyn Fn(&mut serde_json::Value)| {
+        let t = now();
+        let mut claims = serde_json::json!({
+            "iss": CLIENT_ID, "sub": CLIENT_ID, "aud": aud,
+            "jti": format!("forged-{}", rand_suffix()), "iat": t, "exp": t + 60,
+        });
+        tune(&mut claims);
+        stand_in::assertion(CLIENT_KEY_PEM, None, &claims)
+    };
+    use openbilling_vpay::stand_in;
+    let form = "application/x-www-form-urlencoded";
+
+    // The control: what the adapter itself mints is accepted, so each refusal below is the one change.
+    assert_eq!(post_assertion(&stand_in, &claims(&|_| {}), form).await, 200);
+    let minted = mints(&stand_in);
+
+    let t = now();
+    type Tune = Box<dyn Fn(&mut serde_json::Value)>;
+    let cases: [(&str, Tune); 7] = [
+        (
+            "a life of 340 s (the OP's ceiling is 300, with no leeway)",
+            Box::new(move |c| c["exp"] = (t + 340).into()),
+        ),
+        (
+            "an exp past its 60 s leeway",
+            Box::new(move |c| c["exp"] = (t - 120).into()),
+        ),
+        ("another issuer", Box::new(|c| c["iss"] = "someone".into())),
+        ("another subject", Box::new(|c| c["sub"] = "someone".into())),
+        (
+            "no jti",
+            Box::new(|c| {
+                c.as_object_mut().unwrap().remove("jti");
+            }),
+        ),
+        (
+            "no exp",
+            Box::new(|c| {
+                c.as_object_mut().unwrap().remove("exp");
+            }),
+        ),
+        (
+            "an audience that is the host alone",
+            Box::new(|c| c["aud"] = "http://127.0.0.1".into()),
+        ),
+    ];
+    for (what, tune) in cases {
+        assert_eq!(
+            post_assertion(&stand_in, &claims(&*tune), form).await,
+            401,
+            "{what}"
+        );
+    }
+    assert_eq!(
+        mints(&stand_in),
+        minted,
+        "nothing was issued for any of them"
+    );
+
+    // The issuer, as the OP's other accepted name for itself, and a replay of a jti.
+    let issuer = format!("{}/v1/oauth", stand_in.base_url);
+    assert_eq!(
+        post_assertion(
+            &stand_in,
+            &claims(&|c| c["aud"] = issuer.clone().into()),
+            form
+        )
+        .await,
+        200
+    );
+    let once = claims(&|c| c["jti"] = "spent-once".into());
+    assert_eq!(post_assertion(&stand_in, &once, form).await, 200);
+    assert_eq!(
+        post_assertion(&stand_in, &once, form).await,
+        401,
+        "a spent jti"
+    );
+
+    // RFC 6749 fixes the encoding: vpay's form extractor answers anything else with a 415.
+    assert_eq!(
+        post_assertion(&stand_in, &claims(&|_| {}), "application/json").await,
+        415
+    );
+}
+
+fn rand_suffix() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+#[test]
+fn a_static_token_is_never_printed_by_the_provider() {
+    let mut config = config("http://127.0.0.1:1");
+    config.credential = Credential::Token("static-token-value".to_owned());
+    let provider = VpayProvider::new(config).unwrap();
+    let shown = format!("{provider:?}");
+    assert!(!shown.contains("static-token-value"), "{shown}");
+}
