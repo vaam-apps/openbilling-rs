@@ -1,0 +1,5 @@
+# expect: openbilling.config.reconcile.last_read_for: a span from 1m to 30d written like 15m, 2h or 7d
+openbilling:
+  config:
+    reconcile:
+      last_read_for: 31d

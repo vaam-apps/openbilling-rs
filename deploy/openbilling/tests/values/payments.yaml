@@ -11,5 +11,6 @@ openbilling:
       pending_after: 30m
       read_again_after: 1h
       stop_after: 14d
+      last_read_for: 2d
       every: 30s
       batch: 250

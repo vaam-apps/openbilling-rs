@@ -105,9 +105,9 @@ The refusals values cannot say. Each names the value to change. Run before the c
   digits and one of s, m, h or d, no leading zero, inside its range; stop_after is longer than pending_after. */ -}}
   {{- $reconcile := dig "reconcile" dict $config -}}
   {{- if not (kindIs "map" $reconcile) -}}
-    {{- fail "openbilling.config.reconcile: a map of pending_after, read_again_after, stop_after, every and batch" -}}
+    {{- fail "openbilling.config.reconcile: a map of pending_after, read_again_after, stop_after, last_read_for, every and batch" -}}
   {{- end -}}
-  {{- $spans := dict "pending_after" (list 1 604800 "1s to 7d") "read_again_after" (list 1 86400 "1s to 1d") "stop_after" (list 60 7776000 "1m to 90d") "every" (list 1 3600 "1s to 1h") -}}
+  {{- $spans := dict "pending_after" (list 1 604800 "1s to 7d") "read_again_after" (list 1 86400 "1s to 1d") "stop_after" (list 60 7776000 "1m to 90d") "last_read_for" (list 60 2592000 "1m to 30d") "every" (list 1 3600 "1s to 1h") -}}
   {{- $units := dict "s" 1 "m" 60 "h" 3600 "d" 86400 -}}
   {{- $seconds := dict -}}
   {{- range $key, $value := $reconcile -}}
@@ -131,7 +131,7 @@ The refusals values cannot say. Each names the value to change. Run before the c
         {{- fail "openbilling.config.reconcile.batch: a whole number from 1 to 1000" -}}
       {{- end -}}
     {{- else -}}
-      {{- fail (printf "openbilling.config.reconcile.%s: not a key; the keys are pending_after, read_again_after, stop_after, every and batch" $key) -}}
+      {{- fail (printf "openbilling.config.reconcile.%s: not a key; the keys are pending_after, read_again_after, stop_after, last_read_for, every and batch" $key) -}}
     {{- end -}}
   {{- end -}}
   {{- if le (int (dig "stop_after" 604800 $seconds)) (int (dig "pending_after" 900 $seconds)) -}}

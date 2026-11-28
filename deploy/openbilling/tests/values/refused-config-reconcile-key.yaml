@@ -1,4 +1,4 @@
-# expect: openbilling.config.reconcile.interval: not a key; the keys are pending_after, read_again_after, stop_after, every and batch
+# expect: openbilling.config.reconcile.interval: not a key; the keys are pending_after, read_again_after, stop_after, last_read_for, every and batch
 openbilling:
   config:
     reconcile:
