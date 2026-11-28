@@ -44,6 +44,9 @@ pub enum Counter {
     /// Pending top-ups the reconciler read back: `outcome` is `credited`, `replayed`, `pending`, `not_ours`,
     /// `canceled`, `mismatch` or `error` (a pass that panicked is an `error` too).
     TopUpsReconciled,
+    /// Pending top-ups moved to `expired` because they were older than the reconciler's `stop_after`: no labels. They
+    /// are still settled by a webhook or `reconcilePayment`.
+    TopUpsExpired,
     /// Errors by class: `class` is `invalid`, `conflict`, `unavailable` or `internal`; `source` is where.
     Errors,
     /// Spans or logs dropped because the queue to the exporter was full: `signal` is `traces` or `logs`.
@@ -53,7 +56,7 @@ pub enum Counter {
 }
 
 impl Counter {
-    const ALL: [Self; 11] = [
+    const ALL: [Self; 12] = [
         Self::IntakeEvents,
         Self::DrainEvents,
         Self::DrainRuns,
@@ -62,6 +65,7 @@ impl Counter {
         Self::PartitionsDropped,
         Self::PaymentMismatches,
         Self::TopUpsReconciled,
+        Self::TopUpsExpired,
         Self::Errors,
         Self::TelemetryDropped,
         Self::TelemetryExports,
@@ -79,6 +83,7 @@ impl Counter {
             Self::PartitionsDropped => "openbilling.partitions.dropped",
             Self::PaymentMismatches => "openbilling.payments.mismatches",
             Self::TopUpsReconciled => "openbilling.topups.reconciled",
+            Self::TopUpsExpired => "openbilling.topups.expired",
             Self::Errors => "openbilling.errors",
             Self::TelemetryDropped => "openbilling.telemetry.dropped",
             Self::TelemetryExports => "openbilling.telemetry.exports",
@@ -99,6 +104,9 @@ impl Counter {
                 "Payments read back that differ from the top-up recorded for them, by field"
             }
             Self::TopUpsReconciled => "Pending top-ups the reconciler read back, by outcome",
+            Self::TopUpsExpired => {
+                "Pending top-ups moved to expired, no longer read by the reconciler"
+            }
             Self::Errors => "Errors by class and where they happened",
             Self::TelemetryDropped => {
                 "Spans and logs dropped because the exporter's queue was full"
@@ -115,7 +123,7 @@ impl Counter {
             Self::AllowedChecks => "{check}",
             Self::PartitionsDropped => "{partition}",
             Self::PaymentMismatches => "{payment}",
-            Self::TopUpsReconciled => "{top-up}",
+            Self::TopUpsReconciled | Self::TopUpsExpired => "{top-up}",
             Self::Errors => "{error}",
             Self::TelemetryDropped => "{item}",
             Self::TelemetryExports => "{request}",
@@ -216,7 +224,7 @@ pub const BUCKETS: [f64; 11] = [
 
 /// The database operations a histogram names: a closed set, so a span's `db.operation` maps into it and anything
 /// else is `other`.
-pub const DB_OPERATIONS: [&str; 25] = [
+pub const DB_OPERATIONS: [&str; 26] = [
     "now",
     "configure",
     "open_account",
@@ -242,6 +250,7 @@ pub const DB_OPERATIONS: [&str; 25] = [
     "record_top_up",
     "settle_top_up",
     "claim_pending_top_ups",
+    "expire_pending_top_ups",
 ];
 
 /// The closed label value of a `db.operation` span attribute.
@@ -503,7 +512,7 @@ pub fn exposed_names() -> Vec<String> {
 }
 
 #[doc(hidden)]
-pub const fn all_counters() -> [Counter; 11] {
+pub const fn all_counters() -> [Counter; 12] {
     Counter::ALL
 }
 #[doc(hidden)]

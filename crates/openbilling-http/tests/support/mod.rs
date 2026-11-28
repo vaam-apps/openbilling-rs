@@ -177,6 +177,9 @@ impl TopUpLedger for DownLedger {
     ) -> Result<Vec<openbilling_core::CreditId>, LedgerError> {
         down()
     }
+    async fn expire_stale_top_ups(&self, _: &ReconcileSettings) -> Result<u64, LedgerError> {
+        down()
+    }
 }
 
 /// The router over `ledger`, `provider` and `pool`, with the test tokens and the default policy.

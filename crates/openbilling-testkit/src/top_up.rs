@@ -372,3 +372,161 @@ pub async fn claims_respect_the_windows_and_are_disjoint<S: TopUpStore>(
         3
     );
 }
+
+/// A payment settled before its top-up was recorded (`refuse`: kept as `unrecorded`, uncredited) is not lost when the
+/// record arrives late with the very terms read back: it becomes a recorded, pending top-up, and the next settle
+/// credits it once. Other terms stay refused (`TopUpConflict`) and the row stays mismatched.
+pub async fn a_late_record_upgrades_an_unrecorded_payment_only_when_the_terms_agree<
+    S: TopUpStore,
+>(
+    make: impl AsyncFn(UnrecordedTopUps) -> Option<S>,
+) {
+    let Some(store) = make(UnrecordedTopUps::Refuse).await else {
+        return;
+    };
+    ready(&store).await;
+    // Differing terms: refused, and the row is still the refused one.
+    let paid = view("late", PaymentStatus::Succeeded);
+    assert_eq!(
+        store.settle_top_up(&paid).await.unwrap(),
+        TopUpSettled::Mismatch(MismatchField::Unrecorded)
+    );
+    for change in [
+        (|t: &mut TopUp| t.amount = micros(AMOUNT + 1)) as fn(&mut TopUp),
+        |t| t.to.owner = owner("o2"),
+    ] {
+        let mut other = top_up("late");
+        change(&mut other);
+        assert_eq!(
+            rule_of(store.record_top_up(&other).await),
+            Rule::TopUpConflict
+        );
+    }
+    assert_eq!(
+        store.settle_top_up(&paid).await.unwrap(),
+        TopUpSettled::Mismatch(MismatchField::Unrecorded)
+    );
+    assert_eq!(net(&store, "o1").await, 0);
+    // The same terms: recorded now, and the next settle credits once.
+    assert!(
+        !store.record_top_up(&top_up("late")).await.unwrap(),
+        "this call recorded it"
+    );
+    assert!(
+        store.record_top_up(&top_up("late")).await.unwrap(),
+        "and the record is once-only from then on"
+    );
+    let TopUpSettled::Credited(first) = store.settle_top_up(&paid).await.unwrap() else {
+        panic!("credited")
+    };
+    assert!(!first.replayed);
+    let TopUpSettled::Credited(again) = store.settle_top_up(&paid).await.unwrap() else {
+        panic!("credited")
+    };
+    assert!(again.replayed);
+    assert_eq!(net(&store, "o1").await, AMOUNT, "credited once");
+}
+
+/// A top-up older than `stop_after` becomes `expired`: it is not claimed any more, and a later settle (a webhook, an
+/// operator's `reconcilePayment`) still credits it, or closes it as canceled or mismatched.
+pub async fn an_expired_top_up_is_not_claimed_and_is_still_settled<S: TopUpStore>(
+    make: impl AsyncFn(UnrecordedTopUps) -> Option<S>,
+) {
+    let Some(store) = make(UnrecordedTopUps::Refuse).await else {
+        return;
+    };
+    ready(&store).await;
+    for id in ["x1", "x2", "x3"] {
+        store.record_top_up(&top_up(id)).await.unwrap();
+    }
+    tokio::time::sleep(Duration::from_millis(60)).await;
+    let stale = ReconcileSettings {
+        stop_after: Duration::from_millis(50),
+        read_again_after: Duration::ZERO,
+        ..due_now()
+    };
+    assert_eq!(store.expire_stale_top_ups(&stale).await.unwrap(), 3);
+    assert_eq!(store.expire_stale_top_ups(&stale).await.unwrap(), 0, "once");
+    // Neither the narrow window nor a wide one claims an expired top-up.
+    assert!(
+        store
+            .claim_pending_top_ups(&stale)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        store
+            .claim_pending_top_ups(&ReconcileSettings {
+                stop_after: Duration::from_secs(3600),
+                read_again_after: Duration::ZERO,
+                ..due_now()
+            })
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    // Still settled: credited once, canceled, or refused on a difference.
+    let TopUpSettled::Credited(first) = store
+        .settle_top_up(&view("x1", PaymentStatus::Succeeded))
+        .await
+        .unwrap()
+    else {
+        panic!("credited")
+    };
+    assert!(!first.replayed);
+    assert_eq!(
+        store
+            .settle_top_up(&view("x2", PaymentStatus::Canceled))
+            .await
+            .unwrap(),
+        TopUpSettled::Canceled
+    );
+    let mut differs = view("x3", PaymentStatus::Succeeded);
+    differs.amount = micros(AMOUNT + 1);
+    assert_eq!(
+        store.settle_top_up(&differs).await.unwrap(),
+        TopUpSettled::Mismatch(MismatchField::Amount)
+    );
+    // An unpaid read of an expired one changes nothing.
+    assert_eq!(net(&store, "o1").await, AMOUNT);
+}
+
+/// With more top-ups due than a batch, successive claims cover every one before any is read again: the least recently
+/// read go first.
+pub async fn successive_claims_cover_every_due_top_up_before_repeating<S: TopUpStore>(
+    make: impl AsyncFn(UnrecordedTopUps) -> Option<S>,
+) {
+    let Some(store) = make(UnrecordedTopUps::Refuse).await else {
+        return;
+    };
+    ready(&store).await;
+    for i in 0..10 {
+        store
+            .record_top_up(&top_up(&format!("f{i}")))
+            .await
+            .unwrap();
+    }
+    let always = ReconcileSettings {
+        read_again_after: Duration::ZERO,
+        batch: 3,
+        ..due_now()
+    };
+    let mut seen = std::collections::BTreeSet::new();
+    for round in 0..4 {
+        let claimed = store.claim_pending_top_ups(&always).await.unwrap();
+        assert_eq!(claimed.len(), 3, "round {round}");
+        for id in claimed {
+            if round < 3 {
+                assert!(
+                    seen.insert(id.as_str().to_owned()),
+                    "{id:?} was read again before every top-up was read once"
+                );
+            } else {
+                // The fourth round takes the last unread one, then wraps to the least recently read.
+                seen.insert(id.as_str().to_owned());
+            }
+        }
+    }
+    assert_eq!(seen.len(), 10, "every due top-up was claimed");
+}

@@ -264,17 +264,21 @@ async fn an_unrecorded_payment_is_refused_each_time_and_counted_once() {
     assert_eq!(mismatches("unrecorded"), before + 1);
 }
 
-/// A paid top-up whose webhook never came is credited once by the reconciler, and a webhook racing it books nothing
-/// more; one still unpaid is not read again at once.
+/// A paid top-up whose webhook never came is credited once by the reconciler; the webhook arriving after it books
+/// nothing more, and a paid one the webhook booked first is not claimed at all. The order is fixed here, step by step;
+/// the two settling a single locked row at once is `openbilling-pg`'s
+/// `a_webhook_and_a_reconcile_pass_settling_one_row_credit_once`, which holds the row and releases it.
 #[tokio::test]
-async fn the_reconciler_credits_a_paid_top_up_once_while_a_webhook_races() {
+async fn the_reconciler_and_a_webhook_credit_a_paid_top_up_once() {
     let Some((ledger, f)) = ready().await else {
         return;
     };
     let paid = start(&ledger, &f, "k-paid").await;
+    let hooked_first = start(&ledger, &f, "k-hooked").await;
     let waiting = start(&ledger, &f, "k-waiting").await;
     let canceled = start(&ledger, &f, "k-canceled").await;
     f.pay(&paid.payment).await;
+    f.pay(&hooked_first.payment).await;
     f.cancel(&canceled.payment).await;
     let settings = ReconcileSettings {
         pending_after: std::time::Duration::ZERO,
@@ -283,38 +287,49 @@ async fn the_reconciler_credits_a_paid_top_up_once_while_a_webhook_races() {
         batch: 100,
     };
     let at = ledger.now().await.unwrap();
-    let hook = f.payment_webhook(&paid.payment, at);
-    let hint = f
-        .provider
-        .verify_webhook(&hook.headers, &hook.body, at)
-        .unwrap();
-    let (report, hooked) = tokio::join!(
-        reconcile_pending(&ledger, &f.provider, &settings),
-        settle_hint(&ledger, &f.provider, &hint),
-    );
-    let report = report.unwrap();
-    let Settled::Credited(webhook) = hooked.unwrap() else {
-        panic!("the webhook answers credited")
+    let hint_of = |payment: &openbilling_core::CreditId| {
+        let hook = f.payment_webhook(payment, at);
+        f.provider
+            .verify_webhook(&hook.headers, &hook.body, at)
+            .unwrap()
     };
-    // Whoever locked the row first booked it; the other found it booked. Exactly one credit and one replay, whichever won.
-    let booked = u32::from(!webhook.replayed) + report.credited;
-    let replays = u32::from(webhook.replayed) + report.replayed;
-    assert_eq!(
-        (booked, replays),
-        (1, 1),
-        "one credit and one replay, report {report:?}, webhook replayed {}",
-        webhook.replayed
-    );
+    // The webhook of one lands before any pass: that top-up is credited and never claimed.
+    let Settled::Credited(first) =
+        settle_hint(&ledger, &f.provider, &hint_of(&hooked_first.payment))
+            .await
+            .unwrap()
+    else {
+        panic!("the webhook credits")
+    };
+    assert!(!first.replayed);
+    let report = reconcile_pending(&ledger, &f.provider, &settings)
+        .await
+        .unwrap();
     assert_eq!(
         (
+            report.credited,
+            report.replayed,
             report.pending,
             report.canceled,
             report.mismatched,
             report.failed
         ),
-        (1, 1, 0, 0)
+        (1, 0, 1, 1, 0, 0),
+        "the pass credits `paid`, finds `waiting` unpaid, closes `canceled`, and does not see the one already booked: {report:?}"
     );
-    assert_eq!(available(&ledger).await, f.amount().micros(), "once");
+    // The late webhook of the one the pass credited is the replay.
+    let Settled::Credited(late) = settle_hint(&ledger, &f.provider, &hint_of(&paid.payment))
+        .await
+        .unwrap()
+    else {
+        panic!("the late webhook answers credited")
+    };
+    assert!(late.replayed, "booked by the pass already");
+    assert_eq!(
+        available(&ledger).await,
+        2 * f.amount().micros(),
+        "once each"
+    );
     // The unpaid one is not read again at once, and when it is paid the next pass credits it.
     f.pay(&waiting.payment).await;
     let none = reconcile_pending(&ledger, &f.provider, &settings)
@@ -329,5 +344,5 @@ async fn the_reconciler_credits_a_paid_top_up_once_while_a_webhook_races() {
         .await
         .unwrap();
     assert_eq!(report.credited, 1);
-    assert_eq!(available(&ledger).await, 2 * f.amount().micros());
+    assert_eq!(available(&ledger).await, 3 * f.amount().micros());
 }

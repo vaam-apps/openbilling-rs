@@ -142,6 +142,22 @@ async fn partitions_forever(ledger: PgLedger) {
     }
 }
 
+/// A spawned pass that is aborted when this handle is dropped, so that aborting [`reconcile_forever`] (a stop) cancels
+/// the pass it is running instead of leaving it detached. The task is still its own, so a panic stays isolated.
+struct AbortOnDrop<T>(tokio::task::JoinHandle<T>);
+
+impl<T> AbortOnDrop<T> {
+    async fn join(&mut self) -> Result<T, tokio::task::JoinError> {
+        (&mut self.0).await
+    }
+}
+
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 /// Reads back the pending top-ups that are due, every `every` (ADR 0003, amended 2026-11-28): a paid top-up whose webhook
 /// never came is found here. Safe on any number of instances: a claim takes each top-up for one caller. A failure of
 /// a pass is counted and logged by class and retried at the next one; a top-up that could not be settled is read again
@@ -157,15 +173,15 @@ async fn reconcile_forever(
         let pass = tracing::info_span!("reconcile.run");
         // Each pass is its own task: a panic in one (a bug, never a normal failure) is caught at the join, counted as
         // an error, and the next pass runs, so reconciliation does not silently end.
-        let run = tokio::spawn({
+        let mut run = AbortOnDrop(tokio::spawn({
             let (ledger, provider, settings) = (ledger.clone(), provider.clone(), settings);
             async move {
                 reconcile_pending(&ledger, &provider, &settings)
                     .instrument(pass)
                     .await
             }
-        });
-        let result = match run.await {
+        }));
+        let result = match run.join().await {
             Ok(result) => result,
             Err(joined) => {
                 global().add(Counter::TopUpsReconciled, &[("outcome", "error")], 1);
@@ -199,6 +215,9 @@ async fn reconcile_forever(
                             u64::from(n),
                         );
                     }
+                }
+                if report.expired > 0 {
+                    global().add(Counter::TopUpsExpired, &[], report.expired);
                 }
                 if report.credited + report.mismatched + report.failed > 0 {
                     anstream::eprintln!(

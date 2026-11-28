@@ -86,6 +86,7 @@ async fn migrations_apply_once_and_every_function_answers() {
         "ob_drain",
         "ob_drop_partition",
         "ob_event_outcome_guard",
+        "ob_expire_pending_top_ups",
         "ob_expired_partitions",
         "ob_grant_allowance",
         "ob_in_alphabet",

@@ -108,6 +108,9 @@ macro_rules! top_up_conformance {
             a_succeeded_payment_credits_the_recorded_terms_once,
             a_canceled_top_up_is_final,
             claims_respect_the_windows_and_are_disjoint,
+            a_late_record_upgrades_an_unrecorded_payment_only_when_the_terms_agree,
+            an_expired_top_up_is_not_claimed_and_is_still_settled,
+            successive_claims_cover_every_due_top_up_before_repeating,
         );
     };
 }

@@ -123,8 +123,8 @@ pub struct ReconcileSettings {
     pub pending_after: Duration,
     /// A top-up read and still pending is read again after this long.
     pub read_again_after: Duration,
-    /// A top-up older than this is no longer read: the payment is long abandoned. It stays pending, and an operator's
-    /// `reconcilePayment` still settles it.
+    /// A top-up older than this is no longer read: the payment is long abandoned. It becomes `expired`
+    /// ([`TopUpLedger::expire_stale_top_ups`]), and a webhook or an operator's `reconcilePayment` still settles it.
     pub stop_after: Duration,
     /// The most top-ups one pass claims.
     pub batch: u32,
@@ -162,12 +162,20 @@ pub trait TopUpLedger: Send + Sync {
     ) -> impl Future<Output = Result<TopUpSettled, LedgerError>> + Send;
 
     /// Claims up to `settings.batch` pending top-ups that are due to be read: older than `pending_after`, younger than
-    /// `stop_after`, and not claimed in the last `read_again_after`. A claim is visible at once to every other
+    /// `stop_after`, and not claimed in the last `read_again_after`, the least recently read first, so a backlog
+    /// larger than a batch is covered before any top-up is read twice. A claim is visible at once to every other
     /// caller, so two claims never answer the same top-up.
     fn claim_pending_top_ups(
         &self,
         settings: &ReconcileSettings,
     ) -> impl Future<Output = Result<Vec<CreditId>, LedgerError>> + Send;
+
+    /// Moves the pending top-ups older than `settings.stop_after` to `expired`, at most `settings.batch` of them, and
+    /// answers how many. An expired top-up is never claimed, and a webhook or `reconcilePayment` still settles it.
+    fn expire_stale_top_ups(
+        &self,
+        settings: &ReconcileSettings,
+    ) -> impl Future<Output = Result<u64, LedgerError>> + Send;
 }
 
 /// What one reconciliation pass did, by outcome.
@@ -187,6 +195,8 @@ pub struct ReconcileReport {
     pub mismatched: u32,
     /// Top-ups that could not be read or settled now; they are read again later.
     pub failed: u32,
+    /// Pending top-ups this pass moved to `expired` (not looked at: not part of [`Self::total`]).
+    pub expired: u64,
 }
 
 impl ReconcileReport {
@@ -219,6 +229,14 @@ where
     P: PaymentProvider,
 {
     let mut report = ReconcileReport::default();
+    // Bounded steps, so a large backlog is worked off over passes and one pass never holds many rows.
+    for _ in 0..10 {
+        let n = ledger.expire_stale_top_ups(settings).await?;
+        report.expired += n;
+        if n < u64::from(settings.batch.max(1)) {
+            break;
+        }
+    }
     for id in ledger.claim_pending_top_ups(settings).await? {
         match settle_payment(ledger, provider, &id).await {
             Ok(Settled::Credited(credited)) if credited.replayed => report.replayed += 1,

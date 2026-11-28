@@ -51,7 +51,15 @@ credit another amount. Points 3 and 4 are read with this note.
    in flight from an earlier version). A payment with no owner reference is not ours either way. The policy is an
    argument of the SQL function, not a literal. Under `refuse` the payment is **recorded** as a `mismatched` top-up of
    the field `unrecorded` (no idempotency key, the owner, currency, label and amount read back), so an operator can list
-   it, it is sticky and it is counted once; read values that could not be a row (outside an id's, a label's or a
+   it, it is sticky and it is counted once, **with one exception: a late record.** When `startTopUp` created the
+   payment at the provider but `ob_record_top_up` failed or was slow, a webhook can settle first and leave this row,
+   and the retried record would conflict (`OB011`) on a row that is final: the payer paid and is never credited.
+   So `ob_record_top_up`, finding a `mismatched` row of the field `unrecorded` whose owner, currency, label and amount
+   equal the terms it records, upgrades it to a normal `pending` top-up carrying the key (answer `false`: this call
+   recorded it), unread, and the next settle or reconciliation pass credits it from the recorded terms. If any of the
+   four differ it is `OB011` as before and the row stays refused. The guard trigger allows exactly that transition
+   (`mismatched`/`unrecorded` with no key to `pending` with a key, terms and creation time unchanged) and no other
+   way out of `mismatched`; read values that could not be a row (outside an id's, a label's or a
    currency's alphabet, or an amount not above zero) are refused and counted on every read, since there is nothing to
    keep. **Upgrade path:** a top-up started before this change has no record, so set `payments.unrecorded: credit`
    when upgrading, keep it until every top-up started before the upgrade has finished (at most `reconcile.stop_after`,
@@ -62,12 +70,21 @@ credit another amount. Points 3 and 4 are read with this note.
 4. **Pending top-ups are read back on a timer** (`reconcile_pending`, `serve`, only with a provider): vpay has no
    status filter on its list, so the pending top-ups are listed from `ob_top_up`. `ob_claim_pending_top_ups` takes the
    ones due (at least `reconcile.pending_after` old, less than `stop_after` old, not read in the last `read_again_after`,
-   at most `batch`, oldest first) with `FOR UPDATE SKIP LOCKED` under the `LIMIT`, in a materialized CTE so only the
+   at most `batch`, **the least recently read first**: never read, then by `last_read_at`, then the oldest, so a
+   backlog larger than a batch is covered before any top-up is read twice; `ob_top_up_pending_read`, a partial index
+   `WHERE state = 'pending'`, serves that order) with `FOR UPDATE SKIP LOCKED` under the `LIMIT`, in a materialized CTE so only the
    batch is locked and the age tests are ranges on `created_at` that `ob_top_up_pending` serves, so any number of instances share the work and a top-up is read by one
    of them at a time; a webhook racing the pass books once, by the ledger's once-only id. Defaults: `pending_after` 15m,
    `read_again_after` 15m, `stop_after` 7d, `every` 1m, `batch` 100 (the configuration file's `reconcile`, ranges in
-   `bin/openbilling/README.md`). A top-up older than `stop_after` stays pending and is no longer read; the operator's
-   `reconcilePayment` still settles it. Counted in `openbilling.topups.reconciled` (label `outcome`).
+   `bin/openbilling/README.md`). A pending top-up older than `stop_after` **becomes `expired`**: each pass first runs
+   `ob_expire_pending_top_ups` (at most `batch` rows per step, repeated up to ten times while a step is full, the
+   oldest first on `ob_top_up_pending`), so the rows the claim scans are the ones in the window however many were
+   abandoned (*measured 2026-11-28*, 255 000 rows: 200 000 credited, 50 000 expired, 5 000 pending in the window; the
+   claim is one index scan of 13 buffers, 0.4 ms, and the expiry finds nothing in 2 buffers). The reconciler never
+   reads an expired top-up. It is not final: a webhook or the operator's `reconcilePayment` still settles it
+   (expired to credited, canceled or mismatched; the guard allows nothing else out of `expired`). Counted in
+   `openbilling.topups.reconciled` (label `outcome`) and, for the move to `expired`, in `openbilling.topups.expired`
+   (no labels).
 5. **Proven against the stand-in only**: the stand-in can change a payment's owner, label and amount after it was
    asked for, and the suites hold the behaviour above; vpay itself has not been asked (the sandbox workflow runs
    three cases that need no payer and none of these).

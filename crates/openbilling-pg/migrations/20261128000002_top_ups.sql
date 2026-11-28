@@ -27,28 +27,49 @@ CREATE TABLE ob_top_up (
     -- Only a payment that was never asked for (an `unrecorded` one, kept so an operator can see it) has no key.
     CONSTRAINT ob_top_up_key CHECK (idem_key IS NOT NULL OR coalesce(mismatch_field, '') = 'unrecorded'),
     CONSTRAINT ob_top_up_amount CHECK (amount > 0),
-    CONSTRAINT ob_top_up_state CHECK (state IN ('pending', 'credited', 'canceled', 'mismatched')),
+    CONSTRAINT ob_top_up_state CHECK (state IN ('pending', 'credited', 'canceled', 'mismatched', 'expired')),
     CONSTRAINT ob_top_up_mismatch CHECK ((state = 'mismatched') = (mismatch_field IS NOT NULL)),
     CONSTRAINT ob_top_up_mismatch_field
         CHECK (mismatch_field IS NULL OR mismatch_field IN ('owner', 'label', 'currency', 'amount', 'unrecorded'))
 );
 
--- What the reconciler scans: the pending ones by creation. It serves the claim's range (`created_at` between the stop
--- and the start of the window) and its ORDER BY at once, so a claim starts at the youngest end of the abandoned ones
--- and never walks them (an index on the last read would put them first).
+-- A pending top-up older than the reconciler's `stop_after` becomes `expired` (`ob_expire_pending_top_ups`): the
+-- reconciler never reads it again, so the rows it scans are the ones in the window, however many were abandoned. An
+-- expired top-up is not final: a webhook, or an operator's `reconcilePayment`, still settles it.
+--
+-- Two partial indexes over the pending rows, the only ones the reconciler reads:
+--   `ob_top_up_pending_read`   the claim's order, `last_read_at NULLS FIRST, created_at`: the least recently read go
+--                              first, so a backlog larger than a batch is covered before any row is read twice;
+--   `ob_top_up_pending`        by creation, which the expiry walks from the oldest end.
 CREATE INDEX ob_top_up_pending ON ob_top_up (created_at) WHERE state = 'pending';
+CREATE INDEX ob_top_up_pending_read ON ob_top_up (last_read_at NULLS FIRST, created_at) WHERE state = 'pending';
 
--- A top-up's terms never change, it is never deleted, and it leaves `pending` once, for a final state: credited,
--- canceled or mismatched. A touch of `last_read_at` is the only other change, and only while pending. `plpgsql`: a
--- trigger function, and it raises.
+-- A top-up's terms never change and it is never deleted. Its state moves only as follows:
+--   pending    -> pending (a touch of `last_read_at`), credited, canceled, mismatched or expired;
+--   expired    -> credited, canceled or mismatched (a late webhook or `reconcilePayment`);
+--   mismatched -> pending, once, and only when the mismatch was `unrecorded` (a payment settled before its top-up was
+--                 recorded) and the top-up recorded afterwards has the very terms read back: the row then gains its
+--                 idempotency key and nothing else changes (`ob_record_top_up`). Any other mismatch is final.
+-- credited and canceled are final. `plpgsql`: a trigger function, and it raises.
 CREATE FUNCTION ob_top_up_guard() RETURNS trigger
     LANGUAGE plpgsql AS $$
 BEGIN
-    IF TG_OP <> 'UPDATE'
-       OR (NEW.payment_id, NEW.idem_key, NEW.owner, NEW.currency, NEW.label, NEW.amount, NEW.created_at)
+    IF TG_OP <> 'UPDATE' THEN
+        RAISE EXCEPTION 'ob_top_up: only a pending top-up may be read or closed; % refused', TG_OP
+            USING ERRCODE = 'OB901';
+    END IF;
+    IF OLD.state = 'mismatched' AND OLD.mismatch_field = 'unrecorded' AND OLD.idem_key IS NULL
+       AND NEW.state = 'pending' AND NEW.mismatch_field IS NULL AND NEW.idem_key IS NOT NULL
+       AND (NEW.payment_id, NEW.owner, NEW.currency, NEW.label, NEW.amount, NEW.created_at)
+           IS NOT DISTINCT FROM
+           (OLD.payment_id, OLD.owner, OLD.currency, OLD.label, OLD.amount, OLD.created_at) THEN
+        RETURN NEW;
+    END IF;
+    IF (NEW.payment_id, NEW.idem_key, NEW.owner, NEW.currency, NEW.label, NEW.amount, NEW.created_at)
           IS DISTINCT FROM
           (OLD.payment_id, OLD.idem_key, OLD.owner, OLD.currency, OLD.label, OLD.amount, OLD.created_at)
-       OR OLD.state <> 'pending'
+       OR OLD.state NOT IN ('pending', 'expired')
+       OR (OLD.state = 'expired' AND NEW.state NOT IN ('credited', 'canceled', 'mismatched'))
        OR (NEW.state = 'pending' AND NEW.mismatch_field IS NOT NULL) THEN
         RAISE EXCEPTION 'ob_top_up: only a pending top-up may be read or closed; % refused', TG_OP
             USING ERRCODE = 'OB901';
@@ -65,6 +86,12 @@ CREATE TRIGGER ob_top_up_no_truncate BEFORE TRUNCATE ON ob_top_up
 -- Records a top-up, once-only by its payment id. Returns whether it was already recorded with these very terms (a
 -- replay: the same idempotency key makes the provider answer the same payment). Other terms are OB011. The account
 -- must exist (OB002), and the amount must be positive (OB009). `plpgsql`: it branches on a replay and raises.
+--
+-- One exception, so that a payer is never left uncredited: when a webhook settled the payment before this call
+-- recorded it, under `payments.unrecorded: refuse`, a `mismatched` row of the field `unrecorded` holds the values read
+-- back. If those values (owner, currency, label, amount) are the ones recorded now, the payment is ours after all: the
+-- row is upgraded to a `pending` top-up carrying the key (answer `false`: this call recorded it), never read yet, and
+-- the next settle or reconciliation pass credits it. If they differ the answer is OB011 and the row stays refused.
 CREATE FUNCTION ob_record_top_up(p_payment_id text, p_key text, p_owner text, p_currency text, p_label text,
                                  p_amount bigint)
     RETURNS boolean
@@ -87,7 +114,14 @@ BEGIN
     IF v_inserted THEN
         RETURN false;
     END IF;
-    SELECT t.* INTO v_stored FROM ob_top_up t WHERE t.payment_id = p_payment_id;
+    SELECT t.* INTO v_stored FROM ob_top_up t WHERE t.payment_id = p_payment_id FOR UPDATE;
+    IF v_stored.state = 'mismatched' AND v_stored.mismatch_field = 'unrecorded' AND v_stored.idem_key IS NULL
+       AND (v_stored.owner, v_stored.currency, v_stored.label, v_stored.amount)
+           IS NOT DISTINCT FROM (p_owner, p_currency, p_label, p_amount) THEN
+        UPDATE ob_top_up SET idem_key = p_key, state = 'pending', mismatch_field = NULL, last_read_at = NULL
+            WHERE payment_id = p_payment_id;
+        RETURN false;
+    END IF;
     IF (v_stored.idem_key, v_stored.owner, v_stored.currency, v_stored.label, v_stored.amount)
        IS DISTINCT FROM (p_key, p_owner, p_currency, p_label, p_amount) THEN
         RAISE EXCEPTION 'the payment was already recorded as another top-up' USING ERRCODE = 'OB011';
@@ -178,7 +212,7 @@ BEGIN
         RETURN;
     END IF;
 
-    -- Pending.
+    -- Pending, or expired (not read any more, but still settled by a webhook or an operator).
     IF p_status = 'canceled' THEN
         UPDATE ob_top_up SET state = 'canceled', last_read_at = clock_timestamp()
             WHERE payment_id = v_top.payment_id;
@@ -198,7 +232,9 @@ BEGIN
         RETURN;
     END IF;
     IF p_status = 'pending' THEN
-        UPDATE ob_top_up SET last_read_at = clock_timestamp() WHERE payment_id = v_top.payment_id;
+        IF v_top.state = 'pending' THEN
+            UPDATE ob_top_up SET last_read_at = clock_timestamp() WHERE payment_id = v_top.payment_id;
+        END IF;
         RETURN QUERY SELECT 'pending', NULL::text, NULL::text, NULL::uuid, false, 0::bigint, 0::bigint, false;
         RETURN;
     END IF;
@@ -211,12 +247,38 @@ BEGIN
 END
 $$;
 
+-- Moves the pending top-ups at least `p_stop_after_micros` old to `expired`, at most `p_limit` of them, the oldest
+-- first (`ob_top_up_pending`), skipping rows another transaction holds; answers how many. It is bounded by the limit,
+-- so a caller repeats it while it answers the limit. An expired top-up is not read by the reconciler any more and is
+-- still settled by a webhook or `reconcilePayment`. Plain SQL: a SQL-standard body.
+CREATE FUNCTION ob_expire_pending_top_ups(p_stop_after_micros bigint, p_limit integer)
+    RETURNS bigint
+    LANGUAGE sql
+BEGIN ATOMIC
+    WITH stale AS MATERIALIZED (
+        SELECT d.payment_id FROM ob_top_up d
+        WHERE d.state = 'pending'
+          AND d.created_at <= now() - (make_interval(secs => (p_stop_after_micros / 1000000)::double precision)
+                                       + (p_stop_after_micros % 1000000) * interval '1 microsecond')
+        ORDER BY d.created_at
+        LIMIT p_limit
+        FOR UPDATE SKIP LOCKED),
+    moved AS (
+        UPDATE ob_top_up t SET state = 'expired'
+        FROM stale s
+        WHERE t.payment_id = s.payment_id
+        RETURNING 1)
+    SELECT count(*) FROM moved;
+END;
+
 -- Claims the pending top-ups that are due to be read back: at least `p_pending_after_micros` old and less than
 -- `p_stop_after_micros` old, and never read, or last read at least `p_read_again_micros` ago; at most `p_limit`, the
--- oldest first. The claim is the update of `last_read_at`, committed with the statement. The rows are picked
--- first, in a materialized CTE, with `FOR UPDATE SKIP LOCKED` under the LIMIT, so only `p_limit` rows are ever locked
--- and two callers at once never get the same top-up. The age tests are ranges on the stored columns (sargable), and
--- `ob_top_up_pending` serves both the range and the ORDER BY. Plain SQL: a SQL-standard body.
+-- least recently read first (never read, then by the last read, then the oldest), so a backlog larger than a batch is
+-- covered before any row is read twice. The claim is the update of `last_read_at`, committed with the statement. The
+-- rows are picked first, in a materialized CTE, with `FOR UPDATE SKIP LOCKED` under the LIMIT, so only `p_limit` rows
+-- are ever locked and two callers at once never get the same top-up. The age tests are ranges on the stored columns
+-- (sargable) over `state = 'pending'` rows, which `ob_expire_pending_top_ups` keeps to the window, and
+-- `ob_top_up_pending_read` serves the ORDER BY. Plain SQL: a SQL-standard body.
 CREATE FUNCTION ob_claim_pending_top_ups(p_pending_after_micros bigint, p_read_again_micros bigint,
                                          p_stop_after_micros bigint, p_limit integer)
     RETURNS TABLE (o_payment_id text)
@@ -232,7 +294,7 @@ BEGIN ATOMIC
           AND (d.last_read_at IS NULL
                OR d.last_read_at <= now() - (make_interval(secs => (p_read_again_micros / 1000000)::double precision)
                                              + (p_read_again_micros % 1000000) * interval '1 microsecond'))
-        ORDER BY d.created_at
+        ORDER BY d.last_read_at NULLS FIRST, d.created_at
         LIMIT p_limit
         FOR UPDATE SKIP LOCKED)
     UPDATE ob_top_up t SET last_read_at = clock_timestamp()

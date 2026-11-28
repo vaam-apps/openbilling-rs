@@ -99,6 +99,9 @@ cases build the provider's answer themselves, as a `PaymentView`.
 | `a_succeeded_payment_credits_the_recorded_terms_once` | Eight settles at once book once, the rest are replays |
 | `a_canceled_top_up_is_final` | A later success is not credited |
 | `claims_respect_the_windows_and_are_disjoint` | Not before `pending_after`, not after `stop_after`, not again before `read_again_after`, never one top-up to two callers, a settled one is not claimed, the batch limit holds |
+| `a_late_record_upgrades_an_unrecorded_payment_only_when_the_terms_agree` | A payment settled before its record (`refuse`) is upgraded by a late record with the very terms and then credited once; other terms stay `TopUpConflict` |
+| `an_expired_top_up_is_not_claimed_and_is_still_settled` | `expire_stale_top_ups` moves rows older than `stop_after` to expired once; they are never claimed; a settle still credits, cancels or refuses them |
+| `successive_claims_cover_every_due_top_up_before_repeating` | With more due than a batch, claims take the least recently read first and cover all before any repeats |
 
 ## The payment provider suite
 

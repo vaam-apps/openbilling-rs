@@ -1129,6 +1129,17 @@ impl TopUpLedger for PgLedger {
         }
     }
 
+    #[tracing::instrument(name = "db.query", skip_all, fields(db.system = "postgresql", db.operation = "expire_pending_top_ups"))]
+    async fn expire_stale_top_ups(&self, settings: &ReconcileSettings) -> Result<u64, LedgerError> {
+        let n: i64 = sqlx::query_scalar("SELECT ob_expire_pending_top_ups($1, $2)")
+            .bind(micros_of(settings.stop_after))
+            .bind(i32::try_from(settings.batch).unwrap_or(i32::MAX))
+            .fetch_one(&self.pool)
+            .await
+            .map_err(ledger_error)?;
+        u64::try_from(n).map_err(|_| corrupt())
+    }
+
     #[tracing::instrument(name = "db.query", skip_all, fields(db.system = "postgresql", db.operation = "claim_pending_top_ups"))]
     async fn claim_pending_top_ups(
         &self,

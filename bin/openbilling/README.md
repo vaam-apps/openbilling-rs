@@ -77,7 +77,7 @@ its recorded terms is a follow-up.
 a payment provider is configured, first after one `every`, and reads back the pending top-ups that are at least
 `pending_after` old and less than `stop_after` old, not read in the last `read_again_after`, at most `batch` a pass.
 Several instances share the work (a claim takes each top-up for one of them), and a webhook racing a pass books once. A top-up
-older than `stop_after` stays pending and is not read again; the operator's `reconcilePayment` still settles it. Every
+older than `stop_after` becomes `expired` (counted in `openbilling.topups.expired`) and is not read again; a webhook or the operator's `reconcilePayment` still settles it; the pass reads the least recently read first. Stopping the service cancels a running pass. Every
 value has the default shown; a value outside its range, or a `stop_after` not longer than `pending_after`, stops `serve`
 at start. It logs counts only (credited, differed, failed) and counts the outcomes in `openbilling.topups.reconciled` (`credited`, `replayed` for one found credited already, `pending`, `not_ours`, `canceled`, `mismatch`, `error`, which a pass that panicked also counts; the next pass runs); a
 failed pass is logged by class and counted in `openbilling.errors` (`source=reconcile`). A payment that differs from its top-up in
