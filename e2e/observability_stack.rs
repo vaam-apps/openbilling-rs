@@ -1,5 +1,6 @@
 //! Scenario: the observability stack. The real `openbilling serve` exports over OTLP/HTTP to a real OpenTelemetry
-//! Collector, whose Prometheus exporter a real Prometheus scrapes, and a real Grafana reads Prometheus with the
+//! Collector, whose Prometheus exporter a real Prometheus scrapes (leg `scrape`) or whose `otlphttp` exporter pushes to
+//! Prometheus's OTLP receiver (leg `otlp`, `OBS_LEG` of run.sh; the assertions are the same), and a real Grafana reads Prometheus with the
 //! dashboards of `deploy/dashboards` provisioned unmodified. The test asks Prometheus and Grafana, over their HTTP
 //! APIs, what the dashboards and the shipped alert rules ask them.
 //!

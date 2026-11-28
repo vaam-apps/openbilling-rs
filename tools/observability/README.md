@@ -18,6 +18,17 @@ It then runs the gated scenario [`e2e/observability_stack.rs`](../../e2e/observa
 Prometheus and Grafana what the dashboards and the alert rules ask (what it checks is in
 [`e2e/README.md`](../../e2e/README.md)). Everything binds `127.0.0.1`; Grafana gets a random admin password for the run.
 
+Two legs, chosen by `OBS_LEG` (default `scrape`), run the same test:
+
+```mermaid
+flowchart LR
+  S2[openbilling serve] -- OTLP/HTTP --> C2[Collector contrib]
+  C2 -- "otlphttp exporter, /api/v1/otlp/v1/metrics" --> P2["Prometheus --web.enable-otlp-receiver"]
+  P2 --> G2[Grafana]
+```
+
+`OBS_LEG=otlp sh tools/observability/run.sh` is the second diagram: no `prometheus` exporter and no scrape job.
+
 ## Run it
 
 Needs `python3`, `curl`, `tar`, `cargo` and a PostgreSQL 19 whose user may create databases:
@@ -57,12 +68,30 @@ refused clearly otherwise. Move a pin by reading the new digest from the registr
 | File | What |
 |---|---|
 | `run.sh` | Fetch, start in order (Collector, Prometheus, Grafana) with readiness polls, run the test, stop everything and print logs on failure |
-| `otelcol.yaml` | OTLP/HTTP in, the `prometheus` exporter out (`add_metric_suffixes: true`); traces and logs to `debug` |
-| `prometheus.yaml` | Scrape the exporter every 2 s with `honor_labels: true`, load `deploy/alerts/openbilling.rules.yaml` |
+| `otelcol.yaml` | Scrape leg: OTLP/HTTP in, the `prometheus` exporter out (`add_metric_suffixes: true`); traces and logs to `debug` |
+| `prometheus.yaml` | Scrape leg: scrape the exporter every 2 s with `honor_labels: true`, load `deploy/alerts/openbilling.rules.yaml` |
+| `otelcol-otlp.yaml` | OTLP leg: OTLP/HTTP in, the `otlphttp` exporter out to Prometheus's `/api/v1/otlp/v1/metrics` (`metrics_endpoint`, `encoding: proto`) |
+| `prometheus-otlp.yaml` | OTLP leg: no scrape job; `otlp.translation_strategy: UnderscoreEscapingWithSuffixes`; run.sh starts it with `--web.enable-otlp-receiver` |
 | `grafana/provisioning/` | The Prometheus data source (uid `prometheus`, `timeInterval: 2s`) and a file provider on `deploy/dashboards`, unmodified |
+
+## The OTLP leg's settings
+
+Each *verified 2026-11-28* in the v3.16.0 `docs/configuration/configuration.md`, https://prometheus.io/docs/guides/opentelemetry/,
+the v0.142.0 `otlphttpexporter` README, and by running the pinned binaries (`prometheus --help` lists
+`--web.enable-otlp-receiver`):
+
+- Prometheus: `--web.enable-otlp-receiver` serves `/api/v1/otlp/v1/metrics`.
+- `otlp.translation_strategy` defaults to `UnderscoreEscapingWithSuffixes` (dots to underscores, unit and `_total`
+  suffixes): the names of `exposed_names()`. `NoUTF8EscapingWithSuffixes` and `NoTranslation` keep dots (unrun here).
+- `service.name` becomes `job` and `service.instance.id` becomes `instance` in the receiver, so
+  `promote_resource_attributes` is not set; the other resource attributes go to `target_info`.
+- Collector `otlphttp`: `metrics_endpoint` is used as given (the `/v1/metrics` suffix is only appended to `endpoint`);
+  `encoding` defaults to `proto`.
+- Delta metrics are dropped unless `--enable-feature=otlp-deltatocumulative`; the SDK exports cumulative (unrun).
+
+The test makes no leg-specific assertion. The one difference is that this leg has no scrape `up` series.
 
 ## What it does not cover
 
-The Prometheus native OTLP receiver, OpenObserve, Mimir and VictoriaMetrics; alert delivery (no Alertmanager runs); a
-threshold crossed on a live service (that is `promtool test rules`); and Grafana's rendering in a browser. See ADR 0007,
-*Still open*.
+OpenObserve, Mimir and VictoriaMetrics; alert delivery (no Alertmanager runs); a threshold crossed on a live service
+(that is `promtool test rules`); and Grafana's rendering in a browser. See ADR 0007, *Still open*.
