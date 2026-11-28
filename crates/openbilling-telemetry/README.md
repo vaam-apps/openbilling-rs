@@ -68,6 +68,7 @@ flow with sentinel values and scans every byte the collector received for each o
 | `drain.cycle` | `openbilling serve`, one per drain pass | `openbilling.batch.limit`, `openbilling.events.decided`, `.applied`, `.refused` |
 | `partitions.run` | `openbilling serve`, hourly | none |
 | `retention.run` | `openbilling serve`, hourly, after `partitions.run` | none |
+| `reconcile.run` | `openbilling serve`, every `reconcile.every`, only with a payment provider | none |
 
 An inbound `traceparent` is **not** read: this is a public API, and a caller must not choose the trace of its request.
 
@@ -90,7 +91,9 @@ Names below are OTLP names; a Prometheus-compatible store has them as `openbilli
 | `openbilling.telemetry.dropped` | counter | `signal` (`traces`, `logs`) | Spans or logs dropped because the exporter's queue (4096) was full |
 | `openbilling.telemetry.exports` | counter | `signal` (`traces`, `metrics`, `logs`), `result` (`ok`, `failed`) | Export requests to the collector; `failed` is after the SDK's retries |
 | `openbilling.partitions.dropped` | counter | none | Usage partitions the retention job detached and dropped |
-| `openbilling.errors` | counter | `class` (`invalid`, `conflict`, `unavailable`, `internal`), `source` (`api`, `drain`, `partitions`, `retention`) | Errors by class |
+| `openbilling.payments.mismatches` | counter | `field` (`owner`, `label`, `currency`, `amount`, `unrecorded`) | Payments read back that differ from the top-up recorded for them: nothing is credited. Counted once, where the ledger decides; also a warning with `openbilling.mismatch.field` and the class |
+| `openbilling.topups.reconciled` | counter | `outcome` (`credited`, `pending`, `canceled`, `mismatch`, `error`) | Pending top-ups the reconciler read back |
+| `openbilling.errors` | counter | `class` (`invalid`, `conflict`, `unavailable`, `internal`), `source` (`api`, `drain`, `partitions`, `retention`, `reconcile`) | Errors by class |
 | `http.server.request.duration` | histogram, s | `method`, `route`, `procedure`, `status` (`2xx` …) | Requests |
 | `db.client.operation.duration` | histogram, s | `operation` (a closed list, else `other`) | Ledger database operations |
 | `db.client.connection.count` | gauge | `state` (`idle`, `used`) | The pool |
