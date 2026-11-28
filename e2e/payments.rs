@@ -351,6 +351,44 @@ async fn an_operator_resolves_a_mismatched_top_up_once_and_only_the_operator() {
     );
     assert!(first.body["accountId"].is_string() && first.body["transaction"].is_string());
     assert_eq!(d.net("tenant-ex-10").await, 12_340_000);
+
+    // A top-up the payer altered and never paid: the operator's read-back marks it a mismatch, and crediting its
+    // recorded terms is refused because the provider does not report it succeeded. It can only be dismissed.
+    let unpaid = d
+        .write(
+            "startTopUp",
+            Who::Owner("tenant-ex-10"),
+            json!({"key": "topup-ex-11", "owner": "tenant-ex-10", "currency": "EUR", "label": "main",
+                   "amountMicros": "5000000", "successUrl": "https://service.example/paid",
+                   "cancelUrl": "https://service.example/cancel"}),
+        )
+        .await
+        .ok();
+    let unpaid = CreditId::new(unpaid.body["payment"].as_str().unwrap()).unwrap();
+    fixture.alter(&unpaid, Alteration::Amount).await;
+    let read = d
+        .write(
+            "reconcilePayment",
+            Who::Operator,
+            json!({"id": unpaid.as_str()}),
+        )
+        .await;
+    assert_eq!(read.status, 409, "the read-back differs: {}", read.text);
+    let refused = resolve(Who::Operator, unpaid.as_str().to_owned(), "credit_recorded").await;
+    assert_eq!(
+        refused.status, 409,
+        "an unpaid payment is never credited: {}",
+        refused.text
+    );
+    assert_eq!(
+        d.net("tenant-ex-10").await,
+        12_340_000,
+        "nothing more was credited"
+    );
+    let dismissed = resolve(Who::Operator, unpaid.as_str().to_owned(), "dismiss")
+        .await
+        .ok();
+    assert_eq!(dismissed.body["outcome"], "dismiss", "{}", dismissed.text);
     let again = resolve(
         Who::Operator,
         payment.as_str().to_owned(),

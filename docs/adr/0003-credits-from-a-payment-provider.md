@@ -396,7 +396,7 @@ outcomes, each once: `credit_recorded` credits the top-up's **recorded** terms (
 `startTopUp` recorded them, never what the provider reports) through `ob_credit` with the payment id as the credit id,
 so a webhook or a read afterwards answers it as the replay of that credit; `dismiss` closes the top-up with no credit.
 So an operator who credits a mismatch of the **amount** credits the recorded amount: the choice of the amount is the
-operator's, taken after looking at the payment at the provider. The decision is the top-up's state (`resolved_credited`,
+operator's, taken after looking at the payment at the provider. **`credit_recorded` needs a paid payment**: the procedure reads the payment back from the provider first and refuses with `409` unless it reports `succeeded`, so a payer who altered the terms and never paid leaves a mismatch that can only be dismissed (the provider read is the composition's, like `reconcilePayment`'s; the ledger rule stays in SQL). The decision is the top-up's state (`resolved_credited`,
 `resolved_dismissed`, both final, the mismatched field kept on the row), with `resolved_at` and `resolved_by`, the
 operator's token subject. `resolved_by` is kept in `ob_top_up` for audit and is read by nothing else: it is never in a
 log, a metric or an answer. `ob_resolve_top_up` locks the row, so two operators at once credit once; the same outcome

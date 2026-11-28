@@ -511,6 +511,22 @@ where
             ));
         };
         let by = OwnerId::new(subject.as_ref()).map_err(|e| invalid("subject", &e))?;
+        // Crediting the recorded terms books money: only for a payment the provider reports succeeded. A payer who
+        // altered the terms and never paid leaves a mismatch an operator may dismiss, never credit.
+        if resolution == Resolution::CreditRecorded {
+            let view = self
+                .provider()?
+                .read_payment(&payment)
+                .await
+                .map_err(|e| crate::errors::payment(&e))?;
+            if view.status != openbilling_core::PaymentStatus::Succeeded {
+                return Err(crate::errors::of_class(
+                    openbilling_core::ErrorClass::Conflict,
+                    "payment: the provider does not report it succeeded; it can only be dismissed"
+                        .to_owned(),
+                ));
+            }
+        }
         let resolved = self
             .0
             .ledger

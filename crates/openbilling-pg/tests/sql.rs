@@ -51,7 +51,7 @@ async fn migrations_apply_once_and_every_function_answers() {
     migrator().run(&pool).await.expect("a second run");
     assert_eq!(
         scalar(&pool, "SELECT count(*) FROM _sqlx_migrations").await,
-        11
+        12
     );
     // The flag of owners past their debt limit is a view, read as a plain query (ADR 0001, amended, E3).
     assert_eq!(
@@ -121,6 +121,7 @@ async fn migrations_apply_once_and_every_function_answers() {
         "ob_record_top_up",
         "ob_refuse_change",
         "ob_repay_from_lot",
+        "ob_resolve_top_up",
         "ob_retention_cutoff",
         "ob_retention_try_lock",
         "ob_retention_unlock",
